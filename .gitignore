@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# SDD artifacts
+.atl/
+
+# Engram config
+.engram/
+
+# Database files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Frontend build
+frontend/dist/
+frontend/.lovable/
+
+# Non-code files (excluded from version control)
+*.mp4
+*.pdf
+cosas.txt

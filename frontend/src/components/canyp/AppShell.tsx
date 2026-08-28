@@ -1,0 +1,111 @@
+import { Link, useRouterState } from "@tanstack/react-router";
+import {
+  Anchor,
+  BellRing,
+  CreditCard,
+  LayoutDashboard,
+  ScrollText,
+  Tags,
+  Users,
+} from "lucide-react";
+import type { ReactNode } from "react";
+import { cn } from "@/lib/utils";
+import { estadoVisual } from "@/lib/canyp/utils";
+import { useMembresias } from "@/lib/canyp/queries";
+
+const nav: { to: string; label: string; icon: typeof Users; exact?: boolean }[] = [
+  { to: "/", label: "Dashboard", icon: LayoutDashboard, exact: true },
+  { to: "/socios", label: "Socios", icon: Users },
+  { to: "/membresias", label: "Membresías", icon: ScrollText },
+  { to: "/aranceles", label: "Aranceles", icon: Tags },
+  { to: "/pagos", label: "Pagos", icon: CreditCard },
+  { to: "/notificaciones", label: "Notificaciones", icon: BellRing },
+];
+
+export function AppShell({ children }: { children: ReactNode }) {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const { data: membresias = [] } = useMembresias();
+  const alertas = membresias.filter((m) => {
+    const e = estadoVisual(m);
+    return e === "vencida" || e === "por_vencer";
+  }).length;
+
+  return (
+    <div className="flex min-h-screen w-full bg-background">
+      <aside className="fixed inset-y-0 left-0 z-20 hidden w-60 flex-col bg-sidebar text-sidebar-foreground md:flex">
+        <div className="flex items-center gap-3 border-b border-sidebar-border px-5 py-5">
+          <div className="flex size-9 items-center justify-center rounded-md bg-sidebar-primary text-sidebar-primary-foreground">
+            <Anchor className="size-5" />
+          </div>
+          <div className="leading-tight">
+            <p className="text-sm font-bold tracking-wide">CANYP</p>
+            <p className="text-[11px] text-sidebar-foreground/60">Gestión interna</p>
+          </div>
+        </div>
+        <nav className="flex-1 space-y-1 p-3">
+          {nav.map((item) => {
+            const active = item.exact ? pathname === item.to : pathname.startsWith(item.to);
+            return (
+              <Link
+                key={item.to}
+                to={item.to as string}
+                className={cn(
+                  "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                  active
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground/75 hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground",
+                )}
+              >
+                <item.icon className="size-4" />
+                <span className="flex-1">{item.label}</span>
+                {item.label === "Notificaciones" && alertas > 0 && (
+                  <span className="rounded-full bg-danger px-1.5 py-0.5 text-[10px] font-bold text-danger-foreground">
+                    {alertas}
+                  </span>
+                )}
+              </Link>
+            );
+          })}
+        </nav>
+        <div className="border-t border-sidebar-border px-5 py-4 text-[11px] text-sidebar-foreground/55">
+          Predios: Embalse · Almafuerte
+        </div>
+      </aside>
+
+      <div className="flex min-w-0 flex-1 flex-col md:pl-60">
+        <nav className="flex gap-1 overflow-x-auto border-b border-border bg-sidebar px-3 py-2 md:hidden">
+          {nav.map((item) => (
+            <Link
+              key={item.to}
+              to={item.to as string}
+              className="rounded-md px-3 py-1.5 text-xs font-medium text-sidebar-foreground/80"
+            >
+              {item.label}
+            </Link>
+          ))}
+        </nav>
+        <main className="mx-auto w-full max-w-[1400px] flex-1 px-5 py-6 lg:px-8">{children}</main>
+      </div>
+    </div>
+  );
+}
+
+export function PageHeader({
+  title,
+  subtitle,
+  actions,
+}: {
+  title: string;
+  subtitle?: string;
+  actions?: ReactNode;
+}) {
+  return (
+    <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight text-foreground">{title}</h1>
+        {subtitle && <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>}
+      </div>
+      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+    </header>
+  );
+}

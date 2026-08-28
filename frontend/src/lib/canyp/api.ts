@@ -1,0 +1,316 @@
+/**
+ * CANYP API client — typed fetch wrapper for backend endpoints.
+ *
+ * All backend routers live under /api/. The Vite dev server proxies
+ * /api → http://localhost:8000 so this works in dev without CORS issues.
+ */
+
+import type {
+  Arancel,
+  Area,
+  EstadoMembresia,
+  ImportPayload,
+  ImportResponse,
+  Membresia,
+  Notificacion,
+  Parcela,
+  Pago,
+  PagoItemInput,
+  Predio,
+  Socio,
+} from "./types";
+
+// ---------------------------------------------------------------------------
+// Base client
+// ---------------------------------------------------------------------------
+
+const BASE_URL = "/api";
+
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const url = `${BASE_URL}${path}`;
+  const res = await fetch(url, {
+    headers: { "Content-Type": "application/json", ...init?.headers },
+    ...init,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new ApiError(res.status, body.detail ?? res.statusText);
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+// ---------------------------------------------------------------------------
+// Socios
+// ---------------------------------------------------------------------------
+
+export function getSocios(params?: { search?: string }): Promise<Socio[]> {
+  const qs = params?.search ? `?search=${encodeURIComponent(params.search)}` : "";
+  return apiFetch<Socio[]>(`/socios${qs}`);
+}
+
+export function getSocio(id: string): Promise<Socio> {
+  return apiFetch<Socio>(`/socios/${id}`);
+}
+
+export function createSocio(data: Omit<Socio, "id" | "fechaAlta">): Promise<Socio> {
+  return apiFetch<Socio>("/socios", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateSocio(id: string, data: Partial<Socio>): Promise<Socio> {
+  return apiFetch<Socio>(`/socios/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteSocio(id: string): Promise<void> {
+  return apiFetch<void>(`/socios/${id}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// Membresias
+// ---------------------------------------------------------------------------
+
+export function getMembresias(params?: {
+  predio?: string;
+  estado?: string;
+  socioId?: string;
+}): Promise<Membresia[]> {
+  const entries = Object.entries(params ?? {}).filter(([, v]) => v != null);
+  const qs = entries.length
+    ? `?${new URLSearchParams(entries as [string, string][]).toString()}`
+    : "";
+  return apiFetch<Membresia[]>(`/membresias${qs}`);
+}
+
+export function getMembresia(id: string): Promise<Membresia> {
+  return apiFetch<Membresia>(`/membresias/${id}`);
+}
+
+export function createMembresia(data: Omit<Membresia, "id">): Promise<Membresia> {
+  return apiFetch<Membresia>("/membresias", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateMembresia(id: string, data: Partial<Membresia>): Promise<Membresia> {
+  return apiFetch<Membresia>(`/membresias/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteMembresia(id: string): Promise<void> {
+  return apiFetch<void>(`/membresias/${id}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// Parcelas
+// ---------------------------------------------------------------------------
+
+export function getParcelas(params?: { predio?: string }): Promise<Parcela[]> {
+  const qs = params?.predio ? `?predio=${encodeURIComponent(params.predio)}` : "";
+  return apiFetch<Parcela[]>(`/parcelas${qs}`);
+}
+
+export function getParcela(id: string): Promise<Parcela> {
+  return apiFetch<Parcela>(`/parcelas/${id}`);
+}
+
+export function createParcela(data: Omit<Parcela, "id"> & { id: string }): Promise<Parcela> {
+  return apiFetch<Parcela>("/parcelas", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateParcela(id: string, data: Partial<Parcela>): Promise<Parcela> {
+  return apiFetch<Parcela>(`/parcelas/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteParcela(id: string): Promise<void> {
+  return apiFetch<void>(`/parcelas/${id}`, { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
+// Parcelas — unidades compartidas (cabañas/balsas)
+// ---------------------------------------------------------------------------
+
+/**
+ * Importa unidades (parcelas + socios + membresías) transaccionalmente.
+ * Idempotente: el backend saltea parcelas existentes por (nombre, predio, tipo)
+ * y socios por dni. Devuelve solo los ids recién creados (vacío en re-call).
+ */
+export function importParcelas(payload: ImportPayload): Promise<ImportResponse> {
+  return apiFetch<ImportResponse>("/parcelas/import", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Cambia el estado de TODAS las membresías de una parcela (batch, RQ 5). */
+export function setBatchEstado(parcelaId: string, estado: EstadoMembresia): Promise<unknown> {
+  return apiFetch(`/parcelas/${parcelaId}/estado`, {
+    method: "POST",
+    body: JSON.stringify({ estado }),
+  });
+}
+
+/** Cambia el vencimiento de TODAS las membresías de una parcela (batch, RQ 5). */
+export function setBatchVencimiento(parcelaId: string, vencimiento: string): Promise<unknown> {
+  return apiFetch(`/parcelas/${parcelaId}/vencimiento`, {
+    method: "PUT",
+    body: JSON.stringify({ vencimiento }),
+  });
+}
+
+/**
+ * Arma el payload de cobro por unidad (RQ 14): un Pago con socioId = Titular y
+ * un PagoItem por miembro, cada uno con SU membresiaId (nunca un id común).
+ * Retorna `null` si no hay titular o no hay ítems por cobrar.
+ */
+export function buildUnitPago(params: {
+  /** El miembro titular de la unidad (su socioId + membresiaId). */
+  titular: { socioId: string; membresiaId: string };
+  /** Resto de miembros a renovar junto al titular. */
+  integrantes: { membresiaId: string }[];
+  medio: string;
+  /** Monto aplicado (por defecto aplica un único arancel a todos). */
+  items: { arancelId: string; arancelNombre: string; montoAplicado: number; membresiaId: string }[];
+}): CreatePagoInput | null {
+  const items: PagoItemInput[] = params.items.map((it) => ({
+    arancelId: it.arancelId,
+    membresiaId: it.membresiaId,
+    montoAplicado: it.montoAplicado,
+    arancelNombre: it.arancelNombre,
+  }));
+  if (!params.titular.socioId) return null;
+  if (items.length === 0) return null;
+  return {
+    socioId: params.titular.socioId,
+    medio: params.medio,
+    items,
+    total: items.reduce((s, i) => s + i.montoAplicado, 0),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Aranceles
+// ---------------------------------------------------------------------------
+
+export function getAranceles(params?: { predio?: string; area?: string }): Promise<Arancel[]> {
+  const entries = Object.entries(params ?? {}).filter(([, v]) => v != null);
+  const qs = entries.length
+    ? `?${new URLSearchParams(entries as [string, string][]).toString()}`
+    : "";
+  return apiFetch<Arancel[]>(`/aranceles${qs}`);
+}
+
+export interface CreateArancelInput {
+  nombre: string;
+  area: Area;
+  predio: Predio;
+  monto: number;
+  vigenteDesde: string;
+}
+
+export function createArancel(data: CreateArancelInput): Promise<Arancel> {
+  return apiFetch<Arancel>("/aranceles", {
+    method: "POST",
+    body: JSON.stringify({ ...data, historico: [] }),
+  });
+}
+
+export function updateArancelMonto(id: string, monto: number): Promise<Arancel> {
+  return apiFetch<Arancel>(`/aranceles/${id}/monto`, {
+    method: "PUT",
+    body: JSON.stringify({ monto }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Pagos
+// ---------------------------------------------------------------------------
+
+export function getPagos(params?: { socioId?: string }): Promise<Pago[]> {
+  const qs = params?.socioId ? `?socioId=${encodeURIComponent(params.socioId)}` : "";
+  return apiFetch<Pago[]>(`/pagos${qs}`);
+}
+
+export interface CreatePagoInput {
+  socioId: string;
+  medio: string;
+  items: PagoItemInput[];
+  total: number;
+}
+
+export function createPago(data: CreatePagoInput): Promise<Pago> {
+  const hoy = new Date().toISOString().slice(0, 10);
+  return apiFetch<Pago>("/pagos", {
+    method: "POST",
+    body: JSON.stringify({
+      id: `p${Date.now()}`,
+      socioId: data.socioId,
+      fecha: hoy,
+      medio: data.medio,
+      total: data.total,
+      items: data.items,
+      membresiaIds: data.items.map((i) => i.membresiaId),
+    }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Notificaciones
+// ---------------------------------------------------------------------------
+
+export function getNotificaciones(params?: { socioId?: string }): Promise<Notificacion[]> {
+  const qs = params?.socioId ? `?socioId=${encodeURIComponent(params.socioId)}` : "";
+  return apiFetch<Notificacion[]>(`/notificaciones${qs}`);
+}
+
+export interface CreateNotificacionInput {
+  socioId: string;
+  canal: "email" | "whatsapp";
+  fecha: string;
+  motivo: string;
+  mensaje: string;
+}
+
+export function createNotificaciones(items: CreateNotificacionInput[]): Promise<Notificacion[]> {
+  return apiFetch<Notificacion[]>("/notificaciones", {
+    method: "POST",
+    body: JSON.stringify(
+      items.map((item) => ({
+        id: `n${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        ...item,
+      })),
+    ),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+
+export function getDashboard(): Promise<Record<string, unknown>> {
+  return apiFetch<Record<string, unknown>>("/dashboard");
+}
