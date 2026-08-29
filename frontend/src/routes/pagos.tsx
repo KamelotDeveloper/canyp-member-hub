@@ -32,12 +32,14 @@ import {
 } from "@/components/ui/table";
 import { PageHeader } from "@/components/canyp/AppShell";
 import { estadoVisual, formatARS, formatFecha } from "@/lib/canyp/utils";
+import { itemsParaMembresiasConParcelas, esMembresiaCobrable } from "@/lib/canyp/unidad-helpers";
 import {
   useSocios,
   useMembresias,
   useAranceles,
   usePagos,
   useCreatePago,
+  useParcelas,
 } from "@/lib/canyp/queries";
 import { EstadoBadge } from "@/components/canyp/EstadoBadge";
 import type { Membresia, Pago, Socio } from "@/lib/canyp/types";
@@ -72,6 +74,7 @@ function PagosPage() {
   const { data: membresias = [] } = useMembresias();
   const { data: aranceles = [] } = useAranceles();
   const { data: pagos = [] } = usePagos();
+  const { data: parcelas = [] } = useParcelas();
   const createPago = useCreatePago();
 
   const socioMap = useMemo(() => new Map(socios.map((s: Socio) => [s.id, s])), [socios]);
@@ -95,33 +98,15 @@ function PagosPage() {
   }, [search.nuevo, search.socioId, navigate]);
 
   const membresiasSocio = membresias.filter(
-    (m: Membresia) => m.socioId === socioId && m.estado !== "baja",
+    (m: Membresia) => m.socioId === socioId && m.estado !== "baja" && esMembresiaCobrable(m),
   );
 
   const items = useMemo(() => {
     const elegidas = membresiasSocio.filter((m: Membresia) => seleccion.includes(m.id));
-    // Un ítem por (membresía, arancel) — así cada PagoItem renueva la membresía
-    // que le corresponde y NO se estampa una única membresiaId en todos los ítems.
-    const out: {
-      arancelId: string;
-      arancelNombre: string;
-      monto: number;
-      membresiaId: string;
-    }[] = [];
-    for (const m of elegidas) {
-      for (const a of aranceles) {
-        if (a.area === m.area && a.predio === m.predio) {
-          out.push({
-            arancelId: a.id,
-            arancelNombre: a.nombre,
-            monto: a.monto,
-            membresiaId: m.id,
-          });
-        }
-      }
-    }
-    return out;
-  }, [membresiasSocio, seleccion, aranceles]);
+    // Un ítem por membresía, resolviendo el arancel por area + predio + categoría
+    // de su parcela (nunca TODOS los aranceles del área — RQ 14).
+    return itemsParaMembresiasConParcelas(elegidas, aranceles, parcelas);
+  }, [membresiasSocio, seleccion, aranceles, parcelas]);
 
   const total = items.reduce((s, i) => s + i.monto, 0);
 

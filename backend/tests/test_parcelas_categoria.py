@@ -18,7 +18,7 @@ BASE_PARCELA = {
     "id": "p001",
     "nombre": "Cabaña del Lago",
     "tipo": "cabaña",
-    "predio": "Embalse",
+    "predio": "Almafuerte",
 }
 
 
@@ -51,6 +51,14 @@ class TestParcelaCategoria:
         p = test_db.query(Parcela).filter(Parcela.id == "p001").first()
         assert p is not None
         assert p.categoria == CategoriaParcela.ESPECIAL
+
+    def test_create_parcela_rejects_inconsistent_predio(self, test_client):
+        """A cabaña in Embalse is rejected (domain rule: cabañas live in Almafuerte)."""
+        resp = test_client.post(
+            "/api/parcelas",
+            json={"id": "px", "nombre": "Cabaña Rara", "tipo": "cabaña", "predio": "Embalse"},
+        )
+        assert resp.status_code == 422
 
 
 IMPORT_PAYLOAD = {
@@ -89,7 +97,7 @@ IMPORT_PAYLOAD = {
         {
             "nombre": "Balsa Norte",
             "tipo": "balsa",
-            "predio": "Almafuerte",
+            "predio": "Embalse",
             "miembros": [
                 {
                     "socio": {"nombre": "Pedro", "dni": "44444444"},
@@ -172,6 +180,30 @@ class TestImportUnidades:
             ]
         }
         resp = test_client.post("/api/parcelas/import", json=bad_payload)
+        assert resp.status_code == 422
+        assert test_db.query(Parcela).count() == 0
+        assert test_db.query(Membresia).count() == 0
+        assert test_db.query(Socio).count() == 0
+
+    def test_import_rejects_inconsistent_predio(self, test_client, test_db):
+        """A balsa in Almafuerte (domain rule: balsas live in Embalse) is rejected."""
+        bad = {
+            "unidades": [
+                {
+                    "nombre": "Balsa Mala",
+                    "tipo": "balsa",
+                    "predio": "Almafuerte",
+                    "miembros": [
+                        {
+                            "socio": {"nombre": "X", "dni": "77777777"},
+                            "rol": "Titular",
+                            "vencimiento": "2026-12-01",
+                        }
+                    ],
+                }
+            ]
+        }
+        resp = test_client.post("/api/parcelas/import", json=bad)
         assert resp.status_code == 422
         assert test_db.query(Parcela).count() == 0
         assert test_db.query(Membresia).count() == 0

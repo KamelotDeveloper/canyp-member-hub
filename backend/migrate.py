@@ -24,6 +24,7 @@ import sqlite3
 import sys
 
 from backend.database import DATABASE_FILE
+from backend.models.enums import RolMembresia
 
 # (table, column, human label) additions, applied in order.
 _COLUMN_ADDITIONS = [
@@ -69,18 +70,21 @@ def migrate(db_path: str) -> list[str]:
 
         # 2) Backfill membresias.rol from the legacy free-text `detalle`,
         #    then clear that detalle for the rows we migrated.
-        for role_name in ("Titular", "Integrante"):
+        # NOTE: the SQLAlchemy Enum column stores the enum NAME (e.g. "TITULAR"),
+        # not the .value ("Titular"), so backfill with `role.name` while matching
+        # the legacy detalle free-text by `role.value`.
+        for role in RolMembresia:
             backfilled = conn.execute(
                 "UPDATE membresias SET rol = ? WHERE detalle = ?",
-                (role_name, role_name),
+                (role.name, role.value),
             ).rowcount
             if backfilled:
                 actions.append(
-                    f"membresias.rol backfilled '{role_name}' for {backfilled} row(s)"
+                    f"membresias.rol backfilled '{role.name}' for {backfilled} row(s)"
                 )
             conn.execute(
                 "UPDATE membresias SET detalle = NULL WHERE detalle = ?",
-                (role_name,),
+                (role.value,),
             )
 
         conn.commit()

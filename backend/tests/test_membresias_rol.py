@@ -88,6 +88,33 @@ class TestMembresiaRolCRUD:
         persisted = test_db.query(Membresia).filter(Membresia.id == "m9").first()
         assert persisted.rol == RolMembresia.TITULAR
 
+    def test_create_membresia_without_id_generates_one(self, test_client, test_db):
+        """POST /api/membresias without an id auto-generates one (RQ 5/10)."""
+        socio = Socio(
+            id="s11", nombre="Socio", dni="30999996", fechaAlta=date(2024, 1, 1)
+        )
+        test_db.add(socio)
+        test_db.commit()
+        resp = test_client.post(
+            "/api/membresias",
+            json={
+                "socioId": "s11",
+                "area": "Cabañeros",
+                "predio": "Almafuerte",
+                "estado": "activa",
+                "vencimiento": "2026-01-01",
+                "rol": "Integrante",
+            },
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["id"].startswith("m")
+        assert body["rol"] == "Integrante"
+        assert (
+            test_db.query(Membresia).filter(Membresia.id == body["id"]).first()
+            is not None
+        )
+
     def test_update_membresia_rol(self, test_client, test_db):
         _seed_unit(test_db)
         resp = test_client.put("/api/membresias/m2", json={"rol": "Titular"})

@@ -2,9 +2,15 @@
 
 from datetime import date
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
-from backend.models.enums import CategoriaParcela, Predio, RolMembresia, TipoParcela
+from backend.models.enums import (
+    CategoriaParcela,
+    Predio,
+    RolMembresia,
+    TipoParcela,
+    predio_de_tipo,
+)
 from backend.schemas.common import OrmConfig
 
 
@@ -27,6 +33,15 @@ class ImportParcela(BaseModel):
     categoria: CategoriaParcela | None = None
     predio: Predio
     miembros: list[ImportMembresia] = []
+
+    @model_validator(mode="after")
+    def _predio_coherente(self):
+        esperado = predio_de_tipo(self.tipo)
+        if self.predio != esperado:
+            raise ValueError(
+                f"{self.tipo.value} belongs to {esperado.value}, not {self.predio.value}"
+            )
+        return self
 
 
 class ImportPayload(BaseModel):

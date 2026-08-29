@@ -20,7 +20,7 @@ class MembresiaBase(OrmConfig, BaseModel):
 
 
 class MembresiaCreate(MembresiaBase):
-    id: str
+    id: str | None = None
 
 
 class MembresiaUpdate(BaseModel):

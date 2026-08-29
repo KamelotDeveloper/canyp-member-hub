@@ -30,6 +30,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EstadoBadge } from "@/components/canyp/EstadoBadge";
+import { AreaBadge } from "@/components/canyp/AreaBadge";
 import { PageHeader } from "@/components/canyp/AppShell";
 import { estadoVisual, type EstadoVisual } from "@/lib/canyp/utils";
 import { useSocios, useMembresias, useCreateSocio } from "@/lib/canyp/queries";
@@ -216,11 +217,9 @@ function SociosPage() {
                       <span className="text-xs text-muted-foreground">Sin membresías</span>
                     )}
                     {f.membresias.map((m) => (
-                      <span
-                        key={m.id}
-                        className="rounded border border-border bg-secondary px-1.5 py-0.5 text-[11px] font-medium text-secondary-foreground"
-                      >
-                        {m.area} · {m.predio}
+                      <span key={m.id} className="inline-flex items-center gap-1">
+                        <AreaBadge area={m.area} />
+                        <span className="text-[11px] text-muted-foreground">{m.predio}</span>
                       </span>
                     ))}
                   </div>

@@ -248,20 +248,22 @@ describe("unidades compartidas API (PR 3)", () => {
     expect(JSON.parse(init.body as string)).toEqual({ vencimiento: "2027-01-01" });
   });
 
-  it("buildUnitPago maps each member to its OWN membresiaId (RQ 14)", () => {
+  it("buildUnitPago sends one arancel item + all membresiaIds (RQ 14)", () => {
     const pago = buildUnitPago({
       titular: { socioId: "a1", membresiaId: "m1" },
-      integrantes: [{ membresiaId: "m2" }],
+      integrantes: [{ membresiaId: "m2" }, { membresiaId: "m3" }],
       medio: "Transferencia",
       items: [
         { arancelId: "ar1", arancelNombre: "Mensualidad", montoAplicado: 100, membresiaId: "m1" },
-        { arancelId: "ar1", arancelNombre: "Mensualidad", montoAplicado: 100, membresiaId: "m2" },
       ],
     });
     expect(pago).not.toBeNull();
     expect(pago!.socioId).toBe("a1");
-    expect(pago!.items.map((i) => i.membresiaId)).toEqual(["m1", "m2"]);
-    expect(pago!.total).toBe(200);
+    // Un solo ítem: el arancel de la unidad (no por integrante).
+    expect(pago!.items).toHaveLength(1);
+    // Renueva a TODOS los miembros (titular + integrantes).
+    expect(pago!.membresiaIds).toEqual(["m1", "m2", "m3"]);
+    expect(pago!.total).toBe(100);
   });
 
   it("buildUnitPago returns null without a titular or without items", () => {
@@ -283,7 +285,30 @@ describe("unidades compartidas API (PR 3)", () => {
     ).toBeNull();
   });
 
-  it("createPago keeps distinct membresiaIds per item (multi-item pago)", async () => {
+  it("createPago sends explicit membresiaIds for unit cobro", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response("null", { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createPago({
+      socioId: "a1",
+      medio: "Transferencia",
+      items: [
+        { arancelId: "ar1", membresiaId: "m1", montoAplicado: 100, arancelNombre: "Mensualidad" },
+      ],
+      total: 100,
+      membresiaIds: ["m1", "m2", "m3"],
+    });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.items).toHaveLength(1);
+    expect(body.membresiaIds).toEqual(["m1", "m2", "m3"]);
+  });
+
+  it("createPago derives membresiaIds from items when not provided", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValue(

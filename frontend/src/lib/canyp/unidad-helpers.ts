@@ -15,11 +15,13 @@
 
 import type {
   Arancel,
+  Area,
   CategoriaParcela,
   ImportMembresia,
   ImportPayload,
   ImportSocio,
   Membresia,
+  Parcela,
   Predio,
   Rol,
   UnidadFiltro,
@@ -35,12 +37,31 @@ export interface NuevaUnidadSocio {
   email?: string;
 }
 
+/**
+ * Predio correcto para un tipo de unidad (regla del dominio).
+ * Embalse aloja solo balsas; Almafuerte aloja cabañas (y guardería).
+ */
+export function predioDeTipo(tipo: "cabaña" | "balsa"): Predio {
+  return tipo === "balsa" ? "Embalse" : "Almafuerte";
+}
+
+/**
+ * Indica si una membresía se puede cobrar individualmente en /pagos.
+ * Regla del dominio: las unidades (cabañas/balsas) se cobran por el TITULAR,
+ * no por integrante — una membresía de unidad solo es cobrable si `rol` es
+ * "Titular". Guardería y Windsurf (sin unidad) siempre son cobrables.
+ */
+export function esMembresiaCobrable(m: Membresia): boolean {
+  const esUnidad = m.area === "Cabañeros" || m.area === "Balseros";
+  if (esUnidad) return m.rol === "Titular";
+  return true;
+}
+
 /** Estado del formulario "Nueva unidad" antes de convertirlo a payload. */
 export interface NuevaUnidadForm {
   nombre: string;
   tipo: "cabaña" | "balsa";
   categoria?: CategoriaParcela;
-  predio: Predio;
   vencimiento: string;
   /** Primera fila → Titular; resto → Integrantes. */
   socios: NuevaUnidadSocio[];
@@ -75,7 +96,7 @@ export function buildNuevaUnidadPayload(form: NuevaUnidadForm): ImportPayload | 
   const unidad: ImportPayload["unidades"][number] = {
     nombre: form.nombre.trim(),
     tipo: form.tipo,
-    predio: form.predio,
+    predio: predioDeTipo(form.tipo),
     miembros,
   };
   if (form.categoria) unidad.categoria = form.categoria;
@@ -93,26 +114,75 @@ export interface PagoItemResuelto {
 }
 
 /**
- * Genera un PagoItem por cada (membresía, arancel) que haga match por
- * area + predio. Cada ítem lleva la membresiaId de SU membresía (RQ 14), de
- * modo que al crear el Pago cada membresía se renueva de forma independiente.
+ * Resuelve el arancel aplicable por area + predio + categoría (regla RQ 13,
+ * igual que `resolver_monto` del backend): primero el arancel de la categoría
+ * exacta; si no hay, el catch-all (categoría null) del área+predio.
+ */
+export function arancelPara(
+  area: Area,
+  predio: Predio,
+  categoria: CategoriaParcela | null,
+  aranceles: Arancel[],
+): Arancel | undefined {
+  if (categoria) {
+    const exact = aranceles.find(
+      (a) => a.area === area && a.predio === predio && a.categoria === categoria,
+    );
+    if (exact) return exact;
+  }
+  return aranceles.find((a) => a.area === area && a.predio === predio && a.categoria == null);
+}
+
+/**
+ * Genera UN único ítem de cobro para la unidad: el arancel de su categoría.
+ * El costo es por unidad/categoría, NO por integrante — una Cabaña Chica cuesta
+ * lo mismo con 3 o 10 integrantes. El ítem se liga a la membresía del titular;
+ * el pago renueva a TODOS los miembros vía `membresiaIds` (RQ 14).
  */
 export function itemsParaMembresias(
   members: Membresia[],
   aranceles: Arancel[],
+  categoria: CategoriaParcela | null = null,
+): PagoItemResuelto[] {
+  const titular = members.find((m) => m.rol === "Titular") ?? members[0];
+  if (!titular) return [];
+  const a = arancelPara(titular.area, titular.predio, categoria, aranceles);
+  if (!a) return [];
+  return [
+    {
+      arancelId: a.id,
+      arancelNombre: a.nombre,
+      montoAplicado: a.monto,
+      monto: a.monto,
+      membresiaId: titular.id,
+    },
+  ];
+}
+
+/**
+ * Resuelve un PagoItem por membresía usando la categoría de SU parcela (para
+ * el flujo general de /pagos, donde se pueden elegir membresías de distintas
+ * unidades). Igual que `itemsParaMembresias` pero derivando la categoría de
+ * cada membresía a partir de `parcelaId` en vez de una categoría única.
+ */
+export function itemsParaMembresiasConParcelas(
+  members: Membresia[],
+  aranceles: Arancel[],
+  parcelas: Parcela[],
 ): PagoItemResuelto[] {
   const out: PagoItemResuelto[] = [];
   for (const m of members) {
-    for (const a of aranceles) {
-      if (a.area === m.area && a.predio === m.predio) {
-        out.push({
-          arancelId: a.id,
-          arancelNombre: a.nombre,
-          montoAplicado: a.monto,
-          monto: a.monto,
-          membresiaId: m.id,
-        });
-      }
+    const parcela = m.parcelaId ? parcelas.find((p) => p.id === m.parcelaId) : undefined;
+    const categoria = parcela?.categoria ?? null;
+    const a = arancelPara(m.area, m.predio, categoria, aranceles);
+    if (a) {
+      out.push({
+        arancelId: a.id,
+        arancelNombre: a.nombre,
+        montoAplicado: a.monto,
+        monto: a.monto,
+        membresiaId: m.id,
+      });
     }
   }
   return out;

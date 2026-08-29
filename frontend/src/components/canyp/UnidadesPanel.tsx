@@ -1,12 +1,15 @@
 import { useMemo, useRef, useState, type ChangeEvent } from "react";
-import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { EstadoBadge } from "@/components/canyp/EstadoBadge";
-import { GestionarDialog, NuevaUnidadDialog } from "@/components/canyp/unidad-dialogs";
+import {
+  CobrarUnidadDialog,
+  GestionarDialog,
+  NuevaUnidadDialog,
+} from "@/components/canyp/unidad-dialogs";
 import { formatFecha } from "@/lib/canyp/utils";
 import { estadoCriticoDe, filtrarUnidades } from "@/lib/canyp/unidad-helpers";
 import { useMembresias, useParcelas, useSocios, useImportParcelas } from "@/lib/canyp/queries";
@@ -80,7 +83,6 @@ function iniciales(nombre: string): string {
 }
 
 export function UnidadesPanel({ area, filtro }: { area: Area; filtro: UnidadFiltro }) {
-  const navigate = useNavigate();
   const { data: membresias = [] } = useMembresias();
   const { data: parcelas = [] } = useParcelas();
   const { data: socios = [] } = useSocios();
@@ -88,6 +90,7 @@ export function UnidadesPanel({ area, filtro }: { area: Area; filtro: UnidadFilt
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [gestionando, setGestionando] = useState<UnidadGroup | null>(null);
+  const [cobrando, setCobrando] = useState<UnidadGroup | null>(null);
   const [nuevaOpen, setNuevaOpen] = useState(false);
 
   const socioMap = useMemo(() => new Map(socios.map((s: Socio) => [s.id, s])), [socios]);
@@ -159,12 +162,7 @@ export function UnidadesPanel({ area, filtro }: { area: Area; filtro: UnidadFilt
             area={area}
             socioMap={socioMap}
             onGestionar={() => setGestionando(g)}
-            onCobrar={(socioId) =>
-              navigate({
-                to: "/pagos",
-                search: { nuevo: "1", socioId: socioId ?? "" },
-              })
-            }
+            onCobrar={() => setCobrando(g)}
           />
         ))}
         {grupos.length === 0 && (
@@ -184,6 +182,13 @@ export function UnidadesPanel({ area, filtro }: { area: Area; filtro: UnidadFilt
         />
       )}
       <NuevaUnidadDialog area={area} open={nuevaOpen} onOpenChange={setNuevaOpen} />
+      {cobrando && (
+        <CobrarUnidadDialog
+          grupo={cobrando}
+          open={!!cobrando}
+          onOpenChange={(o) => !o && setCobrando(null)}
+        />
+      )}
     </div>
   );
 }
@@ -199,7 +204,7 @@ function UnidadCard({
   area: Area;
   socioMap: Map<string, Socio>;
   onGestionar: () => void;
-  onCobrar: (socioId: string | undefined) => void;
+  onCobrar: () => void;
 }) {
   const estado = estadoCriticoDe(grupo);
   const vencimientoComun = grupo.members.reduce<string | null>(
@@ -258,16 +263,7 @@ function UnidadCard({
         <Button size="sm" variant="outline" className="flex-1" onClick={onGestionar}>
           Gestionar
         </Button>
-        <Button
-          size="sm"
-          className="flex-1"
-          onClick={() => {
-            // Acción rápida: preselecciona al Titular en /pagos. El cobro de la
-            // unidad completa (un Pago por todos los miembros) vive en Gestionar.
-            const titular = grupo.members.find((m) => m.rol === "Titular") ?? grupo.members[0];
-            onCobrar(titular?.socioId);
-          }}
-        >
+        <Button size="sm" className="flex-1" onClick={onCobrar}>
           Cobrar
         </Button>
       </div>

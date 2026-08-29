@@ -6,7 +6,7 @@ PARCELA_PAYLOAD = {
     "nombre": "Cabaña del Lago",
     "tipo": "cabaña",
     "tamano": "40m2",
-    "predio": "Embalse",
+    "predio": "Almafuerte",
 }
 
 
@@ -27,7 +27,7 @@ class TestParcelasCRUD:
         assert body["id"] == "p001"
         assert body["nombre"] == "Cabaña del Lago"
         assert body["tipo"] == "cabaña"
-        assert body["predio"] == "Embalse"
+        assert body["predio"] == "Almafuerte"
 
     def test_get_parcela(self, test_client):
         """GET /api/parcelas/{id} returns the created parcela."""
@@ -55,7 +55,7 @@ class TestParcelasCRUD:
         assert body["tamano"] == "60m2"
         # Unchanged fields stay the same
         assert body["tipo"] == "cabaña"
-        assert body["predio"] == "Embalse"
+        assert body["predio"] == "Almafuerte"
 
     def test_update_parcela_nonexistent_returns_404(self, test_client):
         """PUT /api/parcelas/{id} returns 404 for non-existent id."""
@@ -88,14 +88,14 @@ class TestParcelasCRUD:
                 "id": "p002",
                 "nombre": "Balsa Norte",
                 "tipo": "balsa",
-                "predio": "Almafuerte",
+                "predio": "Embalse",
             },
         )
         resp = test_client.get("/api/parcelas", params={"predio": "Embalse"})
         assert resp.status_code == 200
         parcelas = resp.json()
         assert len(parcelas) == 1
-        assert parcelas[0]["id"] == "p001"
+        assert parcelas[0]["id"] == "p002"
         assert parcelas[0]["predio"] == "Embalse"
 
     def test_list_parcelas_returns_all_when_no_filter(self, test_client):
@@ -108,7 +108,7 @@ class TestParcelasCRUD:
                 "id": "p002",
                 "nombre": "Balsa Norte",
                 "tipo": "balsa",
-                "predio": "Almafuerte",
+                "predio": "Embalse",
             },
         )
         resp = test_client.get("/api/parcelas")

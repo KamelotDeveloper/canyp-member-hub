@@ -6,7 +6,9 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 DATABASE_FILE = os.path.join(os.path.dirname(__file__), "..", "canyp.db")
-DATABASE_URL = f"sqlite:///{os.path.abspath(DATABASE_FILE)}"
+# Optional override for test/alternate databases, e.g.:
+#   $env:DATABASE_URL = "sqlite:///canyp-test.db"
+DATABASE_URL = os.environ.get("DATABASE_URL") or f"sqlite:///{os.path.abspath(DATABASE_FILE)}"
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 

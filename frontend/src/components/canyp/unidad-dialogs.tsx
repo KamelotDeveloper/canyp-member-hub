@@ -40,6 +40,7 @@ import { buildUnitPago } from "@/lib/canyp/api";
 import {
   itemsParaMembresias,
   buildNuevaUnidadPayload,
+  predioDeTipo,
   type NuevaUnidadSocio,
 } from "@/lib/canyp/unidad-helpers";
 import {
@@ -54,14 +55,13 @@ import {
   useCreatePago,
   useImportParcelas,
 } from "@/lib/canyp/queries";
-import { formatFecha } from "@/lib/canyp/utils";
+import { formatARS, formatFecha } from "@/lib/canyp/utils";
 import type {
   Area,
   CategoriaParcela,
   EstadoMembresia,
   Membresia,
   Parcela,
-  Predio,
   Socio,
   UnidadGroup,
 } from "@/lib/canyp/types";
@@ -97,9 +97,7 @@ export function GestionarDialog({
   open: boolean;
   onOpenChange: (o: boolean) => void;
 }) {
-  const navigate = useNavigate();
   const { data: socios = [] } = useSocios();
-  const { data: aranceles = [] } = useAranceles();
 
   const updateParcela = useUpdateParcela();
   const deleteMembresia = useDeleteMembresia();
@@ -107,7 +105,6 @@ export function GestionarDialog({
   const createSocio = useCreateSocio();
   const setBatchEstado = useSetBatchEstado();
   const setBatchVencimiento = useSetBatchVencimiento();
-  const createPago = useCreatePago();
 
   const socioMap = useMemo(() => new Map(socios.map((s: Socio) => [s.id, s])), [socios]);
   const esCabaña = area === "Cabañeros";
@@ -122,6 +119,7 @@ export function GestionarDialog({
   const [nuevoDni, setNuevoDni] = useState("");
   const [nuevoTel, setNuevoTel] = useState("");
   const [nuevoMail, setNuevoMail] = useState("");
+  const [cobrando, setCobrando] = useState(false);
 
   // Socios que aún no integran la unidad (para "Agregar existente").
   const agregables = socios.filter((s: Socio) => !grupo.members.some((m) => m.socioId === s.id));
@@ -244,35 +242,6 @@ export function GestionarDialog({
         onError: () => toast.error("Error al cambiar el vencimiento"),
       },
     );
-  }
-
-  function cobrarUnidad() {
-    const titular = grupo.members.find((m) => m.rol === "Titular") ?? grupo.members[0];
-    if (!titular) {
-      toast.error("La unidad no tiene socios");
-      return;
-    }
-    const items = itemsParaMembresias(grupo.members, aranceles);
-    const payload = buildUnitPago({
-      titular: { socioId: titular.socioId, membresiaId: titular.id },
-      integrantes: grupo.members
-        .filter((m) => m.id !== titular.id)
-        .map((m) => ({ membresiaId: m.id })),
-      medio: "Transferencia",
-      items,
-    });
-    if (!payload) {
-      toast.error("No hay aranceles para cobrar esta unidad");
-      return;
-    }
-    createPago.mutate(payload, {
-      onSuccess: () => {
-        onOpenChange(false);
-        toast.success("Unidad cobrada: membresías renovadas por 12 meses.");
-        navigate({ to: "/pagos", search: { nuevo: "1", socioId: titular.socioId } });
-      },
-      onError: () => toast.error("Error al cobrar la unidad"),
-    });
   }
 
   return (
@@ -470,7 +439,11 @@ export function GestionarDialog({
         </div>
 
         <DialogFooter className="gap-2 sm:justify-between">
-          <Button variant="outline" onClick={cobrarUnidad} disabled={grupo.members.length === 0}>
+          <Button
+            variant="outline"
+            onClick={() => setCobrando(true)}
+            disabled={grupo.members.length === 0}
+          >
             Cobrar unidad
           </Button>
           <div className="flex gap-2">
@@ -480,6 +453,8 @@ export function GestionarDialog({
           </div>
         </DialogFooter>
       </DialogContent>
+
+      <CobrarUnidadDialog grupo={grupo} open={cobrando} onOpenChange={setCobrando} />
     </Dialog>
   );
 }
@@ -487,8 +462,6 @@ export function GestionarDialog({
 // ---------------------------------------------------------------------------
 // NuevaUnidadDialog
 // ---------------------------------------------------------------------------
-
-const PREDIOS: Predio[] = ["Almafuerte", "Embalse"];
 
 export function NuevaUnidadDialog({
   area,
@@ -504,7 +477,6 @@ export function NuevaUnidadDialog({
   const tipo = tipoPorArea(area);
 
   const [nombre, setNombre] = useState("");
-  const [predio, setPredio] = useState<Predio>("Almafuerte");
   const [categoria, setCategoria] = useState<CategoriaParcela | "">("");
   const [vencimiento, setVencimiento] = useState("");
   const [filas, setFilas] = useState<NuevaUnidadSocio[]>([{ nombre: "", dni: "" }]);
@@ -518,7 +490,6 @@ export function NuevaUnidadDialog({
       nombre,
       tipo,
       ...(categoria ? { categoria } : {}),
-      predio,
       vencimiento,
       socios: filas,
     });
@@ -562,18 +533,9 @@ export function NuevaUnidadDialog({
             </div>
             <div>
               <Label>Predio</Label>
-              <Select value={predio} onValueChange={(v) => setPredio(v as Predio)}>
-                <SelectTrigger className="mt-1.5">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PREDIOS.map((p) => (
-                    <SelectItem key={p} value={p}>
-                      {p}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="mt-1.5 flex h-9 items-center rounded-md border border-input bg-muted/40 px-3 text-sm text-muted-foreground">
+                {predioDeTipo(tipo)}
+              </div>
             </div>
             {esCabaña && (
               <div>
@@ -659,6 +621,129 @@ export function NuevaUnidadDialog({
           </Button>
           <Button onClick={crear} disabled={importParcelas.isPending}>
             Crear unidad
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CobrarUnidadDialog — confirmación de cobro por unidad (tarjeta + Gestionar)
+// ---------------------------------------------------------------------------
+
+export function CobrarUnidadDialog({
+  grupo,
+  open,
+  onOpenChange,
+}: {
+  grupo: UnidadGroup;
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+}) {
+  const navigate = useNavigate();
+  const { data: aranceles = [] } = useAranceles();
+  const { data: socios = [] } = useSocios();
+  const createPago = useCreatePago();
+  const [medio, setMedio] = useState("Transferencia");
+
+  const socioMap = useMemo(() => new Map(socios.map((s) => [s.id, s])), [socios]);
+  const items = itemsParaMembresias(grupo.members, aranceles, grupo.categoria);
+  const total = items.reduce((s, i) => s + i.montoAplicado, 0);
+  const titular = grupo.members.find((m) => m.rol === "Titular") ?? grupo.members[0];
+  const arancel = items[0] ? aranceles.find((a) => a.id === items[0]!.arancelId) : undefined;
+
+  function confirmar() {
+    if (!titular) {
+      toast.error("La unidad no tiene socios");
+      return;
+    }
+    const payload = buildUnitPago({
+      titular: { socioId: titular.socioId, membresiaId: titular.id },
+      integrantes: grupo.members
+        .filter((m) => m.id !== titular.id)
+        .map((m) => ({ membresiaId: m.id })),
+      medio,
+      items,
+    });
+    if (!payload) {
+      toast.error("No hay aranceles para cobrar esta unidad");
+      return;
+    }
+    createPago.mutate(payload, {
+      onSuccess: () => {
+        onOpenChange(false);
+        toast.success("Unidad cobrada: membresías renovadas por 12 meses.");
+        navigate({ to: "/pagos" });
+      },
+      onError: () => toast.error("Error al cobrar la unidad"),
+    });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Cobrar unidad</DialogTitle>
+          <DialogDescription>
+            {grupo.nombre} · {grupo.predio}
+            {grupo.categoria ? ` · ${grupo.categoria}` : ""}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div>
+            <Label>Socios ({grupo.members.length})</Label>
+            <ul className="mt-1.5 space-y-1">
+              {grupo.members.map((m) => {
+                const s = socioMap.get(m.socioId);
+                return (
+                  <li key={m.id} className="flex items-center justify-between text-sm">
+                    <span>{s?.nombre ?? m.socioId}</span>
+                    <span className="text-xs text-muted-foreground">{m.rol ?? "—"}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+
+          <div className="rounded-md border border-border p-3 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Arancel</span>
+              <span className="text-right">{arancel?.nombre ?? "—"}</span>
+            </div>
+            <div className="mt-2 flex items-center justify-between border-t border-border pt-2">
+              <span className="text-muted-foreground">Total</span>
+              <span className="font-semibold tabular-nums">{formatARS(total)}</span>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              El comprobante queda a nombre del titular y renueva a los {grupo.members.length}{" "}
+              miembros de la unidad.
+            </p>
+          </div>
+
+          <div>
+            <Label>Medio de pago</Label>
+            <Select value={medio} onValueChange={setMedio}>
+              <SelectTrigger className="mt-1.5">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Transferencia">Transferencia</SelectItem>
+                <SelectItem value="Efectivo">Efectivo</SelectItem>
+                <SelectItem value="Débito">Débito</SelectItem>
+                <SelectItem value="Crédito">Crédito</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancelar
+          </Button>
+          <Button onClick={confirmar} disabled={createPago.isPending || items.length === 0}>
+            Confirmar pago
           </Button>
         </DialogFooter>
       </DialogContent>

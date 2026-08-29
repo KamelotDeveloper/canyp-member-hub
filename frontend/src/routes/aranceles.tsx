@@ -30,6 +30,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { PageHeader } from "@/components/canyp/AppShell";
+import { AreaBadge } from "@/components/canyp/AreaBadge";
 import { formatARS, formatFecha } from "@/lib/canyp/utils";
 import { useAranceles, useCreateArancel, useUpdateArancelMonto } from "@/lib/canyp/queries";
 import type { Area, Predio } from "@/lib/canyp/types";
@@ -109,7 +110,9 @@ function ArancelesPage() {
             {aranceles.map((a) => (
               <TableRow key={a.id}>
                 <TableCell className="font-medium">{a.nombre}</TableCell>
-                <TableCell className="text-xs">{a.area}</TableCell>
+                <TableCell className="text-xs">
+                  <AreaBadge area={a.area} />
+                </TableCell>
                 <TableCell className="text-xs">{a.predio}</TableCell>
                 <TableCell className="text-xs tabular-nums">
                   {formatFecha(a.vigenteDesde)}

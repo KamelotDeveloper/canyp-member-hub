@@ -29,19 +29,20 @@ from backend.models import (
 # ── Parcelas ──────────────────────────────────────────────
 
 PARCELAS = [
-    {"id": "pa1", "nombre": "Cabaña A", "tipo": TipoParcela.CABANA, "tamano": "40m²", "predio": Predio.EMBALSE},
-    {"id": "pa2", "nombre": "Cabaña B", "tipo": TipoParcela.CABANA, "tamano": "55m²", "predio": Predio.EMBALSE},
+    # ── Almafuerte: cabañas (Cabañeros) ──
+    {"id": "pa1", "nombre": "Cabaña A", "tipo": TipoParcela.CABANA, "tamano": "40m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA},
+    {"id": "pa2", "nombre": "Cabaña B", "tipo": TipoParcela.CABANA, "tamano": "55m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.MEDIANA},
     {"id": "pa3", "nombre": "Cabaña C", "tipo": TipoParcela.CABANA, "tamano": "35m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA},
     {"id": "pa4", "nombre": "Cabaña D", "tipo": TipoParcela.CABANA, "tamano": "45m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.MEDIANA},
-    {"id": "pa5", "nombre": "Balsa Principal", "tipo": TipoParcela.BALSA, "tamano": "12m", "predio": Predio.EMBALSE},
-    {"id": "pa6", "nombre": "Balsa Norte", "tipo": TipoParcela.BALSA, "tamano": "10m", "predio": Predio.ALMAFUERTE},
-    # ── Almafuerte shared units (RQ16: ≥4 cabañas across all categorías, 2-3 balsas) ──
     {"id": "pa7", "nombre": "Cabaña E", "tipo": TipoParcela.CABANA, "tamano": "60m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.ESPECIAL},
     {"id": "pa8", "nombre": "Cabaña F", "tipo": TipoParcela.CABANA, "tamano": "70m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.GRANDE},
-    {"id": "pa9", "nombre": "Balsa Sur", "tipo": TipoParcela.BALSA, "tamano": "11m", "predio": Predio.ALMAFUERTE},
-    # ── Guardería (RQ16: Chica + Grande) ──
+    # ── Almafuerte: guardería ──
     {"id": "pa10", "nombre": "Guardería Chica", "tipo": TipoParcela.GUARDERIA, "tamano": None, "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA},
     {"id": "pa11", "nombre": "Guardería Grande", "tipo": TipoParcela.GUARDERIA, "tamano": None, "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.GRANDE},
+    # ── Embalse: balsas (Balseros) ──
+    {"id": "pa5", "nombre": "Balsa Principal", "tipo": TipoParcela.BALSA, "tamano": "12m", "predio": Predio.EMBALSE},
+    {"id": "pa6", "nombre": "Balsa Norte", "tipo": TipoParcela.BALSA, "tamano": "10m", "predio": Predio.EMBALSE},
+    {"id": "pa9", "nombre": "Balsa Sur", "tipo": TipoParcela.BALSA, "tamano": "11m", "predio": Predio.EMBALSE},
 ]
 
 # ── Socios ────────────────────────────────────────────────
@@ -71,28 +72,28 @@ def _build_membresias():
     t = _today()
     return [
         # ── Active: far from expiry ──
-        {"id": "m1",  "socioId": "s1",  "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=180), "parcelaId": "pa5"},
-        {"id": "m2",  "socioId": "s2",  "area": Area.CABANEROS,   "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=365), "parcelaId": "pa1"},
+        {"id": "m1",  "socioId": "s1",  "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=180), "parcelaId": "pa5", "rol": RolMembresia.TITULAR},
+        {"id": "m2",  "socioId": "s2",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=365), "parcelaId": "pa1", "rol": RolMembresia.TITULAR},
         {"id": "m3",  "socioId": "s3",  "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=240), "parcelaId": "pa10"},
         # ── Active: por vencer (≤30 days) ──
-        {"id": "m4",  "socioId": "s4",  "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=15),  "parcelaId": "pa5"},
+        {"id": "m4",  "socioId": "s4",  "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=15),  "parcelaId": "pa5", "rol": RolMembresia.INTEGRANTE},
         {"id": "m5",  "socioId": "s5",  "area": Area.WINDSURF,    "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=7),   "parcelaId": None},
         # ── Expired (vencida via date logic) ──
-        {"id": "m6",  "socioId": "s6",  "area": Area.CABANEROS,   "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t - timedelta(days=30),  "parcelaId": "pa2"},
-        {"id": "m7",  "socioId": "s7",  "area": Area.BALSEROS,    "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t - timedelta(days=90),  "parcelaId": "pa6", "rol": RolMembresia.INTEGRANTE},
+        {"id": "m6",  "socioId": "s6",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t - timedelta(days=30),  "parcelaId": "pa2", "rol": RolMembresia.TITULAR},
+        {"id": "m7",  "socioId": "s7",  "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t - timedelta(days=90),  "parcelaId": "pa6", "rol": RolMembresia.INTEGRANTE},
         # ── Expiring tomorrow (edge case) ──
-        {"id": "m8",  "socioId": "s8",  "area": Area.GUARDERIA,   "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=1),   "parcelaId": None},
+        {"id": "m8",  "socioId": "s8",  "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=1),   "parcelaId": None},
         # ── Suspended ──
-        {"id": "m9",  "socioId": "s9",  "area": Area.WINDSURF,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.SUSPENDIDA,   "vencimiento": t + timedelta(days=60),  "parcelaId": None},
+        {"id": "m9",  "socioId": "s9",  "area": Area.WINDSURF,    "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.SUSPENDIDA,   "vencimiento": t + timedelta(days=60),  "parcelaId": None},
         {"id": "m10", "socioId": "s10", "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.SUSPENDIDA,   "vencimiento": t - timedelta(days=15),  "parcelaId": "pa3", "rol": RolMembresia.INTEGRANTE},
         # ── Baja ──
         {"id": "m11", "socioId": "s11", "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.BAJA,         "vencimiento": t - timedelta(days=180), "parcelaId": None},
         # ── More active (different areas) ──
-        {"id": "m12", "socioId": "s12", "area": Area.WINDSURF,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=200), "parcelaId": None},
+        {"id": "m12", "socioId": "s12", "area": Area.WINDSURF,    "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=200), "parcelaId": None},
         {"id": "m13", "socioId": "s1",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=120), "parcelaId": "pa4", "rol": RolMembresia.TITULAR},
-        {"id": "m14", "socioId": "s2",  "area": Area.GUARDERIA,   "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=90),  "parcelaId": None},
-        {"id": "m15", "socioId": "s3",  "area": Area.WINDSURF,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=5),   "parcelaId": None},
-        {"id": "m16", "socioId": "s4",  "area": Area.BALSEROS,    "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=400), "parcelaId": "pa6", "rol": RolMembresia.TITULAR},
+        {"id": "m14", "socioId": "s2",  "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=90),  "parcelaId": None},
+        {"id": "m15", "socioId": "s3",  "area": Area.WINDSURF,    "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=5),   "parcelaId": None},
+        {"id": "m16", "socioId": "s4",  "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=400), "parcelaId": "pa6", "rol": RolMembresia.TITULAR},
         # ── Almafuerte shared units (RQ16): Titular + Integrantes, mixed vencimientos ──
         {"id": "m17", "socioId": "s5",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=25),  "parcelaId": "pa3", "rol": RolMembresia.TITULAR},
         {"id": "m18", "socioId": "s12", "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t - timedelta(days=35),  "parcelaId": "pa4", "rol": RolMembresia.INTEGRANTE},
@@ -100,9 +101,11 @@ def _build_membresias():
         {"id": "m20", "socioId": "s8",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=210), "parcelaId": "pa7", "rol": RolMembresia.INTEGRANTE},
         {"id": "m21", "socioId": "s9",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=150), "parcelaId": "pa8", "rol": RolMembresia.TITULAR},
         {"id": "m22", "socioId": "s11", "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=6),   "parcelaId": "pa8", "rol": RolMembresia.INTEGRANTE},
-        {"id": "m23", "socioId": "s2",  "area": Area.BALSEROS,    "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=20),  "parcelaId": "pa9", "rol": RolMembresia.TITULAR},
-        {"id": "m24", "socioId": "s3",  "area": Area.BALSEROS,    "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t - timedelta(days=10),  "parcelaId": "pa9", "rol": RolMembresia.INTEGRANTE},
+        {"id": "m23", "socioId": "s2",  "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=20),  "parcelaId": "pa9", "rol": RolMembresia.TITULAR},
+        {"id": "m24", "socioId": "s3",  "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t - timedelta(days=10),  "parcelaId": "pa9", "rol": RolMembresia.INTEGRANTE},
         {"id": "m25", "socioId": "s8",  "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=180), "parcelaId": "pa11"},
+        {"id": "m26", "socioId": "s7",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=90),  "parcelaId": "pa1", "rol": RolMembresia.INTEGRANTE},
+        {"id": "m27", "socioId": "s4",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=45),  "parcelaId": "pa2", "rol": RolMembresia.INTEGRANTE},
     ]
 
 
@@ -111,11 +114,6 @@ def _build_aranceles():
     t = _today()
     return [
         {"id": "a1", "nombre": "Cuota Balseros Embalse",        "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "monto": 18500.0,  "vigenteDesde": t - timedelta(days=90), "historico": [{"monto": 15000.0, "vigenteDesde": str(t - timedelta(days=365))}]},
-        {"id": "a2", "nombre": "Cuota Balseros Almafuerte",     "area": Area.BALSEROS,    "predio": Predio.ALMAFUERTE, "monto": 16000.0,  "vigenteDesde": t - timedelta(days=60), "historico": []},
-        {"id": "a3", "nombre": "Cuota Cabañeros Embalse",       "area": Area.CABANEROS,   "predio": Predio.EMBALSE,    "monto": 25000.0,  "vigenteDesde": t - timedelta(days=120),"historico": []},
-        {"id": "a4", "nombre": "Cuota Cabañeros Almafuerte",    "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "monto": 22000.0,  "vigenteDesde": t - timedelta(days=90), "historico": []},
-        {"id": "a5", "nombre": "Cuota Guardería Embalse",       "area": Area.GUARDERIA,   "predio": Predio.EMBALSE,    "monto": 12000.0,  "vigenteDesde": t - timedelta(days=45), "historico": []},
-        {"id": "a6", "nombre": "Cuota Windsurf Embalse",        "area": Area.WINDSURF,    "predio": Predio.EMBALSE,    "monto": 20000.0,  "vigenteDesde": t - timedelta(days=30), "historico": [{"monto": 17000.0, "vigenteDesde": str(t - timedelta(days=365))}]},
         {"id": "a7", "nombre": "Cuota Windsurf Almafuerte",     "area": Area.WINDSURF,    "predio": Predio.ALMAFUERTE, "monto": 19000.0,  "vigenteDesde": t - timedelta(days=15), "historico": []},
         # ── Almafuerte per-categoría aranceles (RQ13/RQ16: resolver_monto finds rows) ──
         {"id": "a8",  "nombre": "Cuota Cabañeros Almafuerte Chica",    "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA,    "monto": 15000.0, "vigenteDesde": t - timedelta(days=90), "historico": []},
@@ -136,12 +134,12 @@ def _build_pagos():
             "items": [{"id": "pi1", "arancelId": "a1", "membresiaId": "m1",  "montoAplicado": 18500.0, "arancelNombre": "Cuota Balseros Embalse"}],
         },
         {
-            "pago": {"id": "p2", "numero": "0002-00000002", "socioId": "s2",  "fecha": t - timedelta(days=30), "medio": "transferencia",  "total": 25000.0},
-            "items": [{"id": "pi2", "arancelId": "a3", "membresiaId": "m2",  "montoAplicado": 25000.0, "arancelNombre": "Cuota Cabañeros Embalse"}],
+            "pago": {"id": "p2", "numero": "0002-00000002", "socioId": "s2",  "fecha": t - timedelta(days=30), "medio": "transferencia",  "total": 15000.0},
+            "items": [{"id": "pi2", "arancelId": "a8", "membresiaId": "m2",  "montoAplicado": 15000.0, "arancelNombre": "Cuota Cabañeros Almafuerte Chica"}],
         },
         {
-            "pago": {"id": "p3", "numero": "0003-00000003", "socioId": "s3",  "fecha": t - timedelta(days=7),  "medio": "mercadopago",    "total": 12000.0},
-            "items": [{"id": "pi3", "arancelId": "a5", "membresiaId": "m3",  "montoAplicado": 12000.0, "arancelNombre": "Cuota Guardería Embalse"}],
+            "pago": {"id": "p3", "numero": "0003-00000003", "socioId": "s3",  "fecha": t - timedelta(days=7),  "medio": "mercadopago",    "total": 10000.0},
+            "items": [{"id": "pi3", "arancelId": "a12", "membresiaId": "m3",  "montoAplicado": 10000.0, "arancelNombre": "Cuota Guardería Almafuerte Chica"}],
         },
         {
             "pago": {"id": "p4", "numero": "0004-00000004", "socioId": "s4",  "fecha": t - timedelta(days=2),  "medio": "transferencia",  "total": 18500.0},

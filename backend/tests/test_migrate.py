@@ -74,13 +74,13 @@ def legacy_db_path(tmp_path):
             VALUES ('s1', 'Ana', '30000001', '', '', '', '2025-01-01', 1),
                    ('s2', 'Luis', '30000002', '', '', '', '2025-01-01', 1);
             INSERT INTO parcelas (id, nombre, tipo, predio)
-            VALUES ('p1', 'Cabaña A', 'cabaña', 'Almafuerte');
+            VALUES ('p1', 'Cabaña A', 'CABANA', 'ALMAFUERTE');
             INSERT INTO membresias (id, "socioId", area, predio, estado, vencimiento, detalle, "parcelaId")
-            VALUES ('m1', 's1', 'Cabañeros', 'Almafuerte', 'activa', '2027-01-01', 'Titular', 'p1'),
-                   ('m2', 's2', 'Cabañeros', 'Almafuerte', 'activa', '2027-01-01', 'Integrante', 'p1'),
-                   ('m3', 's2', 'Windsurf', 'Almafuerte', 'activa', '2027-01-01', 'nota libre', NULL);
+            VALUES ('m1', 's1', 'CABANEROS', 'ALMAFUERTE', 'ACTIVA', '2027-01-01', 'Titular', 'p1'),
+                   ('m2', 's2', 'CABANEROS', 'ALMAFUERTE', 'ACTIVA', '2027-01-01', 'Integrante', 'p1'),
+                   ('m3', 's2', 'WINDSURF', 'ALMAFUERTE', 'ACTIVA', '2027-01-01', 'nota libre', NULL);
             INSERT INTO aranceles (id, nombre, area, predio, monto, "vigenteDesde", historico)
-            VALUES ('a1', 'Cabaña', 'Cabañeros', 'Almafuerte', 100.0, '2026-01-01', '[]');
+            VALUES ('a1', 'Cabaña', 'CABANEROS', 'ALMAFUERTE', 100.0, '2026-01-01', '[]');
             """
         )
         conn.commit()
@@ -126,7 +126,7 @@ class TestMigration:
             conn.close()
 
     def test_legacy_db_backfills_rol_from_detalle(self, legacy_db_path):
-        """detalle values 'Titular'/'Integrante' flow into rol and detalle clears."""
+        """detalle values 'Titular'/'Integrante' flow into rol (as enum NAMES) and detalle clears."""
         _run(legacy_db_path)
         conn = sqlite3.connect(legacy_db_path)
         try:
@@ -136,13 +136,38 @@ class TestMigration:
                     "SELECT id, rol, detalle FROM membresias"
                 )
             }
-            # Backfilled for unit memberships.
-            assert rows["m1"] == ("Titular", None)
-            assert rows["m2"] == ("Integrante", None)
+            # Backfilled for unit memberships — stored as the enum NAME.
+            assert rows["m1"] == ("TITULAR", None)
+            assert rows["m2"] == ("INTEGRANTE", None)
             # Non-role detalle (free text) is left untouched.
             assert rows["m3"] == (None, "nota libre")
         finally:
             conn.close()
+
+    def test_backfill_hydrates_through_orm(self, legacy_db_path):
+        """Backfilled rol values load back through SQLAlchemy as the enum members.
+
+        Regression: the backfill previously wrote the enum .value ("Titular"),
+        but the Enum column stores/reads NAMES, so hydration raised KeyError.
+        """
+        _run(legacy_db_path)
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from backend.models.enums import RolMembresia
+        from backend.models.membresia import Membresia
+
+        engine = create_engine(f"sqlite:///{legacy_db_path}")
+        session = sessionmaker(bind=engine)()
+        try:
+            by_id = {m.id: m for m in session.query(Membresia).all()}
+            assert by_id["m1"].rol == RolMembresia.TITULAR
+            assert by_id["m2"].rol == RolMembresia.INTEGRANTE
+            assert by_id["m3"].rol is None
+        finally:
+            session.close()
+            engine.dispose()
 
     def test_migration_is_idempotent_second_run_clean(self, legacy_db_path):
         """Running migrate twice is a no-op on the second run (no duplicates)."""
@@ -156,8 +181,8 @@ class TestMigration:
                 assert cols.count(col) == 1, f"duplicate column {table}.{col}"
 
             # No rows double-backfilled / no errors.
-            assert (conn.execute("SELECT COUNT(*) FROM membresias WHERE rol='Titular'").fetchone()[0]) == 1
-            assert (conn.execute("SELECT COUNT(*) FROM membresias WHERE rol='Integrante'").fetchone()[0]) == 1
+            assert (conn.execute("SELECT COUNT(*) FROM membresias WHERE rol='TITULAR'").fetchone()[0]) == 1
+            assert (conn.execute("SELECT COUNT(*) FROM membresias WHERE rol='INTEGRANTE'").fetchone()[0]) == 1
         finally:
             conn.close()
 

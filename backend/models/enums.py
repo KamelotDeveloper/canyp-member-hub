@@ -43,3 +43,13 @@ class CategoriaParcela(str, enum.Enum):
 class CanalNotificacion(str, enum.Enum):
     EMAIL = "email"
     WHATSAPP = "whatsapp"
+
+
+def predio_de_tipo(tipo: TipoParcela) -> Predio:
+    """Predio correcto para un tipo de parcela (regla del dominio).
+
+    Embalse aloja solo balsas; Almafuerte aloja cabañas y guardería.
+    """
+    if tipo == TipoParcela.BALSA:
+        return Predio.EMBALSE
+    return Predio.ALMAFUERTE

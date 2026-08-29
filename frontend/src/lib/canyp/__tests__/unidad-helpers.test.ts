@@ -11,12 +11,15 @@
 import { describe, expect, it } from "vitest";
 import {
   buildNuevaUnidadPayload,
+  esMembresiaCobrable,
   estadoCriticoDe,
   filtrarUnidades,
   itemsParaMembresias,
+  itemsParaMembresiasConParcelas,
   ORDEN_ESTADOS,
+  predioDeTipo,
 } from "../unidad-helpers";
-import type { Arancel, Membresia, UnidadGroup } from "../types";
+import type { Arancel, Membresia, Parcela, UnidadGroup } from "../types";
 
 describe("buildNuevaUnidadPayload", () => {
   it("builds a single-unit ImportPayload with first=Titular, rest=Integrantes", () => {
@@ -24,7 +27,6 @@ describe("buildNuevaUnidadPayload", () => {
       nombre: "Cabaña E",
       tipo: "cabaña",
       categoria: "Mediana",
-      predio: "Almafuerte",
       vencimiento: "2027-01-01",
       socios: [
         { nombre: "Ana", dni: "11111111" },
@@ -53,7 +55,6 @@ describe("buildNuevaUnidadPayload", () => {
       buildNuevaUnidadPayload({
         nombre: "  ",
         tipo: "cabaña",
-        predio: "Almafuerte",
         vencimiento: "",
         socios: [{ nombre: "Ana", dni: "1" }],
       }),
@@ -63,7 +64,6 @@ describe("buildNuevaUnidadPayload", () => {
       buildNuevaUnidadPayload({
         nombre: "Cabaña E",
         tipo: "cabaña",
-        predio: "Almafuerte",
         vencimiento: "",
         socios: [],
       }),
@@ -73,7 +73,6 @@ describe("buildNuevaUnidadPayload", () => {
       buildNuevaUnidadPayload({
         nombre: "Cabaña E",
         tipo: "cabaña",
-        predio: "Almafuerte",
         vencimiento: "",
         socios: [{ nombre: "", dni: "1" }],
       }),
@@ -84,7 +83,6 @@ describe("buildNuevaUnidadPayload", () => {
     const payload = buildNuevaUnidadPayload({
       nombre: "Balsa 1",
       tipo: "balsa",
-      predio: "Almafuerte",
       vencimiento: "",
       socios: [{ nombre: "Luis", dni: "33" }],
     });
@@ -93,6 +91,41 @@ describe("buildNuevaUnidadPayload", () => {
     expect(u.categoria).toBeUndefined();
     expect(u.miembros[0]!.socio.telefono).toBeUndefined();
     expect(u.miembros[0]!.vencimiento).toBeUndefined();
+    // predio se deriva del tipo: una balsa va a Embalse (regla del dominio)
+    expect(u.predio).toBe("Embalse");
+  });
+});
+
+describe("predioDeTipo", () => {
+  it("maps balsa -> Embalse and cabaña -> Almafuerte", () => {
+    expect(predioDeTipo("balsa")).toBe("Embalse");
+    expect(predioDeTipo("cabaña")).toBe("Almafuerte");
+  });
+});
+
+describe("esMembresiaCobrable", () => {
+  function memb(area: Membresia["area"], rol?: Membresia["rol"]): Membresia {
+    return {
+      id: "m1",
+      socioId: "s1",
+      area,
+      predio: area === "Balseros" ? "Embalse" : "Almafuerte",
+      estado: "activa",
+      vencimiento: "2099-01-01",
+      ...(rol ? { rol } : {}),
+    };
+  }
+
+  it("a unit membership is only cobrable by its Titular", () => {
+    expect(esMembresiaCobrable(memb("Cabañeros", "Titular"))).toBe(true);
+    expect(esMembresiaCobrable(memb("Cabañeros", "Integrante"))).toBe(false);
+    expect(esMembresiaCobrable(memb("Balseros", "Titular"))).toBe(true);
+    expect(esMembresiaCobrable(memb("Balseros", "Integrante"))).toBe(false);
+  });
+
+  it("non-unit memberships (Guardería/Windsurf) are always cobrable", () => {
+    expect(esMembresiaCobrable(memb("Guardería"))).toBe(true);
+    expect(esMembresiaCobrable(memb("Windsurf"))).toBe(true);
   });
 });
 
@@ -115,7 +148,7 @@ describe("itemsParaMembresias", () => {
   const aranceles: Arancel[] = [
     {
       id: "a1",
-      nombre: "Cabaña",
+      nombre: "Cuota Cabañeros (general)",
       area: "Cabañeros",
       predio: "Almafuerte",
       monto: 100,
@@ -124,37 +157,152 @@ describe("itemsParaMembresias", () => {
     },
     {
       id: "a2",
+      nombre: "Cabaña Chica",
+      area: "Cabañeros",
+      predio: "Almafuerte",
+      categoria: "Chica",
+      monto: 80,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+    },
+    {
+      id: "a3",
+      nombre: "Cabaña Mediana",
+      area: "Cabañeros",
+      predio: "Almafuerte",
+      categoria: "Mediana",
+      monto: 90,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+    },
+    {
+      id: "a4",
+      nombre: "Cabaña Especial",
+      area: "Cabañeros",
+      predio: "Almafuerte",
+      categoria: "Especial",
+      monto: 120,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+    },
+    {
+      id: "a5",
+      nombre: "Cabaña Grande",
+      area: "Cabañeros",
+      predio: "Almafuerte",
+      categoria: "Grande",
+      monto: 140,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+    },
+    {
+      id: "b1",
       nombre: "Balsa",
       area: "Balseros",
-      predio: "Almafuerte",
+      predio: "Embalse",
       monto: 150,
       vigenteDesde: "2020-01-01",
       historico: [],
     },
   ];
 
-  it("creates one item per (membresia, arancel) with the correct membresiaId", () => {
+  it("creates a single item for the whole unit (not per member)", () => {
     const items = itemsParaMembresias(
       [memb("m1", "Cabañeros", "Almafuerte"), memb("m2", "Cabañeros", "Almafuerte")],
       aranceles,
     );
-    expect(items).toHaveLength(2);
-    expect(items[0]!.membresiaId).toBe("m1");
-    expect(items[1]!.membresiaId).toBe("m2");
-    expect(items.every((i) => i.arancelId === "a1")).toBe(true);
+    // El arancel es por unidad/categoría, no por integrante → UN solo ítem.
+    expect(items).toHaveLength(1);
+    expect(items[0]!.arancelId).toBe("a1");
+    expect(items[0]!.montoAplicado).toBe(100);
   });
 
-  it("matches by area+predio, ignoring non-matching aranceles", () => {
-    const items = itemsParaMembresias([memb("m1", "Balseros", "Almafuerte")], aranceles);
+  it("discriminates by categoria: a cabaña Especial charges only the Especial arancel", () => {
+    const items = itemsParaMembresias(
+      [memb("m1", "Cabañeros", "Almafuerte"), memb("m2", "Cabañeros", "Almafuerte")],
+      aranceles,
+      "Especial",
+    );
     expect(items).toHaveLength(1);
-    expect(items[0]!.arancelId).toBe("a2");
-    expect(items[0]!.membresiaId).toBe("m1");
+    expect(items[0]!.arancelId).toBe("a4");
+    expect(items[0]!.montoAplicado).toBe(120);
+  });
+
+  it("falls back to the catch-all when no categoria arancel matches", () => {
+    const items = itemsParaMembresias([memb("m1", "Balseros", "Embalse")], aranceles, null);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.arancelId).toBe("b1");
     expect(items[0]!.montoAplicado).toBe(150);
   });
 
   it("returns an empty array when there are no members or aranceles", () => {
     expect(itemsParaMembresias([], aranceles)).toHaveLength(0);
     expect(itemsParaMembresias([memb("m1", "Cabañeros", "Almafuerte")], [])).toHaveLength(0);
+  });
+});
+
+describe("itemsParaMembresiasConParcelas", () => {
+  function membCon(membreId: string, parcelaId: string): Membresia {
+    return {
+      id: membreId,
+      socioId: "s",
+      area: "Cabañeros",
+      predio: "Almafuerte",
+      estado: "activa",
+      vencimiento: "2099-01-01",
+      parcelaId,
+    };
+  }
+  const catAranceles: Arancel[] = [
+    {
+      id: "c1",
+      nombre: "Chica",
+      area: "Cabañeros",
+      predio: "Almafuerte",
+      categoria: "Chica",
+      monto: 80,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+    },
+    {
+      id: "c2",
+      nombre: "Especial",
+      area: "Cabañeros",
+      predio: "Almafuerte",
+      categoria: "Especial",
+      monto: 120,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+    },
+    {
+      id: "c3",
+      nombre: "Grande",
+      area: "Cabañeros",
+      predio: "Almafuerte",
+      categoria: "Grande",
+      monto: 140,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+    },
+  ];
+  const catParcelas: Parcela[] = [
+    { id: "p1", nombre: "Cabaña E", tipo: "cabaña", predio: "Almafuerte", categoria: "Especial" },
+    { id: "p2", nombre: "Cabaña F", tipo: "cabaña", predio: "Almafuerte", categoria: "Grande" },
+  ];
+
+  it("resolves each membership's arancel from its own parcela categoria", () => {
+    const items = itemsParaMembresiasConParcelas(
+      [membCon("m1", "p1"), membCon("m2", "p2")],
+      catAranceles,
+      catParcelas,
+    );
+    expect(items).toHaveLength(2);
+    expect(items[0]!.membresiaId).toBe("m1");
+    expect(items[0]!.arancelId).toBe("c2"); // Especial
+    expect(items[0]!.montoAplicado).toBe(120);
+    expect(items[1]!.membresiaId).toBe("m2");
+    expect(items[1]!.arancelId).toBe("c3"); // Grande
+    expect(items[1]!.montoAplicado).toBe(140);
   });
 });
 

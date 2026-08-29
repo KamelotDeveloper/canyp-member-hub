@@ -183,8 +183,9 @@ export function setBatchVencimiento(parcelaId: string, vencimiento: string): Pro
 }
 
 /**
- * Arma el payload de cobro por unidad (RQ 14): un Pago con socioId = Titular y
- * un PagoItem por miembro, cada uno con SU membresiaId (nunca un id común).
+ * Arma el payload de cobro por unidad (RQ 14): un Pago a nombre del Titular,
+ * con UN único ítem (el arancel de la categoría de la unidad) y `membresiaIds`
+ * con TODOS los miembros para que el backend renueve a titulares e integrantes.
  * Retorna `null` si no hay titular o no hay ítems por cobrar.
  */
 export function buildUnitPago(params: {
@@ -193,7 +194,7 @@ export function buildUnitPago(params: {
   /** Resto de miembros a renovar junto al titular. */
   integrantes: { membresiaId: string }[];
   medio: string;
-  /** Monto aplicado (por defecto aplica un único arancel a todos). */
+  /** Ítem único del cobro (el arancel de la unidad). */
   items: { arancelId: string; arancelNombre: string; montoAplicado: number; membresiaId: string }[];
 }): CreatePagoInput | null {
   const items: PagoItemInput[] = params.items.map((it) => ({
@@ -208,6 +209,7 @@ export function buildUnitPago(params: {
     socioId: params.titular.socioId,
     medio: params.medio,
     items,
+    membresiaIds: [params.titular.membresiaId, ...params.integrantes.map((i) => i.membresiaId)],
     total: items.reduce((s, i) => s + i.montoAplicado, 0),
   };
 }
@@ -260,6 +262,8 @@ export interface CreatePagoInput {
   medio: string;
   items: PagoItemInput[];
   total: number;
+  /** Membresías a renovar (puede diferir de los ítems: cobro por unidad). */
+  membresiaIds?: string[];
 }
 
 export function createPago(data: CreatePagoInput): Promise<Pago> {
@@ -273,7 +277,7 @@ export function createPago(data: CreatePagoInput): Promise<Pago> {
       medio: data.medio,
       total: data.total,
       items: data.items,
-      membresiaIds: data.items.map((i) => i.membresiaId),
+      membresiaIds: data.membresiaIds ?? data.items.map((i) => i.membresiaId),
     }),
   });
 }
