@@ -6,3 +6,5 @@ pydantic-settings
 pytest
 httpx
 python-dateutil
+openpyxl
+python-multipart
