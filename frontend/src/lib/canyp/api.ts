@@ -194,6 +194,8 @@ export function buildUnitPago(params: {
   /** Resto de miembros a renovar junto al titular. */
   integrantes: { membresiaId: string }[];
   medio: string;
+  /** Nota opcional que se muestra en el comprobante. */
+  nota?: string;
   /** Ítem único del cobro (el arancel de la unidad). */
   items: { arancelId: string; arancelNombre: string; montoAplicado: number; membresiaId: string }[];
 }): CreatePagoInput | null {
@@ -208,6 +210,7 @@ export function buildUnitPago(params: {
   return {
     socioId: params.titular.socioId,
     medio: params.medio,
+    ...(params.nota ? { nota: params.nota } : {}),
     items,
     membresiaIds: [params.titular.membresiaId, ...params.integrantes.map((i) => i.membresiaId)],
     total: items.reduce((s, i) => s + i.montoAplicado, 0),
@@ -260,6 +263,8 @@ export function getPagos(params?: { socioId?: string }): Promise<Pago[]> {
 export interface CreatePagoInput {
   socioId: string;
   medio: string;
+  /** Nota opcional que se muestra en el comprobante. */
+  nota?: string;
   items: PagoItemInput[];
   total: number;
   /** Membresías a renovar (puede diferir de los ítems: cobro por unidad). */
@@ -276,6 +281,7 @@ export function createPago(data: CreatePagoInput): Promise<Pago> {
       fecha: hoy,
       medio: data.medio,
       total: data.total,
+      nota: data.nota,
       items: data.items,
       membresiaIds: data.membresiaIds ?? data.items.map((i) => i.membresiaId),
     }),

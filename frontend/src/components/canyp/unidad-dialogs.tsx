@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { useNavigate } from "@tanstack/react-router";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -646,6 +647,7 @@ export function CobrarUnidadDialog({
   const { data: socios = [] } = useSocios();
   const createPago = useCreatePago();
   const [medio, setMedio] = useState("Transferencia");
+  const [nota, setNota] = useState("");
 
   const socioMap = useMemo(() => new Map(socios.map((s) => [s.id, s])), [socios]);
   const items = itemsParaMembresias(grupo.members, aranceles, grupo.categoria);
@@ -664,6 +666,7 @@ export function CobrarUnidadDialog({
         .filter((m) => m.id !== titular.id)
         .map((m) => ({ membresiaId: m.id })),
       medio,
+      ...(nota.trim() ? { nota: nota.trim() } : {}),
       items,
     });
     if (!payload) {
@@ -735,6 +738,18 @@ export function CobrarUnidadDialog({
                 <SelectItem value="Crédito">Crédito</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+
+          <div>
+            <Label htmlFor="unidad-nota">Nota (opcional)</Label>
+            <Textarea
+              id="unidad-nota"
+              value={nota}
+              onChange={(e) => setNota(e.target.value)}
+              placeholder="Texto que se muestra en el comprobante"
+              className="mt-1.5"
+              rows={3}
+            />
           </div>
         </div>
 

@@ -25,6 +25,7 @@ def _pago_response(db: Session, pago: Pago) -> dict:
         "socioId": pago.socioId,
         "fecha": str(pago.fecha),
         "medio": pago.medio,
+        "nota": pago.nota,
         "total": pago.total,
         "items": [
             {
@@ -82,6 +83,7 @@ def create_pago(data: PagoCreate, db: Session = Depends(get_db)):
         fecha=data.fecha,
         medio=data.medio,
         total=data.total,
+        nota=data.nota,
     )
     db.add(pago)
     db.flush()  # get pago.id available for PagoItem FK

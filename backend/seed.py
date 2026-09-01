@@ -110,18 +110,22 @@ def _build_membresias():
 
 
 def _build_aranceles():
-    """One arancel per area+predio combination with realistic ARS amounts."""
+    """One arancel per area+predio combination with realistic ARS amounts.
+
+    Concepto (nombre) describes what the cuota covers — it is a descriptor,
+    not a separate amount. The total is a single item per unit/membresía.
+    """
     t = _today()
     return [
-        {"id": "a1", "nombre": "Cuota Balseros Embalse",        "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "monto": 18500.0,  "vigenteDesde": t - timedelta(days=90), "historico": [{"monto": 15000.0, "vigenteDesde": str(t - timedelta(days=365))}]},
-        {"id": "a7", "nombre": "Cuota Windsurf Almafuerte",     "area": Area.WINDSURF,    "predio": Predio.ALMAFUERTE, "monto": 19000.0,  "vigenteDesde": t - timedelta(days=15), "historico": []},
+        {"id": "a1", "nombre": "Amarre y Servicios",          "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "monto": 18500.0,  "vigenteDesde": t - timedelta(days=90), "historico": [{"monto": 15000.0, "vigenteDesde": str(t - timedelta(days=365))}]},
+        {"id": "a7", "nombre": "Cuota",                        "area": Area.WINDSURF,    "predio": Predio.ALMAFUERTE, "monto": 19000.0,  "vigenteDesde": t - timedelta(days=15), "historico": []},
         # ── Almafuerte per-categoría aranceles (RQ13/RQ16: resolver_monto finds rows) ──
-        {"id": "a8",  "nombre": "Cuota Cabañeros Almafuerte Chica",    "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA,    "monto": 15000.0, "vigenteDesde": t - timedelta(days=90), "historico": []},
-        {"id": "a9",  "nombre": "Cuota Cabañeros Almafuerte Mediana",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.MEDIANA,  "monto": 18500.0, "vigenteDesde": t - timedelta(days=90), "historico": []},
-        {"id": "a10", "nombre": "Cuota Cabañeros Almafuerte Especial", "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.ESPECIAL, "monto": 21000.0, "vigenteDesde": t - timedelta(days=60), "historico": []},
-        {"id": "a11", "nombre": "Cuota Cabañeros Almafuerte Grande",   "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.GRANDE,   "monto": 25000.0, "vigenteDesde": t - timedelta(days=60), "historico": []},
-        {"id": "a12", "nombre": "Cuota Guardería Almafuerte Chica",    "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA,    "monto": 10000.0, "vigenteDesde": t - timedelta(days=30), "historico": []},
-        {"id": "a13", "nombre": "Cuota Guardería Almafuerte Grande",   "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.GRANDE,   "monto": 14000.0, "vigenteDesde": t - timedelta(days=30), "historico": []},
+        {"id": "a8",  "nombre": "Parcela",                     "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA,    "monto": 15000.0, "vigenteDesde": t - timedelta(days=90), "historico": []},
+        {"id": "a9",  "nombre": "Parcela",                     "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.MEDIANA,  "monto": 18500.0, "vigenteDesde": t - timedelta(days=90), "historico": []},
+        {"id": "a10", "nombre": "Parcela",                     "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.ESPECIAL, "monto": 21000.0, "vigenteDesde": t - timedelta(days=60), "historico": []},
+        {"id": "a11", "nombre": "Parcela",                     "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.GRANDE,   "monto": 25000.0, "vigenteDesde": t - timedelta(days=60), "historico": []},
+        {"id": "a12", "nombre": "Cuota",                       "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA,    "monto": 10000.0, "vigenteDesde": t - timedelta(days=30), "historico": []},
+        {"id": "a13", "nombre": "Cuota",                       "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.GRANDE,   "monto": 14000.0, "vigenteDesde": t - timedelta(days=30), "historico": []},
     ]
 
 
@@ -131,19 +135,19 @@ def _build_pagos():
     return [
         {
             "pago": {"id": "p1", "numero": "0001-00000001", "socioId": "s1",  "fecha": t - timedelta(days=60), "medio": "efectivo",       "total": 18500.0},
-            "items": [{"id": "pi1", "arancelId": "a1", "membresiaId": "m1",  "montoAplicado": 18500.0, "arancelNombre": "Cuota Balseros Embalse"}],
+            "items": [{"id": "pi1", "arancelId": "a1", "membresiaId": "m1",  "montoAplicado": 18500.0, "arancelNombre": "Amarre y Servicios"}],
         },
         {
             "pago": {"id": "p2", "numero": "0002-00000002", "socioId": "s2",  "fecha": t - timedelta(days=30), "medio": "transferencia",  "total": 15000.0},
-            "items": [{"id": "pi2", "arancelId": "a8", "membresiaId": "m2",  "montoAplicado": 15000.0, "arancelNombre": "Cuota Cabañeros Almafuerte Chica"}],
+            "items": [{"id": "pi2", "arancelId": "a8", "membresiaId": "m2",  "montoAplicado": 15000.0, "arancelNombre": "Parcela"}],
         },
         {
             "pago": {"id": "p3", "numero": "0003-00000003", "socioId": "s3",  "fecha": t - timedelta(days=7),  "medio": "mercadopago",    "total": 10000.0},
-            "items": [{"id": "pi3", "arancelId": "a12", "membresiaId": "m3",  "montoAplicado": 10000.0, "arancelNombre": "Cuota Guardería Almafuerte Chica"}],
+            "items": [{"id": "pi3", "arancelId": "a12", "membresiaId": "m3",  "montoAplicado": 10000.0, "arancelNombre": "Cuota"}],
         },
         {
             "pago": {"id": "p4", "numero": "0004-00000004", "socioId": "s4",  "fecha": t - timedelta(days=2),  "medio": "transferencia",  "total": 18500.0},
-            "items": [{"id": "pi4", "arancelId": "a1", "membresiaId": "m4",  "montoAplicado": 18500.0, "arancelNombre": "Cuota Balseros Embalse"}],
+            "items": [{"id": "pi4", "arancelId": "a1", "membresiaId": "m4",  "montoAplicado": 18500.0, "arancelNombre": "Amarre y Servicios"}],
         },
     ]
 

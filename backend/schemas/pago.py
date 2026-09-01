@@ -29,6 +29,7 @@ class PagoBase(OrmConfig, BaseModel):
     fecha: date
     medio: str
     total: float
+    nota: str | None = None
 
 
 class PagoCreate(PagoBase):

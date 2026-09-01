@@ -83,6 +83,7 @@ function PagosPage() {
   const [socioId, setSocioId] = useState<string>("");
   const [seleccion, setSeleccion] = useState<string[]>([]);
   const [medio, setMedio] = useState("Transferencia");
+  const [nota, setNota] = useState("");
   const [comprobante, setComprobante] = useState<Pago | null>(null);
   const [fSocio, setFSocio] = useState("todos");
   const [fArea, setFArea] = useState("todas");
@@ -131,6 +132,7 @@ function PagosPage() {
       {
         socioId,
         medio,
+        ...(nota.trim() ? { nota: nota.trim() } : {}),
         items: items.map((i) => ({
           arancelId: i.arancelId,
           membresiaId: i.membresiaId, // cada ítem renueva SU membresía (RQ 14)
@@ -356,6 +358,17 @@ function PagosPage() {
                 </SelectContent>
               </Select>
             </div>
+
+            <div>
+              <Label htmlFor="pago-nota">Nota (opcional)</Label>
+              <Input
+                id="pago-nota"
+                value={nota}
+                onChange={(e) => setNota(e.target.value)}
+                placeholder="Texto que se muestra en el comprobante"
+                className="mt-1.5"
+              />
+            </div>
           </div>
 
           <DialogFooter>
@@ -414,6 +427,11 @@ function PagosPage() {
                   </tr>
                 </tbody>
               </table>
+              {comprobante.nota && (
+                <p className="mt-3 rounded-md bg-secondary p-2 text-xs whitespace-pre-wrap">
+                  {comprobante.nota}
+                </p>
+              )}
               <p className="mt-3 text-[11px] text-muted-foreground">
                 Abonado con {comprobante.medio}
               </p>

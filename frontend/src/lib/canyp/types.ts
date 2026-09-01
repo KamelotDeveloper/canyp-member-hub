@@ -67,6 +67,7 @@ export interface Pago {
   socioId: string;
   fecha: string;
   medio: string;
+  nota?: string;
   items: PagoItem[];
   total: number;
   membresiaIds: string[];

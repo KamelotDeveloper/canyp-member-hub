@@ -17,6 +17,7 @@ class Pago(Base):
     fecha: Mapped[date] = mapped_column(Date, nullable=False)
     medio: Mapped[str] = mapped_column(String, nullable=False)
     total: Mapped[float] = mapped_column(Float, nullable=False)
+    nota: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class PagoItem(Base):
