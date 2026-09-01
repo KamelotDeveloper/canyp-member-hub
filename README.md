@@ -77,6 +77,13 @@ pnpm test       # vitest
 - `GET/POST /api/notificaciones`
 - `GET /api/dashboard/stats`, `GET /api/dashboard/alertas`
 
+### Importación masiva (socios)
+
+- `GET /api/socios/import/template` — plantilla XLSX descargable.
+- `POST /api/socios/import/preview` — sube un archivo `.csv/.xlsx` (≤ 10 MB) y devuelve las filas validadas para revisar/editar.
+- `POST /api/socios/import/execute` — ejecuta la importación de las filas editadas (validate + dedupe server-side, re-validación por fila).
+- Requiere las dependencias `openpyxl` (plantilla/lectura XLSX) y `python-multipart` (subida de archivos) en `backend/requirements.txt`.
+
 ## Notas de entorno (Windows)
 
 - `pnpm` en PowerShell/start de procesos se invoca como `pnpm.cmd`

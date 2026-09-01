@@ -1,11 +1,12 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Plus, Search } from "lucide-react";
+import { FileUp, Plus, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ImportModal, type ImportColumnSpec } from "@/components/import";
 import {
   Dialog,
   DialogContent,
@@ -53,8 +54,19 @@ export const Route = createFileRoute("/socios/")({
 
 const prioridad: EstadoVisual[] = ["vencida", "por_vencer", "suspendida", "activa", "baja"];
 
+/** Editable columns shown in the import preview (Spanish label + canonical field). */
+const importColumns: ImportColumnSpec[] = [
+  { label: "Nombre", field: "nombre" },
+  { label: "DNI", field: "dni" },
+  { label: "Teléfono", field: "telefono" },
+  { label: "Email", field: "email" },
+  { label: "Dirección", field: "direccion" },
+  { label: "Fecha de alta", field: "fechaAlta" },
+  { label: "Activo", field: "activo" },
+];
+
 function SociosPage() {
-  const { data: socios = [], isLoading: loadingSocios } = useSocios();
+  const { data: socios = [], isLoading: loadingSocios, refetch: refetchSocios } = useSocios();
   const { data: membresias = [] } = useMembresias();
   const createSocio = useCreateSocio();
   const [q, setQ] = useState("");
@@ -62,6 +74,7 @@ function SociosPage() {
   const [area, setArea] = useState("todas");
   const [estado, setEstado] = useState("todos");
   const [open, setOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [form, setForm] = useState({
     nombre: "",
     dni: "",
@@ -127,9 +140,14 @@ function SociosPage() {
         title="Socios"
         subtitle="Padrón general del club. Ingresá a la ficha para ver membresías y pagos."
         actions={
-          <Button onClick={() => setOpen(true)}>
-            <Plus className="mr-2 size-4" /> Nuevo socio
-          </Button>
+          <>
+            <Button variant="outline" onClick={() => setImportOpen(true)}>
+              <FileUp className="mr-2 size-4" /> Importar socios
+            </Button>
+            <Button onClick={() => setOpen(true)}>
+              <Plus className="mr-2 size-4" /> Nuevo socio
+            </Button>
+          </>
         }
       />
 
@@ -312,6 +330,15 @@ function SociosPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ImportModal
+        resource="socios"
+        resourceLabel="socios"
+        columnSpec={importColumns}
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImportComplete={() => refetchSocios()}
+      />
     </>
   );
 }
