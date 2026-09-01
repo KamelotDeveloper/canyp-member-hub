@@ -9,6 +9,7 @@ import type {
   Arancel,
   Area,
   EstadoMembresia,
+  ExecuteResult,
   ImportPayload,
   ImportResponse,
   Membresia,
@@ -17,6 +18,8 @@ import type {
   Pago,
   PagoItemInput,
   Predio,
+  PreviewResult,
+  RowData,
   Socio,
 } from "./types";
 
@@ -47,6 +50,32 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     throw new ApiError(res.status, body.detail ?? res.statusText);
   }
   if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+/**
+ * Fetch variant for requests that must NOT set `Content-Type: application/json`.
+ *
+ * Used for multipart/form-data (the browser computes the boundary) and for
+ * responses like Blob downloads. Error handling mirrors `apiFetch` (ApiError
+ * with the backend `detail`), but it does not auto-parse JSON.
+ */
+export async function apiFetchRaw(path: string, init?: RequestInit): Promise<Response> {
+  const url = `${BASE_URL}${path}`;
+  const res = await fetch(url, init);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new ApiError(res.status, body.detail ?? res.statusText);
+  }
+  return res;
+}
+
+/**
+ * Multipart variant: sends FormData without forcing a JSON Content-Type so the
+ * browser can set the boundary. Resolves to the parsed JSON response.
+ */
+export async function apiFetchMultipart<T>(path: string, formData: FormData): Promise<T> {
+  const res = await apiFetchRaw(path, { method: "POST", body: formData });
   return res.json() as Promise<T>;
 }
 
@@ -323,4 +352,37 @@ export function createNotificaciones(items: CreateNotificacionInput[]): Promise<
 
 export function getDashboard(): Promise<Record<string, unknown>> {
   return apiFetch<Record<string, unknown>>("/dashboard");
+}
+
+// ---------------------------------------------------------------------------
+// Import masivo (generic resource-based bulk import; `socios` wired in backend)
+// ---------------------------------------------------------------------------
+
+/**
+ * Download the import template XLSX for a resource.
+ * Returns the raw bytes so the caller can trigger a browser download.
+ */
+export function getImportTemplate(resource: string): Promise<Blob> {
+  return apiFetchRaw(`/${resource}/import/template`).then((res) => res.blob());
+}
+
+/**
+ * Upload a file for server-side parse + validation.
+ * `resource` is the slash-less plural resource name, e.g. "socios".
+ */
+export function previewImport(resource: string, file: File): Promise<PreviewResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return apiFetchMultipart<PreviewResult>(`/${resource}/import/preview`, formData);
+}
+
+/**
+ * Execute an import batch from the validated rows the client edited/skipped.
+ * Server re-validates each row and persists via savepoints.
+ */
+export function executeImport(resource: string, rows: RowData[]): Promise<ExecuteResult> {
+  return apiFetch<ExecuteResult>(`/${resource}/import/execute`, {
+    method: "POST",
+    body: JSON.stringify({ rows }),
+  });
 }

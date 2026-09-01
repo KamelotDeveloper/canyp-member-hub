@@ -146,3 +146,61 @@ export interface ImportResponse {
   socios: string[];
   membresias: string[];
 }
+
+// ---------------------------------------------------------------------------
+// Import masivo (generic 3-step data import engine, backend-authoritative)
+// Shapes mirror backend/schemas/import_bulk.py (OrmConfig camelCase in JSON).
+// ---------------------------------------------------------------------------
+
+/** Mapped headers: source header text -> canonical field (mirrors dict[str,str]). */
+export type HeadersMapping = Record<string, string>;
+
+/** A single per-row, per-field validation error. */
+export interface FieldError {
+  fila: number;
+  campo: string;
+  error: string;
+}
+
+/** A single row sent for execution; client edits canonical fields and may skip. */
+export interface RowData {
+  skip?: boolean;
+  /** Canonical camelCase fields of the resource's row schema. */
+  data: Record<string, unknown>;
+}
+
+/** Aggregate statistics for a preview. */
+export interface ImportStats {
+  total: number;
+  validas: number;
+  conErrores: number;
+  aSaltar: number;
+}
+
+/** Canonical preview response: mapped columns, rows, warnings, stats, errors. */
+export interface PreviewResult {
+  resource: string;
+  /** Detected header -> canonical field. */
+  columns: HeadersMapping;
+  ignoredColumns: string[];
+  /** Canonical normalized rows (flat field dicts; client wraps into RowData to execute). */
+  rows: Record<string, unknown>[];
+  stats: ImportStats;
+  errors: FieldError[];
+}
+
+/** Per-row execute outcome. */
+export interface ExecuteRow {
+  fila: number;
+  outcome: "importado" | "fallido" | "omitido";
+  id?: string;
+  errores: FieldError[];
+}
+
+/** Canonical execute response. */
+export interface ExecuteResult {
+  importados: number;
+  fallidos: number;
+  omitidos: number;
+  rows: ExecuteRow[];
+}

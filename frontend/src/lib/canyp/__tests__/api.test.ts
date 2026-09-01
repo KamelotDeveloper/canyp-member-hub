@@ -9,16 +9,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   apiFetch,
+  apiFetchMultipart,
+  apiFetchRaw,
   buildUnitPago,
   createPago,
   deleteMembresia,
+  executeImport,
+  getImportTemplate,
   getParcelas,
   getSocios,
   importParcelas,
+  previewImport,
   setBatchEstado,
   setBatchVencimiento,
 } from "../api";
-import type { ImportPayload, Parcela, Socio } from "../types";
+import type { ExecuteResult, ImportPayload, Parcela, PreviewResult, Socio } from "../types";
 
 // ---------------------------------------------------------------------------
 // Compile-time: exports exist with the expected shapes
@@ -329,5 +334,118 @@ describe("unidades compartidas API (PR 3)", () => {
     const body = JSON.parse(init.body as string);
     expect(body.items.map((i: { membresiaId: string }) => i.membresiaId)).toEqual(["m1", "m2"]);
     expect(body.membresiaIds).toEqual(["m1", "m2"]);
+  });
+});
+
+describe("import masivo API (PR 3)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("previewImport POSTs multipart FormData with the file and returns a PreviewResult", async () => {
+    const preview: PreviewResult = {
+      resource: "socios",
+      columns: { "Nombre y Apellido": "nombre", Dni: "dni" },
+      ignoredColumns: [],
+      rows: [
+        {
+          nombre: "Ana",
+          dni: "123",
+          telefono: "",
+          email: "",
+          direccion: "",
+          fechaAlta: "2024-01-01",
+          activo: true,
+        },
+      ],
+      stats: { total: 1, validas: 1, conErrores: 0, aSaltar: 0 },
+      errors: [],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(preview), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const file = new File(["a,b\n1,2"], "x.csv", { type: "text/csv" });
+    const result = await previewImport("socios", file);
+
+    expect(result).toEqual(preview);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/socios/import/preview");
+    expect(init.method).toBe("POST");
+    // No forced JSON Content-Type; body must be FormData (browser sets boundary).
+    expect(typeof init.body).toBe("object");
+    expect(init.body).toBeInstanceOf(FormData);
+  });
+
+  it("executeImport POSTs {rows} as JSON and returns an ExecuteResult (201)", async () => {
+    const execute: ExecuteResult = {
+      importados: 1,
+      fallidos: 0,
+      omitidos: 0,
+      rows: [{ fila: 1, outcome: "importado", id: "s1", errores: [] }],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(execute), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await executeImport("socios", [
+      { data: { nombre: "Ana", dni: "123" }, skip: false },
+    ]);
+
+    expect(result).toEqual(execute);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/socios/import/execute");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      rows: [{ data: { nombre: "Ana", dni: "123" }, skip: false }],
+    });
+  });
+
+  it("getImportTemplate returns the XLSX as a Blob from the template endpoint", async () => {
+    const blob = new Blob([new Uint8Array([0x50, 0x4b])], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(blob, { status: 200, headers: { "Content-Type": blob.type } }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getImportTemplate("socios");
+    expect(result).toBeInstanceOf(Blob);
+    expect(result.type).toBe("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit | undefined];
+    expect(url).toBe("/api/socios/import/template");
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+
+  it("apiFetchRaw and apiFetchMultipart throw ApiError using the backend detail", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ detail: "El archivo supera el límite" }), {
+          status: 413,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(apiFetchMultipart("/socios/import/preview", new FormData())).rejects.toMatchObject(
+      {
+        name: "ApiError",
+        status: 413,
+        message: "El archivo supera el límite",
+      },
+    );
+    await expect(apiFetchRaw("/x")).rejects.toMatchObject({ name: "ApiError", status: 413 });
   });
 });

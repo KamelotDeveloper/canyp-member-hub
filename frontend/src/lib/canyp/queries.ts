@@ -9,10 +9,13 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as api from "./api";
 import type {
   EstadoMembresia,
+  ExecuteResult,
   ImportPayload,
   Membresia,
   Notificacion,
   Parcela,
+  PreviewResult,
+  RowData,
   Socio,
 } from "./types";
 
@@ -333,6 +336,37 @@ export function useCreatePago() {
       qc.invalidateQueries({ queryKey: ["membresias"] });
       // La renovación puede modificar aranceles aplicables; refrescar en paralelo.
       qc.invalidateQueries({ queryKey: ["aranceles"] });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// MUTATIONS — Import masivo (generic resource-based bulk import)
+// ---------------------------------------------------------------------------
+
+/** Upload a file for server-side parse + validation (step 1 -> 2). */
+export function usePreviewImport() {
+  return useMutation({
+    mutationFn: ({ resource, file }: { resource: string; file: File }): Promise<PreviewResult> =>
+      api.previewImport(resource, file),
+  });
+}
+
+/** Execute an import batch from validated rows; refreshes the target cache. */
+export function useExecuteImport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      resource,
+      rows,
+    }: {
+      resource: string;
+      rows: RowData[];
+    }): Promise<ExecuteResult> => api.executeImport(resource, rows),
+    onSuccess: () => {
+      // Importing socios currently only touches the socios list; broaden to
+      // membresias if a future resource links rows to memberships.
+      qc.invalidateQueries({ queryKey: ["socios"] });
     },
   });
 }
