@@ -161,6 +161,55 @@ class TestImportUnidades:
         )
         assert m_luis.rol == RolMembresia.INTEGRANTE
 
+    def test_import_propagates_arancel_id_to_membresias(self, test_client, test_db):
+        """An unidad with arancelId carries it to every created membresia."""
+        payload = {
+            "unidades": [
+                {
+                    "nombre": "Cabaña Arancel",
+                    "tipo": "cabaña",
+                    "categoria": "Grande",
+                    "predio": "Almafuerte",
+                    "arancelId": "a_fijo",
+                    "miembros": [
+                        {
+                            "socio": {"nombre": "Rita", "dni": "88888888"},
+                            "rol": "Titular",
+                            "vencimiento": "2026-12-01",
+                        },
+                        {
+                            "socio": {"nombre": "Jorge", "dni": "99999999"},
+                            "rol": "Integrante",
+                            "vencimiento": "2026-12-01",
+                        },
+                    ],
+                }
+            ]
+        }
+        resp = test_client.post("/api/parcelas/import", json=payload)
+        assert resp.status_code == 200
+        assert len(resp.json()["membresias"]) == 2
+
+        rita = test_db.query(Socio).filter(Socio.dni == "88888888").first()
+        m_rita = (
+            test_db.query(Membresia).filter(Membresia.socioId == rita.id).first()
+        )
+        assert m_rita.arancelId == "a_fijo"
+
+        jorge = test_db.query(Socio).filter(Socio.dni == "99999999").first()
+        m_jorge = (
+            test_db.query(Membresia).filter(Membresia.socioId == jorge.id).first()
+        )
+        assert m_jorge.arancelId == "a_fijo"
+
+    def test_import_without_arancel_id_defaults_null(self, test_client, test_db):
+        test_client.post("/api/parcelas/import", json=IMPORT_PAYLOAD)
+        ana = test_db.query(Socio).filter(Socio.dni == "11111111").first()
+        m_ana = (
+            test_db.query(Membresia).filter(Membresia.socioId == ana.id).first()
+        )
+        assert m_ana.arancelId is None
+
     def test_import_validation_error_rolls_back(self, test_client, test_db):
         """An invalid row (bad rol) returns 422 and nothing is persisted."""
         bad_payload = {

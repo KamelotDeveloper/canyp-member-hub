@@ -13,7 +13,7 @@ class Socio(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     nombre: Mapped[str] = mapped_column(String, nullable=False)
-    dni: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    dni: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     telefono: Mapped[str] = mapped_column(String, nullable=False, default="")
     email: Mapped[str] = mapped_column(String, nullable=False, default="")
     direccion: Mapped[str] = mapped_column(String, nullable=False, default="")

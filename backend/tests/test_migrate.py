@@ -22,10 +22,10 @@ from backend.migrate import migrate
 
 @pytest.fixture()
 def legacy_db_path(tmp_path):
-    """A pre-migration DB missing rol/categoria columns, with legacy detalle rows.
+    """A pre-migration DB missing rol/categoria/nota columns, with legacy detalle rows.
 
-    Creates minimal membresias/parcelas/aranceles tables exactly as they
-    exist BEFORE this change (no rol/categoria), plus a membresiás row whose
+    Creates minimal membresias/parcelas/aranceles/pagos tables exactly as they
+    exist BEFORE this change (no rol/categoria/nota), plus a membresiás row whose
     `detalle` holds a legacy role value to exercise the backfill.
     """
     path = str(tmp_path / "legacy.db")
@@ -81,6 +81,14 @@ def legacy_db_path(tmp_path):
                    ('m3', 's2', 'WINDSURF', 'ALMAFUERTE', 'ACTIVA', '2027-01-01', 'nota libre', NULL);
             INSERT INTO aranceles (id, nombre, area, predio, monto, "vigenteDesde", historico)
             VALUES ('a1', 'Cabaña', 'CABANEROS', 'ALMAFUERTE', 100.0, '2026-01-01', '[]');
+            CREATE TABLE pagos (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                numero VARCHAR NOT NULL,
+                "socioId" VARCHAR NOT NULL REFERENCES socios (id),
+                fecha DATE NOT NULL,
+                medio VARCHAR NOT NULL,
+                total FLOAT NOT NULL
+            );
             """
         )
         conn.commit()
@@ -107,12 +115,14 @@ NEW_COLUMNS = {
     ("membresias", "rol"),
     ("parcelas", "categoria"),
     ("aranceles", "categoria"),
+    ("pagos", "nota"),
+    ("membresias", "arancelId"),
 }
 
 
 class TestMigration:
-    def test_legacy_db_adds_all_three_columns(self, legacy_db_path):
-        """Migrating a legacy DB adds rol + both categoria columns."""
+    def test_legacy_db_adds_all_new_columns(self, legacy_db_path):
+        """Migrating a legacy DB adds rol, both categoria, pagos.nota, arancelId."""
         _run(legacy_db_path)
         conn = sqlite3.connect(legacy_db_path)
         try:
@@ -121,6 +131,8 @@ class TestMigration:
             # Columns must be nullable (additive, backward-compatible).
             for row in conn.execute("PRAGMA table_info(membresias)"):
                 if row[1] == "rol":
+                    assert row[3] == 0  # notnull == 0
+                if row[1] == "arancelId":
                     assert row[3] == 0  # notnull == 0
         finally:
             conn.close()
@@ -186,8 +198,9 @@ class TestMigration:
         finally:
             conn.close()
 
-        # Second run performed no column additions.
+        # Second run performed no column additions / no table recreation.
         assert all("added" not in a for a in second), f"expected no-op, got: {second}"
+        assert all("converted" not in a for a in second), f"expected no-op, got: {second}"
 
     def test_fresh_db_with_columns_runs_clean(self, tmp_path):
         """A fresh DB (columns already present via create_all) -> clean no-op."""
@@ -205,9 +218,17 @@ class TestMigration:
         try:
             for table, col in NEW_COLUMNS:
                 assert col in _columns(conn, table)
+            # socios.dni must remain nullable (never re-added as NOT NULL).
+            dni_notnull = [
+                row[3] for row in conn.execute("PRAGMA table_info(socios)") if row[1] == "dni"
+            ]
+            assert dni_notnull == [0], "socios.dni must stay nullable"
         finally:
             conn.close()
-        assert all("already present" in a for a in actions), f"unexpected: {actions}"
+        # Columns that exist are no-ops; dni is already nullable.
+        assert all(
+            "already present" in a or "already nullable" in a for a in actions
+        ), f"unexpected: {actions}"
 
 
 # ---------------------------------------------------------------------------

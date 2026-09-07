@@ -126,6 +126,7 @@ def import_parcelas(data: ImportPayload, db: Session = Depends(get_db)):
                 vencimiento=miembro.vencimiento or date.today(),
                 rol=miembro.rol,
                 parcelaId=parcela.id,
+                arancelId=unidad.arancelId,
             )
             db.add(membresia)
             created_membresias.append(membresia.id)
@@ -188,9 +189,10 @@ def update_parcela(parcela_id: str, data: ParcelaUpdate, db: Session = Depends(g
 
 @router.delete("/{parcela_id}", status_code=204)
 def delete_parcela(parcela_id: str, db: Session = Depends(get_db)):
-    """Delete a parcela."""
+    """Delete a parcela and all its associated memberships."""
     parcela = db.query(Parcela).filter(Parcela.id == parcela_id).first()
     if parcela is None:
         raise HTTPException(status_code=404, detail=f"Parcela {parcela_id} not found")
+    db.query(Membresia).filter(Membresia.parcelaId == parcela_id).delete()
     db.delete(parcela)
     db.commit()

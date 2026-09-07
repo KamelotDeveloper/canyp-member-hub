@@ -9,7 +9,7 @@ from backend.schemas.common import OrmConfig
 
 class SocioBase(OrmConfig, BaseModel):
     nombre: str
-    dni: str
+    dni: str = ""
     telefono: str = ""
     email: str = ""
     direccion: str = ""
@@ -22,6 +22,7 @@ class SocioCreate(SocioBase):
     id: str | None = None
     # fechaAlta is server-defaulted to today when omitted (frontend doesn't send it)
     fechaAlta: date | None = None
+    dni: str | None = None
 
 
 class SocioUpdate(BaseModel):

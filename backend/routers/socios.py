@@ -155,11 +155,48 @@ def update_socio(socio_id: str, data: SocioUpdate, db: Session = Depends(get_db)
 
 @router.delete("/{socio_id}", status_code=204)
 def delete_socio(socio_id: str, db: Session = Depends(get_db)):
-    """Delete a socio."""
+    """Delete a socio.
+
+    Before deleting, for every unit where this socio is Titular, the first
+    Integrante (by Membresia.id ascending as a proxy for creation order —
+    there is no created_at column) is promoted to Titular.  If the unit has
+    no other members the Titular role is simply lost when the membership is
+    deleted.
+    """
     socio = db.query(Socio).filter(Socio.id == socio_id).first()
     if socio is None:
         raise HTTPException(status_code=404, detail=f"Socio {socio_id} not found")
-    # Cascade: delete dependents before socio
+
+    # Promote Titular → first Integrante in every unit where this socio is Titular.
+    titular_membresias = (
+        db.query(Membresia)
+        .filter(Membresia.socioId == socio_id, Membresia.rol == "Titular")
+        .all()
+    )
+    for tm in titular_membresias:
+        # Build the unit filter: same parcelaId (when set) or same area+predio.
+        if tm.parcelaId:
+            unit_filter = (
+                (Membresia.parcelaId == tm.parcelaId)
+                & (Membresia.socioId != socio_id)
+            )
+        else:
+            unit_filter = (
+                (Membresia.parcelaId.is_(None))
+                & (Membresia.area == tm.area)
+                & (Membresia.predio == tm.predio)
+                & (Membresia.socioId != socio_id)
+            )
+        successor = (
+            db.query(Membresia)
+            .filter(unit_filter)
+            .order_by(Membresia.id.asc())
+            .first()
+        )
+        if successor:
+            successor.rol = "Titular"
+
+    # Cascade: delete dependents before socio.
     db.query(Membresia).filter(Membresia.socioId == socio_id).delete()
     db.query(Notificacion).filter(Notificacion.socioId == socio_id).delete()
     db.delete(socio)

@@ -15,14 +15,21 @@ def resolver_monto(
     area: Area,
     predio: Predio,
     categoria: CategoriaParcela | None,
+    arancel_id: str | None = None,
 ) -> Arancel | None:
     """Resolve the applicable Arancel for area+predio+categoria.
 
     Priority:
+      0. explicit arancel_id (when given and the Arancel still exists)
       1. exact categoria match (when categoria is not None)
       2. catch-all row where categoria IS NULL for the same area+predio
       3. None
     """
+    if arancel_id is not None:
+        directo = db.query(Arancel).filter(Arancel.id == arancel_id).first()
+        if directo is not None:
+            return directo
+
     if categoria is not None:
         exact = (
             db.query(Arancel)

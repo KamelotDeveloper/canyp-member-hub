@@ -266,6 +266,70 @@ class TestDeleteMembresiaPreservesSocio:
         assert test_client.get("/api/membresias/m1").status_code == 200
 
 
+class TestSocioIdValidation:
+    """Server-side socioId FK validation when SQLite FK is off in prod."""
+
+    def test_update_membresia_with_unknown_socioid_422(self, test_client, test_db):
+        _seed_unit(test_db)
+        resp = test_client.put("/api/membresias/m1", json={"socioId": "does-not-exist"})
+        assert resp.status_code == 422
+        assert "does-not-exist" in resp.json()["detail"]
+
+    def test_update_membresia_with_existing_socioid_ok(self, test_client, test_db):
+        _seed_unit(test_db)
+        resp = test_client.put("/api/membresias/m2", json={"socioId": "s1"})
+        assert resp.status_code == 200
+        assert resp.json()["socioId"] == "s1"
+
+
+class TestDeleteTitularPromotion:
+    """DELETE promotes the first remaining member to Titular (RQ 10 mirror)."""
+
+    def test_delete_titular_promotes_first_integrante(self, test_client, test_db):
+        _seed_unit(test_db)
+        assert test_client.delete("/api/membresias/m1").status_code == 204
+        assert test_client.get("/api/membresias/m1").status_code == 404
+        m2 = test_client.get("/api/membresias/m2").json()
+        assert m2["rol"] == "Titular"
+
+    def test_delete_solo_titular_204(self, test_client, test_db):
+        socio1 = Socio(
+            id="s1", nombre="Ana", dni="30111111", fechaAlta=date(2024, 1, 1)
+        )
+        test_db.add(socio1)
+        test_db.commit()
+        parcela = Parcela(
+            id="p1",
+            nombre="Cabaña E",
+            tipo="cabaña",
+            predio=Predio.ALMAFUERTE,
+            categoria=CategoriaParcela.MEDIANA,
+        )
+        test_db.add(parcela)
+        test_db.commit()
+        m1 = Membresia(
+            id="m1",
+            socioId="s1",
+            area=Area.CABANEROS,
+            predio=Predio.ALMAFUERTE,
+            estado=EstadoMembresia.ACTIVA,
+            vencimiento=date(2026, 1, 1),
+            rol=RolMembresia.TITULAR,
+            parcelaId="p1",
+        )
+        test_db.add(m1)
+        test_db.commit()
+        resp = test_client.delete("/api/membresias/m1")
+        assert resp.status_code == 204
+        assert test_client.get("/api/membresias/m1").status_code == 404
+
+    def test_delete_integrante_keeps_titular(self, test_client, test_db):
+        _seed_unit(test_db)
+        assert test_client.delete("/api/membresias/m2").status_code == 204
+        m1 = test_client.get("/api/membresias/m1").json()
+        assert m1["rol"] == "Titular"
+
+
 class TestParcelaIdValidation:
     """Server-side parcelaId FK validation when SQLite FK is off in prod."""
 

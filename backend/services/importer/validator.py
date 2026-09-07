@@ -175,6 +175,12 @@ def validate_rows(
                 else:
                     seen.add(norm_value)
 
+        # Resource resolve hook: cross-row/DB lookups (e.g. socio exists,
+        # arancel nombre -> arancelId). Needs a live DB session.
+        resolve = config.get("resolve")
+        if resolve and db is not None and validated_data is not None:
+            row_errors.extend(resolve(validated_data, db, fila))
+
         if row_errors:
             errors.extend(row_errors)
         else:

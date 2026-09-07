@@ -30,35 +30,36 @@ def _xlsx_two_sheets() -> bytes:
     wb = Workbook()
     ws1 = wb.active
     ws1.title = "Sheet1"
-    ws1.append(["Nombre y Apellido", "Dni"])
-    ws1.append(["Ana", "30111111"])
+    ws1.append(["Nombre y Apellido", "Dni", "Teléfono"])
+    ws1.append(["Ana", "30111111", "3511234567"])
     ws2 = wb.create_sheet("Sheet2")
-    ws2.append(["Nombre y Apellido", "Dni"])
-    ws2.append(["IGNORADA", "00000000"])
+    ws2.append(["Nombre y Apellido", "Dni", "Teléfono"])
+    ws2.append(["IGNORADA", "00000000", "0"])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
 
 
-CSV_HEADER = "Nombre y Apellido,Dni"
+# Canonical header for socios imports. Teléfono is now required (nombre too).
+CSV_HEADER = "Nombre y Apellido,Dni,Teléfono"
 
 
 class TestParserDelimiters:
     def test_csv_comma(self):
-        rows = parse_file("a.csv", _csv_bytes(f"{CSV_HEADER}\nAna,30111111\n"))
-        assert rows[0] == ["Nombre y Apellido", "Dni"]
-        assert rows[1] == ["Ana", "30111111"]
+        rows = parse_file("a.csv", _csv_bytes(f"{CSV_HEADER}\nAna,30111111,3511234567\n"))
+        assert rows[0] == ["Nombre y Apellido", "Dni", "Teléfono"]
+        assert rows[1] == ["Ana", "30111111", "3511234567"]
 
     def test_csv_semicolon_preserves_embedded_commas(self):
-        text = "Nombre y Apellido;Dni;Dirección\nAna, María;30111111;Calle 1\n"
+        text = "Nombre y Apellido;Dni;Teléfono;Dirección\nAna, María;30111111;3511234567;Calle 1\n"
         rows = parse_file("a.csv", _csv_bytes(text))
         # Semicolon is the delimiter; embedded commas inside the name survive.
-        assert rows[1] == ["Ana, María", "30111111", "Calle 1"]
+        assert rows[1] == ["Ana, María", "30111111", "3511234567", "Calle 1"]
 
     def test_csv_tab(self):
-        text = "Nombre y Apellido\tDni\nAna\t30111111\n"
+        text = "Nombre y Apellido\tDni\tTeléfono\nAna\t30111111\t3511234567\n"
         rows = parse_file("a.csv", _csv_bytes(text))
-        assert rows[1] == ["Ana", "30111111"]
+        assert rows[1] == ["Ana", "30111111", "3511234567"]
 
     def test_unsupported_extension_rejected(self):
         try:
@@ -70,14 +71,14 @@ class TestParserDelimiters:
 
 class TestEncodingCascade:
     def test_utf8_bom_stripped(self):
-        raw = b"\xef\xbb\xbfNombre y Apellido,Dni\nAna,30111111\n"
+        raw = "\ufeffNombre y Apellido,Dni,Teléfono\nAna,30111111,3511234567\n".encode("utf-8")
         rows = parse_file("a.csv", raw)
         assert rows[0][0] == "Nombre y Apellido"  # no BOM prefix
-        assert rows[1] == ["Ana", "30111111"]
+        assert rows[1] == ["Ana", "30111111", "3511234567"]
 
     def test_latin1_fallback_preserves_accents(self):
         # "Müller" in Latin-1 is invalid UTF-8, forcing the Latin-1 fallback.
-        raw = "Nombre y Apellido,Dni\nMüller,30111111\n".encode("latin-1")
+        raw = "Nombre y Apellido,Dni,Teléfono\nMüller,30111111,3511234567\n".encode("latin-1")
         rows = parse_file("a.csv", raw)
         assert rows[1][0] == "Müller"
 
@@ -85,8 +86,8 @@ class TestEncodingCascade:
 class TestXlsx:
     def test_first_sheet_only(self):
         rows = parse_file("a.xlsx", _xlsx_two_sheets())
-        assert rows[0] == ["Nombre y Apellido", "Dni"]
-        assert rows[1] == ["Ana", "30111111"]
+        assert rows[0] == ["Nombre y Apellido", "Dni", "Teléfono"]
+        assert rows[1] == ["Ana", "30111111", "3511234567"]
         assert len(rows) == 2  # Sheet2 content was ignored
 
 
@@ -108,10 +109,10 @@ class TestNormalizers:
 class TestHeaderMappingPreview:
     """Spanish header -> English field mapping via the preview pipeline."""
 
-    CSVCASE = "Nombre y Apellido,Dni,Referencia"
+    CSVCASE = "Nombre y Apellido,Dni,Teléfono,Referencia"
 
     def _preview(self):
-        text = f"{self.CSVCASE}\nAna,30111111,x\n"
+        text = f"{self.CSVCASE}\nAna,30111111,3511234567,x\n"
         from sqlalchemy.orm import Session  # noqa: F401
 
         # db=None is acceptable for preview dedupe (no DB preload).
@@ -129,10 +130,11 @@ class TestHeaderMappingPreview:
         assert "Referencia" not in result.rows[0]
 
     def test_english_header_valid(self):
-        text = "nombre,dni\nAna,30111111\n"
+        text = "nombre,dni,telefono\nAna,30111111,3511111111\n"
         result = preview_file("a.csv", _csv_bytes(text), "socios", db=None)
         assert result.columns["nombre"] == "nombre"
         assert result.rows[0]["dni"] == "30111111"
+        assert result.rows[0]["telefono"] == "3511111111"
 
 
 class TestValidation:
@@ -140,18 +142,23 @@ class TestValidation:
         return preview_file("a.csv", _csv_bytes(text), "socios", db=None)
 
     def test_missing_nombre_is_error(self):
-        result = self._result_from(f"{CSV_HEADER}\n,30111111\n")
+        result = self._result_from(f"{CSV_HEADER}\n,30111111,3511111111\n")
         assert result.stats.con_errores == 1
         assert any(e.campo == "nombre" for e in result.errors)
 
+    def test_missing_telefono_is_error(self):
+        result = self._result_from(f"{CSV_HEADER}\nAna,30111111,\n")
+        assert result.stats.con_errores == 1
+        assert any(e.campo == "telefono" for e in result.errors)
+
     def test_optional_fields_defaulted(self):
-        result = self._result_from(f"{CSV_HEADER}\nAna,30111111\n")
+        result = self._result_from(f"{CSV_HEADER}\nAna,30111111,3511111111\n")
         row = result.rows[0]
         assert row["activo"] is True
         assert row["fechaAlta"]  # defaults to today
 
     def test_invalid_date_flags_row(self):
-        result = self._result_from(f"{CSV_HEADER},Fecha de Alta\nAna,30111111,31/13/2027\n")
+        result = self._result_from(f"{CSV_HEADER},Fecha de Alta\nAna,30111111,3511111111,31/13/2027\n")
         assert result.stats.con_errores == 1
         assert any(e.campo == "fechaAlta" for e in result.errors)
 
@@ -161,7 +168,7 @@ class TestDedupe:
         return preview_file("a.csv", _csv_bytes(text), "socios", db=db)
 
     def test_in_file_duplicate_dni_flagged(self):
-        result = self._validate(f"{CSV_HEADER}\nAna,30111111\nLuis,30111111\n")
+        result = self._validate(f"{CSV_HEADER}\nAna,30111111,3511111111\nLuis,30111111,3512222222\n")
         # First row valid, second is an in-file duplicate. stats.con_errores==1.
         assert result.stats.con_errores == 1
         assert len(result.rows) == 1
@@ -176,7 +183,7 @@ class TestExecuteEndpoints:
         rows = []
         for i in range(1, 11):
             dni = "4000%04d" % i
-            rows.append({"data": {"nombre": f"Persona{i}", "dni": dni}})
+            rows.append({"data": {"nombre": f"Persona{i}", "dni": dni, "telefono": f"351{i:07d}"}})
         # Row 4 reuses row 1's dni (both index 0 -> fila 2, index 3 -> fila 5).
         rows[3]["data"]["dni"] = rows[0]["data"]["dni"]
 
@@ -205,14 +212,14 @@ class TestExecuteEndpoints:
         from backend.models.socio import Socio
 
         test_db.add(
-            Socio(id="s_x", nombre="Existente", dni="50112233", fechaAlta=date(2020, 1, 1))
+            Socio(id="s_x", nombre="Existente", dni="50112233", telefono="3510000000", fechaAlta=date(2020, 1, 1))
         )
         test_db.commit()
 
         resp = test_client.post(
             "/api/socios/import/execute",
             json={
-                "rows": [{"data": {"nombre": "Nuevo", "dni": "50112233"}}]
+                "rows": [{"data": {"nombre": "Nuevo", "dni": "50112233", "telefono": "3511111111"}}]
             },
         )
         assert resp.status_code == 201
@@ -234,7 +241,7 @@ class TestImportEndpoints:
         assert resp.content[:2] == b"PK"  # XLSX (zip) magic bytes
 
     def test_preview_returns_preview_result(self, test_client):
-        csv_data = _csv_bytes(f"{CSV_HEADER}\nAna,30111111\nLuis,30222222\n")
+        csv_data = _csv_bytes(f"{CSV_HEADER}\nAna,30111111,3511111111\nLuis,30222222,3512222222\n")
         resp = test_client.post(
             "/api/socios/import/preview",
             files={"file": ("socios.csv", csv_data, "text/csv")},
@@ -252,8 +259,8 @@ class TestImportEndpoints:
             "/api/socios/import/execute",
             json={
                 "rows": [
-                    {"data": {"nombre": "Ana", "dni": "60111111"}},
-                    {"data": {"nombre": "Luis", "dni": "60222222"}},
+                    {"data": {"nombre": "Ana", "dni": "60111111", "telefono": "3511111111"}},
+                    {"data": {"nombre": "Luis", "dni": "60222222", "telefono": "3512222222"}},
                 ]
             },
         )
@@ -277,7 +284,7 @@ class TestLimits:
     def test_too_many_rows_rejected(self, test_client):
         # 10001 data rows + header = 10002 > 10000 limit -> ParseError -> 400.
         lines = [CSV_HEADER]
-        lines += [f"Persona{i},4{i:08d}" for i in range(MAX_PARSEABLE_ROWS + 1)]
+        lines += [f"Persona{i},4{i:08d},351{i:07d}" for i in range(MAX_PARSEABLE_ROWS + 1)]
         csv_data = _csv_bytes("\n".join(lines) + "\n")
         resp = test_client.post(
             "/api/socios/import/preview",
@@ -288,7 +295,7 @@ class TestLimits:
 
     def test_preview_caps_at_5000_rows(self, test_client):
         lines = [CSV_HEADER]
-        lines += [f"Persona{i},5{i:08d}" for i in range(6000)]
+        lines += [f"Persona{i},5{i:08d},351{i:07d}" for i in range(6000)]
         csv_data = _csv_bytes("\n".join(lines) + "\n")
         resp = test_client.post(
             "/api/socios/import/preview",
@@ -298,7 +305,7 @@ class TestLimits:
         assert len(resp.json()["rows"]) == MAX_PREVIEW_ROWS
 
     def test_execute_rejects_too_many_rows(self, test_client):
-        rows = [{"data": {"nombre": f"P{i}", "dni": f"7{i:08d}"}} for i in range(MAX_PARSEABLE_ROWS + 1)]
+        rows = [{"data": {"nombre": f"P{i}", "dni": f"7{i:08d}", "telefono": f"351{i:07d}"}} for i in range(MAX_PARSEABLE_ROWS + 1)]
         resp = test_client.post("/api/socios/import/execute", json={"rows": rows})
         assert resp.status_code == 400
         assert "10.000" in resp.json()["detail"] or str(MAX_PARSEABLE_ROWS) in resp.json()["detail"]

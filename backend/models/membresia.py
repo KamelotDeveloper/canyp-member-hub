@@ -25,3 +25,4 @@ class Membresia(Base):
     parcelaId: Mapped[str | None] = mapped_column(
         String, ForeignKey("parcelas.id"), nullable=True
     )
+    arancelId: Mapped[str | None] = mapped_column(String, nullable=True)

@@ -208,13 +208,18 @@ def execute_rows(
         # Insert inside a SAVEPOINT; roll back only this row on failure.
         try:
             with db.begin_nested():
-                instance = _build_instance(model_data, config)
+                builder = config.get("build")
+                instance = (
+                    builder(model_data, db)
+                    if builder
+                    else _build_instance(model_data, config)
+                )
                 db.add(instance)
                 db.flush()
                 new_id = instance.id
             importados += 1
             result_rows.append(ExecuteRow(fila=fila, outcome="importado", id=new_id))
-        except SQLAlchemyError as exc:
+        except (SQLAlchemyError, ValueError) as exc:
             fallidos += 1
             message = (
                 "Value violates a uniqueness constraint"

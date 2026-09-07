@@ -17,6 +17,7 @@ class MembresiaBase(OrmConfig, BaseModel):
     detalle: str | None = None
     rol: RolMembresia | None = None
     parcelaId: str | None = None
+    arancelId: str | None = None
 
 
 class MembresiaCreate(MembresiaBase):
@@ -34,6 +35,7 @@ class MembresiaUpdate(BaseModel):
     detalle: str | None = None
     rol: RolMembresia | None = None
     parcelaId: str | None = None
+    arancelId: str | None = None
 
 
 class MembresiaResponse(MembresiaBase):

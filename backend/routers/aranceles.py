@@ -1,9 +1,11 @@
 """Arancel CRUD endpoints."""
 
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from backend.database import get_db
 from backend.models.arancel import Arancel
@@ -46,6 +48,53 @@ def create_arancel(data: ArancelCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(arancel)
     return arancel
+
+
+@router.put("/{arancel_id}", response_model=ArancelResponse)
+def update_arancel(
+    arancel_id: str,
+    data: ArancelUpdate,
+    db: Session = Depends(get_db),
+):
+    """Fully update an arancel: nombre, area, predio, monto, categoria, vigenteDesde.
+
+    Changing the monto pushes the old value to historico (same business rule as
+    the /monto endpoint). Editing any other field alone does not.
+    """
+    arancel = db.query(Arancel).filter(Arancel.id == arancel_id).first()
+    if arancel is None:
+        raise HTTPException(status_code=404, detail=f"Arancel {arancel_id} not found")
+
+    updates = data.model_dump(exclude_unset=True)
+    monto = updates.pop("monto", None)
+
+    # Apply non-monto fields directly.
+    for field, value in updates.items():
+        if field == "historico":
+            continue
+        setattr(arancel, field, value)
+
+    if monto is not None and monto != arancel.monto:
+        arancel.historico.append(
+            {"monto": arancel.monto, "vigenteDesde": str(arancel.vigenteDesde)}
+        )
+        flag_modified(arancel, "historico")
+        arancel.monto = monto
+        arancel.vigenteDesde = date.today()
+
+    db.commit()
+    db.refresh(arancel)
+    return arancel
+
+
+@router.delete("/{arancel_id}", status_code=204)
+def delete_arancel(arancel_id: str, db: Session = Depends(get_db)):
+    """Delete an arancel."""
+    arancel = db.query(Arancel).filter(Arancel.id == arancel_id).first()
+    if arancel is None:
+        raise HTTPException(status_code=404, detail=f"Arancel {arancel_id} not found")
+    db.delete(arancel)
+    db.commit()
 
 
 @router.put("/{arancel_id}/monto", response_model=ArancelResponse)

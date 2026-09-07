@@ -32,6 +32,7 @@ class ImportParcela(BaseModel):
     tipo: TipoParcela
     categoria: CategoriaParcela | None = None
     predio: Predio
+    arancelId: str | None = None
     miembros: list[ImportMembresia] = []
 
     @model_validator(mode="after")
