@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/table";
 import { EstadoBadge } from "@/components/canyp/EstadoBadge";
 import { PageHeader } from "@/components/canyp/AppShell";
+import { ExportButton } from "@/components/export";
 import { diasRestantes, estadoVisual, formatFecha } from "@/lib/canyp/utils";
 import {
   useMembresias,
@@ -120,6 +121,7 @@ function NotificacionesPage() {
         subtitle={`${pendientes.length} membresías vencidas o por vencer en los próximos 30 días`}
         actions={
           <>
+            <ExportButton resource="notificaciones" label="notificaciones" />
             <Button variant="outline" onClick={generarWhatsapp}>
               <MessageCircle className="mr-2 size-4" /> Enviar por WhatsApp
             </Button>

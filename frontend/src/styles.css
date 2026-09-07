@@ -160,3 +160,37 @@
     color: var(--color-foreground);
   }
 }
+
+/*
+ * Print: only the comprobante is printed, nothing else.
+ *
+ * Instead of toggling `visibility` inside the Dialog portal (fragile in
+ * WebView2: centering, overlay and page flow can clip the printed output),
+ * pagos.tsx renders the comprobante into its own `.print-root` portal at
+ * <body>. On screen that root is hidden; on print every other direct child
+ * of body (app, dialog overlay/content) is display:none so the printed page
+ * contains exactly the comprobante, full-size at the top-left.
+ */
+.print-root {
+  display: none;
+}
+
+@media print {
+  body > *:not(.print-root) {
+    display: none !important;
+  }
+
+  .print-root {
+    display: block !important;
+    position: static !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .print-area {
+    margin: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+}

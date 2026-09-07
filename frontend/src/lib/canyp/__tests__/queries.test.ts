@@ -5,6 +5,7 @@
  * If `tsc --noEmit` passes after implementation, all hooks exist with correct signatures.
  */
 
+import { it, expect } from "vitest";
 import {
   useSocios,
   useSocio,
@@ -199,3 +200,8 @@ type IsSetBatchVencimientoMutation =
     ? true
     : false;
 const _useSetBatchVencimientoCheck: IsSetBatchVencimientoMutation = true;
+
+it("hook type-level checks compile (runtime smoke)", () => {
+  expect(typeof useSetBatchEstado).toBe("function");
+  expect(typeof useCreatePago).toBe("function");
+});

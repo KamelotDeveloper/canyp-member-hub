@@ -84,8 +84,8 @@ export function useNotificaciones(socioId?: string) {
 /** Dashboard stats from the backend */
 export function useDashboardStats() {
   return useQuery({
-    queryKey: ["dashboard"],
-    queryFn: api.getDashboard,
+    queryKey: ["dashboard", "stats"],
+    queryFn: api.getDashboardStats,
   });
 }
 
@@ -93,7 +93,7 @@ export function useDashboardStats() {
 export function useDashboardAlertas() {
   return useQuery({
     queryKey: ["dashboard", "alertas"],
-    queryFn: api.getDashboard,
+    queryFn: api.getDashboardAlertas,
   });
 }
 
@@ -215,6 +215,7 @@ export function useDeleteParcela() {
     mutationFn: (id: string) => api.deleteParcela(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["parcelas"] });
+      qc.invalidateQueries({ queryKey: ["membresias"] });
     },
   });
 }
@@ -322,6 +323,29 @@ export function useUpdateArancelMonto() {
   });
 }
 
+/** Fully update an arancel (nombre, area, predio, monto, categoria, vigenteDesde) */
+export function useUpdateArancel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: api.UpdateArancelInput }) =>
+      api.updateArancel(id, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["aranceles"] });
+    },
+  });
+}
+
+/** Delete an arancel */
+export function useDeleteArancel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteArancel(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["aranceles"] });
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // MUTATIONS — Pagos
 // ---------------------------------------------------------------------------
@@ -364,9 +388,11 @@ export function useExecuteImport() {
       rows: RowData[];
     }): Promise<ExecuteResult> => api.executeImport(resource, rows),
     onSuccess: () => {
-      // Importing socios currently only touches the socios list; broaden to
-      // membresias if a future resource links rows to memberships.
+      // Importing membresias links rows to existing socios by DNI, so both the
+      // padron (a membership makes a socio "activo") and the memberships list
+      // change after an execute — refresh both caches.
       qc.invalidateQueries({ queryKey: ["socios"] });
+      qc.invalidateQueries({ queryKey: ["membresias"] });
     },
   });
 }

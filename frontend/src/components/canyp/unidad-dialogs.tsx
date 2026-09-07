@@ -16,12 +16,14 @@
 
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { Check, ChevronsUpDown, Pencil, Trash2 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import {
   Dialog,
   DialogContent,
@@ -31,12 +33,31 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import { buildUnitPago } from "@/lib/canyp/api";
 import {
   itemsParaMembresias,
@@ -48,7 +69,9 @@ import {
   useSocios,
   useAranceles,
   useUpdateParcela,
+  useDeleteParcela,
   useDeleteMembresia,
+  useUpdateMembresia,
   useCreateMembresia,
   useCreateSocio,
   useSetBatchEstado,
@@ -63,6 +86,7 @@ import type {
   EstadoMembresia,
   Membresia,
   Parcela,
+  Rol,
   Socio,
   UnidadGroup,
 } from "@/lib/canyp/types";
@@ -101,7 +125,8 @@ export function GestionarDialog({
   const { data: socios = [] } = useSocios();
 
   const updateParcela = useUpdateParcela();
-  const deleteMembresia = useDeleteMembresia();
+  const deleteParcela = useDeleteParcela();
+  const updateMembresia = useUpdateMembresia();
   const createMembresia = useCreateMembresia();
   const createSocio = useCreateSocio();
   const setBatchEstado = useSetBatchEstado();
@@ -121,6 +146,8 @@ export function GestionarDialog({
   const [nuevoTel, setNuevoTel] = useState("");
   const [nuevoMail, setNuevoMail] = useState("");
   const [cobrando, setCobrando] = useState(false);
+  const [confirmEliminar, setConfirmEliminar] = useState(false);
+  const [editando, setEditando] = useState<Membresia | null>(null);
 
   // Socios que aún no integran la unidad (para "Agregar existente").
   const agregables = socios.filter((s: Socio) => !grupo.members.some((m) => m.socioId === s.id));
@@ -140,18 +167,9 @@ export function GestionarDialog({
     );
   }
 
-  function quitarIntegrante(m: Membresia) {
-    deleteMembresia.mutate(m.id, {
-      onSuccess: () =>
-        toast.success(
-          `Se quitó ${socioMap.get(m.socioId)?.nombre ?? "el integrante"} de la unidad`,
-        ),
-      onError: () => toast.error("Error al quitar el integrante"),
-    });
-  }
-
   function agregarExistente() {
     if (!socioAAgregar || !grupo.parcelaId) return;
+    const tieneTitular = grupo.members.some((m) => m.rol === "Titular");
     createMembresia.mutate(
       {
         socioId: socioAAgregar,
@@ -159,13 +177,13 @@ export function GestionarDialog({
         predio: grupo.predio,
         estado: "activa",
         vencimiento: vencimientoPorDefecto(grupo.members),
-        rol: "Integrante",
+        rol: tieneTitular ? "Integrante" : "Titular",
         parcelaId: grupo.parcelaId,
       },
       {
         onSuccess: () => {
           setSocioAAgregar("");
-          toast.success("Integrante agregado a la unidad");
+          toast.success(`${tieneTitular ? "Integrante" : "Titular"} agregado a la unidad`);
         },
         onError: () => toast.error("Error al agregar el integrante"),
       },
@@ -177,6 +195,7 @@ export function GestionarDialog({
       toast.error("Completá nombre y DNI del nuevo socio");
       return;
     }
+    const tieneTitular = grupo.members.some((m) => m.rol === "Titular");
     createSocio.mutate(
       {
         nombre: nuevoNombre.trim(),
@@ -196,11 +215,14 @@ export function GestionarDialog({
                 predio: grupo.predio,
                 estado: "activa",
                 vencimiento: vencimientoPorDefecto(grupo.members),
-                rol: "Integrante",
+                rol: tieneTitular ? "Integrante" : "Titular",
                 parcelaId: grupo.parcelaId,
               },
               {
-                onSuccess: () => toast.success("Nuevo socio creado y agregado a la unidad"),
+                onSuccess: () =>
+                  toast.success(
+                    `${tieneTitular ? "Integrante" : "Titular"} creado y agregado a la unidad`,
+                  ),
                 onError: () => toast.error("Socio creado, pero no se pudo agregar a la unidad"),
               },
             );
@@ -307,7 +329,7 @@ export function GestionarDialog({
                     key={m.id}
                     className="flex items-center justify-between gap-3 rounded-md border border-border p-2.5"
                   >
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">{s?.nombre ?? m.socioId}</p>
                       <p className="text-xs text-muted-foreground">
                         Vence {formatFecha(m.vencimiento)}
@@ -317,11 +339,35 @@ export function GestionarDialog({
                       <Badge variant={m.rol === "Titular" ? "default" : "secondary"}>
                         {m.rol ?? "—"}
                       </Badge>
-                      {m.rol !== "Titular" && (
-                        <Button size="sm" variant="ghost" onClick={() => quitarIntegrante(m)}>
-                          Quitar
-                        </Button>
-                      )}
+                      <Select
+                        value={m.rol ?? "Integrante"}
+                        onValueChange={(v) =>
+                          updateMembresia.mutate(
+                            { id: m.id, data: { rol: v as Rol } },
+                            {
+                              onSuccess: () => toast.success(`Rol actualizado a ${v}`),
+                              onError: () => toast.error("Error al cambiar el rol"),
+                            },
+                          )
+                        }
+                      >
+                        <SelectTrigger className="h-7 w-28" aria-label="Cambiar rol">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Titular">Titular</SelectItem>
+                          <SelectItem value="Integrante">Integrante</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setEditando(m)}
+                        aria-label={`Editar a ${s?.nombre ?? m.socioId}`}
+                      >
+                        <Pencil className="size-3.5" />
+                        <span className="sr-only">Editar</span>
+                      </Button>
                     </div>
                   </li>
                 );
@@ -440,13 +486,24 @@ export function GestionarDialog({
         </div>
 
         <DialogFooter className="gap-2 sm:justify-between">
-          <Button
-            variant="outline"
-            onClick={() => setCobrando(true)}
-            disabled={grupo.members.length === 0}
-          >
-            Cobrar unidad
-          </Button>
+          <div className="flex items-center gap-2">
+            {conParcela && (
+              <Button
+                variant="outline"
+                className="text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                onClick={() => setConfirmEliminar(true)}
+              >
+                <Trash2 className="mr-1.5 size-4" /> Eliminar unidad
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              onClick={() => setCobrando(true)}
+              disabled={grupo.members.length === 0}
+            >
+              Cobrar unidad
+            </Button>
+          </div>
           <div className="flex gap-2">
             <Button variant="ghost" onClick={() => onOpenChange(false)}>
               Cerrar
@@ -455,7 +512,236 @@ export function GestionarDialog({
         </DialogFooter>
       </DialogContent>
 
+      <AlertDialog open={confirmEliminar} onOpenChange={setConfirmEliminar}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Eliminar unidad</AlertDialogTitle>
+            <AlertDialogDescription>
+              ¿Seguro que querés eliminar la unidad <strong>{grupo.nombre}</strong>? Se borrarán la
+              parcela y todas las membresías asociadas. Los socios se mantienen en el padrón sin
+              unidad asignada.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                if (!grupo.parcelaId) return;
+                deleteParcela.mutate(grupo.parcelaId, {
+                  onSuccess: () => {
+                    setConfirmEliminar(false);
+                    onOpenChange(false);
+                    toast.success(`Unidad ${grupo.nombre} eliminada`);
+                  },
+                  onError: () => toast.error("Error al eliminar la unidad"),
+                });
+              }}
+            >
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <CobrarUnidadDialog grupo={grupo} open={cobrando} onOpenChange={setCobrando} />
+
+      {editando && (
+        <EditarIntegranteDialog
+          key={editando.id}
+          membresia={editando}
+          grupo={grupo}
+          socios={socios}
+          open={!!editando}
+          onOpenChange={(o) => !o && setEditando(null)}
+        />
+      )}
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// EditarIntegranteDialog — full edit of a single unit member (RQ 10/12/14)
+// ---------------------------------------------------------------------------
+
+function EditarIntegranteDialog({
+  membresia,
+  grupo,
+  socios,
+  open,
+  onOpenChange,
+}: {
+  membresia: Membresia;
+  grupo: UnidadGroup;
+  socios: Socio[];
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+}) {
+  const updateMembresia = useUpdateMembresia();
+  const deleteMembresia = useDeleteMembresia();
+
+  const socioMap = useMemo(() => new Map(socios.map((s) => [s.id, s])), [socios]);
+  const esTitular = membresia.rol === "Titular";
+  const hayOtrosMiembros = grupo.members.length > 1;
+
+  // Socio actual de la fila + socios que todavía no integran la unidad.
+  const reemplazables = useMemo(
+    () =>
+      socios.filter(
+        (s) => s.id === membresia.socioId || !grupo.members.some((m) => m.socioId === s.id),
+      ),
+    [socios, grupo.members, membresia.socioId],
+  );
+
+  const [socioId, setSocioId] = useState(membresia.socioId);
+  const [estado, setEstado] = useState<EstadoMembresia>(membresia.estado);
+  const [vencimiento, setVencimiento] = useState(membresia.vencimiento);
+  const [detalle, setDetalle] = useState(membresia.detalle ?? "");
+  const [confirmQuitar, setConfirmQuitar] = useState(false);
+
+  function guardar() {
+    const data: Partial<Membresia> = {};
+    if (socioId !== membresia.socioId) data.socioId = socioId;
+    if (estado !== membresia.estado) data.estado = estado;
+    if (vencimiento !== membresia.vencimiento) data.vencimiento = vencimiento;
+    if (detalle !== (membresia.detalle ?? "")) data.detalle = detalle;
+    if (Object.keys(data).length === 0) {
+      onOpenChange(false);
+      return;
+    }
+    updateMembresia.mutate(
+      { id: membresia.id, data },
+      {
+        onSuccess: () => {
+          onOpenChange(false);
+          toast.success("Integrante actualizado");
+        },
+        onError: () => toast.error("Error al guardar los cambios"),
+      },
+    );
+  }
+
+  function quitar() {
+    deleteMembresia.mutate(membresia.id, {
+      onSuccess: () => {
+        onOpenChange(false);
+        toast.success("Integrante quitado de la unidad");
+      },
+      onError: () => toast.error("Error al quitar el integrante"),
+    });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Editar integrante</DialogTitle>
+          <DialogDescription>
+            {socioMap.get(membresia.socioId)?.nombre ?? membresia.socioId} · {grupo.nombre}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div>
+            <Label>Socio</Label>
+            <Select value={socioId} onValueChange={setSocioId}>
+              <SelectTrigger className="mt-1.5">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {reemplazables.map((s) => (
+                  <SelectItem key={s.id} value={s.id}>
+                    {s.nombre} — {s.dni}
+                  </SelectItem>
+                ))}
+                {reemplazables.length === 0 && (
+                  <SelectItem value="__ninguno__" disabled>
+                    No quedan socios por elegir
+                  </SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Estado</Label>
+            <Select value={estado} onValueChange={(v) => setEstado(v as EstadoMembresia)}>
+              <SelectTrigger className="mt-1.5">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ESTADOS.map((e) => (
+                  <SelectItem key={e} value={e}>
+                    {e}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Vencimiento</Label>
+            <Input
+              type="date"
+              className="mt-1.5"
+              value={vencimiento}
+              onChange={(e) => setVencimiento(e.target.value)}
+            />
+          </div>
+          <div>
+            <Label>Detalle (opcional)</Label>
+            <Input
+              className="mt-1.5"
+              value={detalle}
+              onChange={(e) => setDetalle(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="border-t border-border pt-4">
+          <Button
+            variant="outline"
+            className="w-full text-destructive hover:bg-destructive hover:text-destructive-foreground"
+            onClick={() => setConfirmQuitar(true)}
+          >
+            <Trash2 className="mr-1.5 size-4" /> Quitar de la unidad
+          </Button>
+        </div>
+
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancelar
+          </Button>
+          <Button onClick={guardar} disabled={updateMembresia.isPending}>
+            Guardar
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+
+      <AlertDialog open={confirmQuitar} onOpenChange={setConfirmQuitar}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Quitar de la unidad</AlertDialogTitle>
+            <AlertDialogDescription>
+              {esTitular
+                ? hayOtrosMiembros
+                  ? "Esta persona es la Titular: al quitarla, el primer integrante pasa a Titular automáticamente."
+                  : "Esta persona es la única Titular: la unidad quedaría sin titular."
+                : "La membresía se elimina. La persona se mantiene en el padrón, sin unidad asignada."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                setConfirmQuitar(false);
+                quitar();
+              }}
+            >
+              Quitar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }
@@ -474,16 +760,53 @@ export function NuevaUnidadDialog({
   onOpenChange: (o: boolean) => void;
 }) {
   const importParcelas = useImportParcelas();
+  const { data: socios = [] } = useSocios();
+  const { data: aranceles = [] } = useAranceles();
   const esCabaña = area === "Cabañeros";
   const tipo = tipoPorArea(area);
 
   const [nombre, setNombre] = useState("");
   const [categoria, setCategoria] = useState<CategoriaParcela | "">("");
   const [vencimiento, setVencimiento] = useState("");
+  const [arancelId, setArancelId] = useState("");
   const [filas, setFilas] = useState<NuevaUnidadSocio[]>([{ nombre: "", dni: "" }]);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  // Socios que todavía no están en el formulario (por DNI, en caso de coincidencia).
+  const disponibles = useMemo(() => {
+    const dnis = new Set(filas.map((f) => f.dni.trim()).filter(Boolean));
+    return socios.filter((s: Socio) => !s.dni || !dnis.has(s.dni));
+  }, [socios, filas]);
+
+  // Aranceles del área+predio; para cabañas con categoría elegida, solo los de esa categoría.
+  const arancelesUnidad = useMemo(
+    () =>
+      aranceles.filter(
+        (a) =>
+          a.area === area &&
+          a.predio === predioDeTipo(tipo) &&
+          (!esCabaña || !categoria || a.categoria === categoria),
+      ),
+    [aranceles, area, tipo, esCabaña, categoria],
+  );
 
   function actualizarFila(i: number, campo: keyof NuevaUnidadSocio, valor: string) {
     setFilas((prev) => prev.map((f, idx) => (idx === i ? { ...f, [campo]: valor } : f)));
+  }
+
+  function agregarExistente(socio: Socio) {
+    setFilas((prev) => {
+      // Si la primera fila está vacía, el socio cargado ocupa esa posición y
+      // queda como Titular (índice 0 = titular). Si ya hay alguien cargado,
+      // se anexa al final como Integrante.
+      const primera = prev[0];
+      const primeraVacia = primera && !primera.nombre.trim() && !primera.dni.trim();
+      if (primeraVacia) {
+        return [{ nombre: socio.nombre, dni: socio.dni ?? "" }, ...prev.slice(1)];
+      }
+      return [...prev, { nombre: socio.nombre, dni: socio.dni ?? "" }];
+    });
+    setPickerOpen(false);
   }
 
   function crear() {
@@ -493,6 +816,7 @@ export function NuevaUnidadDialog({
       ...(categoria ? { categoria } : {}),
       vencimiento,
       socios: filas,
+      ...(arancelId ? { arancelId } : {}),
     });
     if (!payload) {
       toast.error("Completá el nombre de la unidad y al menos un socio (nombre y DNI)");
@@ -504,6 +828,7 @@ export function NuevaUnidadDialog({
         setNombre("");
         setCategoria("");
         setVencimiento("");
+        setArancelId("");
         setFilas([{ nombre: "", dni: "" }]);
         toast.success("Unidad creada con sus socios");
       },
@@ -543,7 +868,10 @@ export function NuevaUnidadDialog({
                 <Label>Categoría (cabañas)</Label>
                 <Select
                   value={categoria}
-                  onValueChange={(v) => setCategoria(v as CategoriaParcela)}
+                  onValueChange={(v) => {
+                    setCategoria(v as CategoriaParcela);
+                    setArancelId("");
+                  }}
                 >
                   <SelectTrigger className="mt-1.5">
                     <SelectValue placeholder="Sin categoría" />
@@ -559,6 +887,26 @@ export function NuevaUnidadDialog({
               </div>
             )}
             <div>
+              <Label>Arancel</Label>
+              <Select
+                value={arancelId}
+                onValueChange={(v) => setArancelId(v === "__ninguno__" ? "" : v)}
+              >
+                <SelectTrigger className="mt-1.5">
+                  <SelectValue placeholder="Seleccionar arancel" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__ninguno__">Sin arancel</SelectItem>
+                  {arancelesUnidad.map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      {a.nombre} — ${a.monto.toLocaleString("es-AR")}
+                      {a.categoria ? ` (categoría: ${a.categoria})` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
               <Label>Fecha de vencimiento</Label>
               <Input
                 type="date"
@@ -572,13 +920,50 @@ export function NuevaUnidadDialog({
           <div>
             <div className="flex items-center justify-between">
               <Label className="text-sm font-semibold">Socios</Label>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setFilas((prev) => [...prev, { nombre: "", dni: "" }])}
-              >
-                + Agregar fila
-              </Button>
+              <div className="flex items-center gap-2">
+                <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={pickerOpen}
+                      disabled={disponibles.length === 0}
+                    >
+                      <ChevronsUpDown className="mr-1 size-3.5" />
+                      Agregar existente
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[280px] p-0" align="end">
+                    <Command>
+                      <CommandInput placeholder="Buscar por nombre o DNI..." />
+                      <CommandList>
+                        <CommandEmpty>No se encontró ningún socio.</CommandEmpty>
+                        <CommandGroup>
+                          {disponibles.map((s: Socio) => (
+                            <CommandItem
+                              key={s.id}
+                              value={`${s.nombre} ${s.dni ?? ""}`}
+                              onSelect={() => agregarExistente(s)}
+                            >
+                              <Check className="size-4 opacity-0" />
+                              <span className="flex-1 truncate">{s.nombre}</span>
+                              <span className="text-xs text-muted-foreground">{s.dni}</span>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setFilas((prev) => [...prev, { nombre: "", dni: "" }])}
+                >
+                  + Agregar fila
+                </Button>
+              </div>
             </div>
             <ul className="mt-2 space-y-2">
               {filas.map((f, i) => (

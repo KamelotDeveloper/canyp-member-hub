@@ -5,6 +5,7 @@
  * No runtime assertions needed; TypeScript IS the test runner here.
  */
 
+import { it, expect } from "vitest";
 import type {
   CategoriaParcela,
   ImportMembresia,
@@ -98,3 +99,8 @@ const _importParcela: ImportParcela = {
 };
 const _importPayload: ImportPayload = { unidades: [_importParcela] };
 const _importResponse: ImportResponse = { parcelas: [], socios: [], membresias: [] };
+
+it("type-level checks compile (runtime smoke)", () => {
+  expect(_rolValues).toHaveLength(2);
+  expect(_categorias).toEqual(["Chica", "Mediana", "Especial", "Grande"]);
+});

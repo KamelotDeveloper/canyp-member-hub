@@ -31,6 +31,8 @@ export interface Membresia {
   rol?: Rol;
   /** Parcela / cabaña compartida (área Cabañeros) */
   parcelaId?: string;
+  /** Arancel asignado explícitamente (null = resolver por heurística area+predio+categoria). */
+  arancelId?: string;
 }
 
 export interface Arancel {
@@ -134,6 +136,7 @@ export interface ImportParcela {
   tipo: "cabaña" | "balsa" | "guardería";
   categoria?: CategoriaParcela;
   predio: Predio;
+  arancelId?: string;
   miembros: ImportMembresia[];
 }
 

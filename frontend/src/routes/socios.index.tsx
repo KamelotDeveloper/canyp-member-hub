@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { FileUp, Plus, Search } from "lucide-react";
+import { FileUp, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,17 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ImportModal, type ImportColumnSpec } from "@/components/import";
+import { ExportButton } from "@/components/export";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Dialog,
   DialogContent,
@@ -34,7 +45,7 @@ import { EstadoBadge } from "@/components/canyp/EstadoBadge";
 import { AreaBadge } from "@/components/canyp/AreaBadge";
 import { PageHeader } from "@/components/canyp/AppShell";
 import { estadoVisual, type EstadoVisual } from "@/lib/canyp/utils";
-import { useSocios, useMembresias, useCreateSocio } from "@/lib/canyp/queries";
+import { useSocios, useMembresias, useCreateSocio, useDeleteSocio } from "@/lib/canyp/queries";
 import type { Socio, Membresia } from "@/lib/canyp/types";
 
 export const Route = createFileRoute("/socios/")({
@@ -69,12 +80,14 @@ function SociosPage() {
   const { data: socios = [], isLoading: loadingSocios, refetch: refetchSocios } = useSocios();
   const { data: membresias = [] } = useMembresias();
   const createSocio = useCreateSocio();
+  const deleteSocio = useDeleteSocio();
   const [q, setQ] = useState("");
   const [predio, setPredio] = useState("todos");
   const [area, setArea] = useState("todas");
   const [estado, setEstado] = useState("todos");
   const [open, setOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Socio | null>(null);
   const [form, setForm] = useState({
     nombre: "",
     dni: "",
@@ -108,8 +121,8 @@ function SociosPage() {
   }, [socios, membresias, q, predio, area, estado]);
 
   function crearSocio() {
-    if (!form.nombre || !form.dni) {
-      toast.error("Nombre y DNI son obligatorios");
+    if (!form.nombre || !form.telefono) {
+      toast.error("Nombre y teléfono son obligatorios");
       return;
     }
     createSocio.mutate(
@@ -141,6 +154,7 @@ function SociosPage() {
         subtitle="Padrón general del club. Ingresá a la ficha para ver membresías y pagos."
         actions={
           <>
+            <ExportButton resource="socios" label="socios" />
             <Button variant="outline" onClick={() => setImportOpen(true)}>
               <FileUp className="mr-2 size-4" /> Importar socios
             </Button>
@@ -246,11 +260,21 @@ function SociosPage() {
                   <EstadoBadge estado={f.general} />
                 </TableCell>
                 <TableCell className="text-right">
-                  <Button asChild size="sm" variant="outline">
-                    <Link to="/socios/$socioId" params={{ socioId: f.socio.id }}>
-                      Ver ficha
-                    </Link>
-                  </Button>
+                  <div className="flex items-center justify-end gap-2">
+                    <Button asChild size="sm" variant="outline">
+                      <Link to="/socios/$socioId" params={{ socioId: f.socio.id }}>
+                        Ver ficha
+                      </Link>
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                      onClick={() => setDeleteTarget(f.socio)}
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
@@ -284,7 +308,7 @@ function SociosPage() {
               />
             </div>
             <div>
-              <Label htmlFor="dni">DNI *</Label>
+              <Label htmlFor="dni">DNI</Label>
               <Input
                 id="dni"
                 value={form.dni}
@@ -293,7 +317,7 @@ function SociosPage() {
               />
             </div>
             <div>
-              <Label htmlFor="tel">Teléfono</Label>
+              <Label htmlFor="tel">Teléfono *</Label>
               <Input
                 id="tel"
                 value={form.telefono}
@@ -339,6 +363,37 @@ function SociosPage() {
         onOpenChange={setImportOpen}
         onImportComplete={() => refetchSocios()}
       />
+
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Eliminar socio</AlertDialogTitle>
+            <AlertDialogDescription>
+              ¿Seguro que querés eliminar a <strong>{deleteTarget?.nombre}</strong>? Se borrarán
+              todas sus membresías. Si es Titular de alguna unidad, se designará un nuevo Titular
+              automáticamente.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                if (!deleteTarget) return;
+                deleteSocio.mutate(deleteTarget.id, {
+                  onSuccess: () => {
+                    setDeleteTarget(null);
+                    toast.success(`Socio ${deleteTarget.nombre} eliminado`);
+                  },
+                  onError: () => toast.error("Error al eliminar el socio"),
+                });
+              }}
+            >
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

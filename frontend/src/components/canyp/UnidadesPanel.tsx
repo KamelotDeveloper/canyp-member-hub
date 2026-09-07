@@ -1,10 +1,20 @@
 import { useMemo, useRef, useState, type ChangeEvent } from "react";
 import { toast } from "sonner";
-import { Upload } from "lucide-react";
+import { Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { EstadoBadge } from "@/components/canyp/EstadoBadge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   CobrarUnidadDialog,
   GestionarDialog,
@@ -12,7 +22,13 @@ import {
 } from "@/components/canyp/unidad-dialogs";
 import { formatFecha } from "@/lib/canyp/utils";
 import { estadoCriticoDe, filtrarUnidades } from "@/lib/canyp/unidad-helpers";
-import { useMembresias, useParcelas, useSocios, useImportParcelas } from "@/lib/canyp/queries";
+import {
+  useMembresias,
+  useParcelas,
+  useSocios,
+  useImportParcelas,
+  useDeleteParcela,
+} from "@/lib/canyp/queries";
 import type {
   Area,
   CategoriaParcela,
@@ -87,11 +103,13 @@ export function UnidadesPanel({ area, filtro }: { area: Area; filtro: UnidadFilt
   const { data: parcelas = [] } = useParcelas();
   const { data: socios = [] } = useSocios();
   const importParcelas = useImportParcelas();
+  const deleteParcela = useDeleteParcela();
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [gestionando, setGestionando] = useState<UnidadGroup | null>(null);
   const [cobrando, setCobrando] = useState<UnidadGroup | null>(null);
   const [nuevaOpen, setNuevaOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<UnidadGroup | null>(null);
 
   const socioMap = useMemo(() => new Map(socios.map((s: Socio) => [s.id, s])), [socios]);
 
@@ -155,16 +173,17 @@ export function UnidadesPanel({ area, filtro }: { area: Area; filtro: UnidadFilt
       </div>
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {grupos.map((g) => (
-          <UnidadCard
-            key={g.parcelaId ?? "__sin_asignar__"}
-            grupo={g}
-            area={area}
-            socioMap={socioMap}
-            onGestionar={() => setGestionando(g)}
-            onCobrar={() => setCobrando(g)}
-          />
-        ))}
+        {grupos.map((g) => {
+          const cardProps: Parameters<typeof UnidadCard>[0] = {
+            grupo: g,
+            area,
+            socioMap,
+            onGestionar: () => setGestionando(g),
+            onCobrar: () => setCobrando(g),
+          };
+          if (g.parcelaId) cardProps.onEliminar = () => setDeleteTarget(g);
+          return <UnidadCard key={g.parcelaId ?? "__sin_asignar__"} {...cardProps} />;
+        })}
         {grupos.length === 0 && (
           <Card className="p-10 text-center text-sm text-muted-foreground md:col-span-2 xl:col-span-3">
             No hay unidades con este filtro.
@@ -189,6 +208,37 @@ export function UnidadesPanel({ area, filtro }: { area: Area; filtro: UnidadFilt
           onOpenChange={(o) => !o && setCobrando(null)}
         />
       )}
+
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Eliminar unidad</AlertDialogTitle>
+            <AlertDialogDescription>
+              ¿Seguro que querés eliminar la unidad <strong>{deleteTarget?.nombre}</strong>? Se
+              borrarán la parcela y todas las membresías asociadas. Los socios se mantienen en el
+              padrón sin unidad asignada.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                if (!deleteTarget?.parcelaId) return;
+                deleteParcela.mutate(deleteTarget.parcelaId, {
+                  onSuccess: () => {
+                    setDeleteTarget(null);
+                    toast.success(`Unidad ${deleteTarget.nombre} eliminada`);
+                  },
+                  onError: () => toast.error("Error al eliminar la unidad"),
+                });
+              }}
+            >
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -199,12 +249,14 @@ function UnidadCard({
   socioMap,
   onGestionar,
   onCobrar,
+  onEliminar,
 }: {
   grupo: UnidadGroup;
   area: Area;
   socioMap: Map<string, Socio>;
   onGestionar: () => void;
   onCobrar: () => void;
+  onEliminar?: () => void;
 }) {
   const estado = estadoCriticoDe(grupo);
   const vencimientoComun = grupo.members.reduce<string | null>(
@@ -266,6 +318,17 @@ function UnidadCard({
         <Button size="sm" className="flex-1" onClick={onCobrar}>
           Cobrar
         </Button>
+        {onEliminar && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-destructive hover:bg-destructive hover:text-destructive-foreground"
+            title="Eliminar unidad"
+            onClick={onEliminar}
+          >
+            <Trash2 className="size-4" />
+          </Button>
+        )}
       </div>
     </Card>
   );

@@ -1,4 +1,5 @@
 import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { Plus, Upload } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -30,7 +31,9 @@ import {
 import { cn } from "@/lib/utils";
 import { EstadoBadge } from "@/components/canyp/EstadoBadge";
 import { PageHeader } from "@/components/canyp/AppShell";
+import { ExportButton } from "@/components/export";
 import { UnidadesPanel } from "@/components/canyp/UnidadesPanel";
+import { ImportModal, type ImportColumnSpec } from "@/components/import";
 import { estadoVisual, formatFecha } from "@/lib/canyp/utils";
 import {
   useMembresias,
@@ -39,8 +42,11 @@ import {
   useParcelas,
   useUpdateParcela,
   useCreateParcela,
+  useCreateMembresia,
+  useAranceles,
 } from "@/lib/canyp/queries";
 import type {
+  Arancel,
   Area,
   CategoriaParcela,
   Membresia,
@@ -50,6 +56,17 @@ import type {
 } from "@/lib/canyp/types";
 
 const AREAS: Area[] = ["Balseros", "Cabañeros", "Guardería", "Windsurf"];
+
+/** Editable columns shown in the membresías import preview. */
+const importColumns: ImportColumnSpec[] = [
+  { label: "DNI", field: "dni" },
+  { label: "Área", field: "area" },
+  { label: "Predio", field: "predio" },
+  { label: "Vencimiento", field: "vencimiento" },
+  { label: "Estado", field: "estado" },
+  { label: "Arancel", field: "arancel" },
+  { label: "Detalle", field: "detalle" },
+];
 
 export const Route = createFileRoute("/membresias")({
   validateSearch: (s: Record<string, unknown>): { area?: Area; filtro?: string } => ({
@@ -76,18 +93,41 @@ export const Route = createFileRoute("/membresias")({
 function MembresiasPage() {
   const search = useSearch({ from: "/membresias" });
   const navigate = useNavigate();
-  const { data: membresias = [], isLoading } = useMembresias();
+  const {
+    data: membresias = [],
+    isLoading,
+    refetch: refetchMembresias,
+  } = useMembresias();
   const { data: socios = [] } = useSocios();
   const { data: parcelas = [] } = useParcelas();
   const updateMembresia = useUpdateMembresia();
   const updateParcela = useUpdateParcela();
   const createParcela = useCreateParcela();
+  const createMembresia = useCreateMembresia();
+  const { data: aranceles = [] } = useAranceles();
   const [editando, setEditando] = useState<{ id: string; fecha: string } | null>(null);
+  const [nuevaOpen, setNuevaOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [nueva, setNueva] = useState<{
+    socioId: string;
+    vencimiento: string;
+    detalle: string;
+    arancelId: string;
+  }>({
+    socioId: "",
+    vencimiento: new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10),
+    detalle: "",
+    arancelId: "",
+  });
 
   const socioMap = new Map(socios.map((s: Socio) => [s.id, s]));
 
   const areaActiva = search.area ?? "Balseros";
   const filtro = search.filtro ?? "todas";
+
+  const arancelesArea = aranceles.filter(
+    (a: Arancel) => a.area === areaActiva && a.predio === "Almafuerte",
+  );
 
   const lista = membresias
     .filter((m: Membresia) => m.area === areaActiva)
@@ -116,29 +156,32 @@ function MembresiasPage() {
         title="Gestión de membresías"
         subtitle="Elegí el área para trabajar sobre sus membresías."
         actions={
-          <div className="flex gap-1 rounded-md border border-border bg-card p-1">
-            {[
-              { k: "todas", l: "Todas" },
-              { k: "por_vencer", l: "Por vencer" },
-              { k: "vencidas", l: "Vencidas" },
-              { k: "alertas", l: "Alertas" },
-            ].map((f) => (
-              <button
-                key={f.k}
-                onClick={() =>
-                  navigate({ to: "/membresias", search: { area: areaActiva, filtro: f.k } })
-                }
-                className={cn(
-                  "rounded px-3 py-1.5 text-xs font-medium transition-colors",
-                  filtro === f.k
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-secondary",
-                )}
-              >
-                {f.l}
-              </button>
-            ))}
-          </div>
+          <>
+            <ExportButton resource="membresias" label="membresías" />
+            <div className="flex gap-1 rounded-md border border-border bg-card p-1">
+              {[
+                { k: "todas", l: "Todas" },
+                { k: "por_vencer", l: "Por vencer" },
+                { k: "vencidas", l: "Vencidas" },
+                { k: "alertas", l: "Alertas" },
+              ].map((f) => (
+                <button
+                  key={f.k}
+                  onClick={() =>
+                    navigate({ to: "/membresias", search: { area: areaActiva, filtro: f.k } })
+                  }
+                  className={cn(
+                    "rounded px-3 py-1.5 text-xs font-medium transition-colors",
+                    filtro === f.k
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-secondary",
+                  )}
+                >
+                  {f.l}
+                </button>
+              ))}
+            </div>
+          </>
         }
       />
 
@@ -176,7 +219,21 @@ function MembresiasPage() {
       {areaActiva === "Cabañeros" || areaActiva === "Balseros" ? (
         <UnidadesPanel area={areaActiva} filtro={filtro as UnidadFiltro} />
       ) : (
-        <Card className="overflow-hidden p-0">
+        <>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">
+              {lista.length} membresías en {areaActiva}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+                <Upload className="mr-1.5 size-4" /> Importar
+              </Button>
+              <Button size="sm" onClick={() => setNuevaOpen(true)}>
+                <Plus className="mr-1.5 size-4" /> Nueva membresía
+              </Button>
+            </div>
+          </div>
+          <Card className="overflow-hidden p-0">
           <Table>
             <TableHeader>
               <TableRow>
@@ -274,7 +331,116 @@ function MembresiasPage() {
             </TableBody>
           </Table>
         </Card>
+        </>
       )}
+
+      <Dialog open={nuevaOpen} onOpenChange={setNuevaOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Nueva membresía — {areaActiva}</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div>
+              <Label>Socio</Label>
+              <Select
+                value={nueva.socioId}
+                onValueChange={(v) => setNueva((p) => ({ ...p, socioId: v }))}
+              >
+                <SelectTrigger className="mt-1.5">
+                  <SelectValue placeholder="Elegí un socio..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {socios.map((s: Socio) => (
+                    <SelectItem key={s.id} value={s.id}>
+                      {s.nombre}
+                      {s.dni ? ` — ${s.dni}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Vencimiento</Label>
+              <Input
+                type="date"
+                className="mt-1.5"
+                value={nueva.vencimiento}
+                onChange={(e) => setNueva((p) => ({ ...p, vencimiento: e.target.value }))}
+              />
+            </div>
+            <div>
+              <Label>Detalle (box, locker, tabla...)</Label>
+              <Input
+                value={nueva.detalle}
+                onChange={(e) => setNueva((p) => ({ ...p, detalle: e.target.value }))}
+                className="mt-1.5"
+              />
+            </div>
+            <div>
+              <Label>Arancel</Label>
+              <Select
+                value={nueva.arancelId}
+                onValueChange={(v) =>
+                  setNueva((p) => ({ ...p, arancelId: v === "__ninguno__" ? "" : v }))
+                }
+              >
+                <SelectTrigger className="mt-1.5">
+                  <SelectValue placeholder="Seleccionar arancel" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__ninguno__">Sin arancel</SelectItem>
+                  {arancelesArea.map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      {a.nombre} — ${a.monto.toLocaleString("es-AR")}
+                      {a.categoria ? ` (categoría: ${a.categoria})` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNuevaOpen(false)}>
+              Cancelar
+            </Button>
+            <Button
+              disabled={!nueva.socioId}
+              onClick={() => {
+                const socio = socios.find((s: Socio) => s.id === nueva.socioId);
+                if (!socio) return;
+                createMembresia.mutate(
+                  {
+                    socioId: nueva.socioId,
+                    area: areaActiva,
+                    predio: "Almafuerte",
+                    estado: "activa",
+                    vencimiento: nueva.vencimiento,
+                    detalle: nueva.detalle.trim(),
+                    ...(nueva.arancelId ? { arancelId: nueva.arancelId } : {}),
+                  },
+                  {
+                    onSuccess: () => {
+                      setNuevaOpen(false);
+                      setNueva({
+                        socioId: "",
+                        vencimiento: new Date(Date.now() + 365 * 86400000)
+                          .toISOString()
+                          .slice(0, 10),
+                        detalle: "",
+                        arancelId: "",
+                      });
+                      toast.success("Membresía creada");
+                    },
+                    onError: () => toast.error("No se pudo crear la membresía"),
+                  },
+                );
+              }}
+            >
+              Crear membresía
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!editando} onOpenChange={(o) => !o && setEditando(null)}>
         <DialogContent className="sm:max-w-sm">
@@ -315,6 +481,15 @@ function MembresiasPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ImportModal
+        resource="membresias"
+        resourceLabel="membresías"
+        columnSpec={importColumns}
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImportComplete={() => refetchMembresias()}
+      />
     </>
   );
 }

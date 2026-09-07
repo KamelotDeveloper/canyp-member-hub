@@ -8,6 +8,7 @@
 import type {
   Arancel,
   Area,
+  CategoriaParcela,
   EstadoMembresia,
   ExecuteResult,
   ImportPayload,
@@ -27,7 +28,19 @@ import type {
 // Base client
 // ---------------------------------------------------------------------------
 
-const BASE_URL = "/api";
+/**
+ * Resolve the API base for the current runtime.
+ * - Browser dev (Vite proxy): `/api`
+ * - Tauri desktop shell: the sidecar FastAPI listens on 127.0.0.1:8000.
+ *   Tauri v2 exposes `window.__TAURI_INTERNALS__`; detect it at module load
+ *   so the same bundle works in devUrl and in the packaged app.
+ */
+function resolveBaseUrl(): string {
+  const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  return inTauri ? "http://127.0.0.1:8000/api" : "/api";
+}
+
+const BASE_URL = resolveBaseUrl();
 
 export class ApiError extends Error {
   constructor(
@@ -280,6 +293,26 @@ export function updateArancelMonto(id: string, monto: number): Promise<Arancel> 
   });
 }
 
+export interface UpdateArancelInput {
+  nombre?: string;
+  area?: Area;
+  predio?: Predio;
+  monto?: number;
+  categoria?: CategoriaParcela | null;
+  vigenteDesde?: string;
+}
+
+export function updateArancel(id: string, data: UpdateArancelInput): Promise<Arancel> {
+  return apiFetch<Arancel>(`/aranceles/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteArancel(id: string): Promise<Arancel> {
+  return apiFetch<Arancel>(`/aranceles/${id}`, { method: "DELETE" });
+}
+
 // ---------------------------------------------------------------------------
 // Pagos
 // ---------------------------------------------------------------------------
@@ -350,8 +383,12 @@ export function createNotificaciones(items: CreateNotificacionInput[]): Promise<
 // Dashboard
 // ---------------------------------------------------------------------------
 
-export function getDashboard(): Promise<Record<string, unknown>> {
-  return apiFetch<Record<string, unknown>>("/dashboard");
+export function getDashboardStats(): Promise<Record<string, unknown>> {
+  return apiFetch<Record<string, unknown>>("/dashboard/stats");
+}
+
+export function getDashboardAlertas(): Promise<Record<string, unknown>> {
+  return apiFetch<Record<string, unknown>>("/dashboard/alertas");
 }
 
 // ---------------------------------------------------------------------------
@@ -385,4 +422,19 @@ export function executeImport(resource: string, rows: RowData[]): Promise<Execut
     method: "POST",
     body: JSON.stringify({ rows }),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Export (generic resource-based data export; CSV + XLSX)
+// ---------------------------------------------------------------------------
+
+export type ExportFormat = "csv" | "xlsx";
+
+/**
+ * Download the complete export of a resource (all rows — never paginated).
+ * Returns the raw bytes so the caller can trigger a browser download.
+ * `resource` is the slash-less plural resource name, e.g. "socios".
+ */
+export function exportResource(resource: string, format: ExportFormat = "csv"): Promise<Blob> {
+  return apiFetchRaw(`/export/${resource}?format=${format}`).then((res) => res.blob());
 }

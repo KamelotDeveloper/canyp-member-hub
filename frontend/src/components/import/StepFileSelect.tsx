@@ -8,7 +8,7 @@ import { downloadBlob } from "@/components/import/downloads";
 import { cn } from "@/lib/utils";
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB
-const ALLOWED_EXTENSIONS = [".csv", ".xlsx", ".xls"];
+const ALLOWED_EXTENSIONS = [".csv", ".xlsx"];
 
 export interface StepFileSelectProps {
   /** Slash-less resource name, e.g. "socios". Used for the template download. */
@@ -26,7 +26,7 @@ export interface StepFileSelectProps {
 /**
  * Step 1 — file selection: drag-and-drop + browse.
  *
- * Validates extension (.csv/.xlsx/.xls) and size (≤10MB) before handing the
+ * Validates extension (.csv/.xlsx) and size (≤10MB) before handing the
  * file to `onFile`, which triggers the server-side preview. Also offers the
  * "Descargar plantilla" template download.
  */
@@ -95,7 +95,7 @@ export function StepFileSelect({
       <input
         ref={inputRef}
         type="file"
-        accept=".csv,.xlsx,.xls"
+        accept=".csv,.xlsx"
         className="hidden"
         disabled={loading}
         onChange={(e) => {
