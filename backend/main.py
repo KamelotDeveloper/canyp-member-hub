@@ -7,7 +7,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
 from backend.database import Base, engine
-from backend.routers import aranceles, dashboard, export, membresias, notificaciones, pagos, parcelas, socios
+from backend.routers import (
+    aranceles,
+    dashboard,
+    export,
+    membresias,
+    notificaciones,
+    pagos,
+    parcelas,
+    settings as settings_router,
+    socios,
+)
 
 
 @asynccontextmanager
@@ -42,6 +52,7 @@ app.include_router(notificaciones.router)
 app.include_router(parcelas.router)
 app.include_router(export.router)
 app.include_router(dashboard.router)
+app.include_router(settings_router.router)
 
 
 @app.get("/api/health")

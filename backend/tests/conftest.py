@@ -1,4 +1,17 @@
-"""Shared pytest fixtures for CANYP backend tests."""
+"""Shared pytest fixtures for CANYP backend tests.
+
+Default (fast path): in-memory SQLite with a StaticPool (one shared
+connection, fully isolated per test).
+
+Postgres support: set TEST_DATABASE_URL to a postgresql:// URL to run the
+whole suite against a live Postgres (schema is dropped/recreated per test):
+
+    $env:TEST_DATABASE_URL="postgresql://user:pass@localhost/canyp_test" ; python -m pytest
+
+The default CI/plain run needs NO Postgres — SQLite remains the default.
+"""
+
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,27 +25,39 @@ from backend.main import app
 # Force model registration with Base.metadata before any create_all.
 import backend.models  # noqa: F401
 
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "")
+
+
+def _run_against_postgres() -> bool:
+    return TEST_DATABASE_URL.startswith("postgresql")
+
 
 @pytest.fixture()
 def test_db():
-    """In-memory SQLite engine per test — fully isolated.
+    """Isolated engine per test.
 
-    Uses StaticPool so all sessions share one connection (and therefore
-    one in-memory database) even across threads.
+    SQLite: :memory: StaticPool. Postgres (TEST_DATABASE_URL): creates and
+    drops the schema per test so tests stay isolated from each other.
     """
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+    if _run_against_postgres():
+        engine = create_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+        Base.metadata.drop_all(bind=engine)
+        Base.metadata.create_all(bind=engine)
+    else:
+        engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
 
-    @event.listens_for(engine, "connect")
-    def _fk(dbapi_conn, _rec):
-        cur = dbapi_conn.cursor()
-        cur.execute("PRAGMA foreign_keys=ON")
-        cur.close()
+        @event.listens_for(engine, "connect")
+        def _fk(dbapi_conn, _rec):
+            cur = dbapi_conn.cursor()
+            cur.execute("PRAGMA foreign_keys=ON")
+            cur.close()
 
-    Base.metadata.create_all(bind=engine)
+        Base.metadata.create_all(bind=engine)
+
     TestSession = sessionmaker(bind=engine)
     session = TestSession()
     try:
