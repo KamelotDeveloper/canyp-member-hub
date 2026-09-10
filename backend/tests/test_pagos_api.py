@@ -1,5 +1,7 @@
 """Integration tests for /api/pagos endpoints and pago creation logic."""
 
+import re
+
 from datetime import date
 
 from backend.models.enums import Area, EstadoMembresia, Predio
@@ -9,6 +11,8 @@ from backend.models.socio import Socio
 from backend.models.arancel import Arancel
 from backend.services.numeracion import siguiente_numero_comprobante
 from backend.services.renovacion import renovar_membresias
+
+_UUID_HEX = re.compile(r"^p[0-9a-f]{32}$")
 
 
 def _seed_pago_prereqs(db):
@@ -276,6 +280,60 @@ class TestPagoCreateApi:
         test_db.expire_all()
         m = test_db.query(Membresia).filter(Membresia.id == "m1").first()
         assert m.vencimiento > date(2025, 7, 10)
+
+    def test_create_pago_without_client_id_returns_generated_id(self, test_client, test_db):
+        """POST without an id must succeed and echo a server-generated id."""
+        _seed_pago_prereqs(test_db)
+        resp = test_client.post(
+            "/api/pagos",
+            json={
+                "socioId": "s1",
+                "fecha": "2025-07-10",
+                "medio": "efectivo",
+                "total": 15000.0,
+                "items": [
+                    {
+                        "arancelId": "a1",
+                        "membresiaId": "m1",
+                        "montoAplicado": 15000.0,
+                        "arancelNombre": "Cuota Balseros Embalse",
+                    }
+                ],
+                "membresiaIds": ["m1"],
+            },
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert _UUID_HEX.match(body["id"])
+        assert test_db.get(Pago, body["id"]) is not None
+
+    def test_create_pago_ignores_client_sent_id(self, test_client, test_db):
+        """A client-sent id must be ignored (server keeps authority)."""
+        _seed_pago_prereqs(test_db)
+        resp = test_client.post(
+            "/api/pagos",
+            json={
+                "id": "pcliente-123",
+                "socioId": "s1",
+                "fecha": "2025-07-10",
+                "medio": "efectivo",
+                "total": 15000.0,
+                "items": [
+                    {
+                        "arancelId": "a1",
+                        "membresiaId": "m1",
+                        "montoAplicado": 15000.0,
+                        "arancelNombre": "Cuota Balseros Embalse",
+                    }
+                ],
+                "membresiaIds": ["m1"],
+            },
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["id"] != "pcliente-123"
+        assert _UUID_HEX.match(body["id"])
+        assert test_db.get(Pago, "pcliente-123") is None
 
     def test_create_pago_with_membresiaIds_only(self, test_client, test_db):
         """POST with membresiaIds but no items is valid and renews membership."""

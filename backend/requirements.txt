@@ -8,3 +8,4 @@ httpx
 python-dateutil
 openpyxl
 python-multipart
+psycopg[binary]

@@ -30,12 +30,16 @@ def create_notificaciones(
     data: NotificacionCreate | list[NotificacionCreate],
     db: Session = Depends(get_db),
 ):
-    """Create notificaciones (bulk allowed)."""
+    """Create notificaciones (bulk allowed).
+
+    Ids are always server-generated (uuid4 hex, collision-safe in remoto mode);
+    any client-sent id is ignored.
+    """
     items = data if isinstance(data, list) else [data]
     created = []
     for item in items:
         notif = Notificacion(
-            id=item.id or f"n{uuid.uuid4().hex[:8]}",
+            id=f"n{uuid.uuid4().hex}",
             socioId=item.socioId,
             canal=item.canal,
             fecha=item.fecha,
