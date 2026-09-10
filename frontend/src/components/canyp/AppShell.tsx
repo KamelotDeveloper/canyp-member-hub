@@ -1,9 +1,18 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { BellRing, CreditCard, LayoutDashboard, ScrollText, Tags, Users } from "lucide-react";
+import {
+  BellRing,
+  CreditCard,
+  LayoutDashboard,
+  ScrollText,
+  Settings,
+  Tags,
+  Users,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { estadoVisual } from "@/lib/canyp/utils";
 import { useMembresias } from "@/lib/canyp/queries";
+import { DataModeBadge } from "@/components/canyp/DataModeBadge";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 const nav: { to: string; label: string; icon: typeof Users; exact?: boolean }[] = [
@@ -13,6 +22,7 @@ const nav: { to: string; label: string; icon: typeof Users; exact?: boolean }[] 
   { to: "/aranceles", label: "Aranceles", icon: Tags },
   { to: "/pagos", label: "Pagos", icon: CreditCard },
   { to: "/notificaciones", label: "Notificaciones", icon: BellRing },
+  { to: "/ajustes", label: "Ajustes", icon: Settings },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -28,11 +38,11 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="flex min-h-screen w-full bg-background">
         <aside className="fixed inset-y-0 left-0 z-20 hidden w-60 flex-col bg-sidebar text-sidebar-foreground md:flex">
           <div className="flex flex-col items-center gap-3 border-b border-sidebar-border px-5 py-6">
-            <div className="flex size-16 items-center justify-center overflow-hidden rounded-xl bg-sidebar-primary text-sidebar-primary-foreground">
+            <div className="flex h-20 w-[70px] items-center justify-center">
               <img
-                src="/CANYP_Almafuerte_logo.svg"
+                src="/CANYP_Almafuerte_logo.svg?v=3"
                 alt="CANYP logo"
-                className="size-12 scale-[1.35] object-contain"
+                className="h-full w-full object-contain"
               />
             </div>
             <div className="text-center leading-tight">
@@ -65,8 +75,9 @@ export function AppShell({ children }: { children: ReactNode }) {
               );
             })}
           </nav>
-          <div className="border-t border-sidebar-border px-5 py-4 text-[11px] text-sidebar-foreground/55">
+          <div className="flex items-center justify-between gap-2 border-t border-sidebar-border px-5 py-4 text-[11px] text-sidebar-foreground/55">
             Predios: Embalse · Almafuerte
+            <DataModeBadge />
           </div>
         </aside>
 

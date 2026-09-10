@@ -2,6 +2,16 @@ export type Predio = "Embalse" | "Almafuerte";
 export type Area = "Balseros" | "Cabañeros" | "Guardería" | "Windsurf";
 export type EstadoMembresia = "activa" | "suspendida" | "vencida" | "baja";
 
+/** Modo de datos de la app: "local" (SQLite) o "remoto" (PostgreSQL/Supabase). */
+export type DataMode = "local" | "remoto";
+
+export interface AppSettings {
+  dataMode: DataMode;
+  databaseUrl: string;
+  /** Falso hasta que el wizard de primer uso (o Ajustes) guardó una elección. */
+  configured: boolean;
+}
+
 /** Rol de un miembro dentro de una unidad compartida (cabaña/balsa). */
 export type Rol = "Titular" | "Integrante";
 

@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AjustesRouteImport } from './routes/ajustes'
 import { Route as ArancelesRouteImport } from './routes/aranceles'
 import { Route as MembresiasRouteImport } from './routes/membresias'
 import { Route as NotificacionesRouteImport } from './routes/notificaciones'
@@ -20,6 +21,11 @@ import { Route as SociosSocioIdRouteImport } from './routes/socios.$socioId'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AjustesRoute = AjustesRouteImport.update({
+  id: '/ajustes',
+  path: '/ajustes',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ArancelesRoute = ArancelesRouteImport.update({
@@ -55,6 +61,7 @@ const SociosSocioIdRoute = SociosSocioIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/ajustes': typeof AjustesRoute
   '/aranceles': typeof ArancelesRoute
   '/membresias': typeof MembresiasRoute
   '/notificaciones': typeof NotificacionesRoute
@@ -64,6 +71,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/ajustes': typeof AjustesRoute
   '/aranceles': typeof ArancelesRoute
   '/membresias': typeof MembresiasRoute
   '/notificaciones': typeof NotificacionesRoute
@@ -74,6 +82,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/ajustes': typeof AjustesRoute
   '/aranceles': typeof ArancelesRoute
   '/membresias': typeof MembresiasRoute
   '/notificaciones': typeof NotificacionesRoute
@@ -85,6 +94,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/ajustes'
     | '/aranceles'
     | '/membresias'
     | '/notificaciones'
@@ -94,6 +104,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/ajustes'
     | '/aranceles'
     | '/membresias'
     | '/notificaciones'
@@ -103,6 +114,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/ajustes'
     | '/aranceles'
     | '/membresias'
     | '/notificaciones'
@@ -113,6 +125,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AjustesRoute: typeof AjustesRoute
   ArancelesRoute: typeof ArancelesRoute
   MembresiasRoute: typeof MembresiasRoute
   NotificacionesRoute: typeof NotificacionesRoute
@@ -128,6 +141,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/ajustes': {
+      id: '/ajustes'
+      path: '/ajustes'
+      fullPath: '/ajustes'
+      preLoaderRoute: typeof AjustesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/aranceles': {
@@ -177,6 +197,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AjustesRoute: AjustesRoute,
   ArancelesRoute: ArancelesRoute,
   MembresiasRoute: MembresiasRoute,
   NotificacionesRoute: NotificacionesRoute,

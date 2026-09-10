@@ -6,6 +6,7 @@
  */
 
 import type {
+  AppSettings,
   Arancel,
   Area,
   CategoriaParcela,
@@ -338,7 +339,7 @@ export function createPago(data: CreatePagoInput): Promise<Pago> {
   return apiFetch<Pago>("/pagos", {
     method: "POST",
     body: JSON.stringify({
-      id: `p${Date.now()}`,
+      // El id lo genera el backend (uuid4, seguro para modo remoto/Postgres).
       socioId: data.socioId,
       fecha: hoy,
       medio: data.medio,
@@ -370,12 +371,29 @@ export interface CreateNotificacionInput {
 export function createNotificaciones(items: CreateNotificacionInput[]): Promise<Notificacion[]> {
   return apiFetch<Notificacion[]>("/notificaciones", {
     method: "POST",
-    body: JSON.stringify(
-      items.map((item) => ({
-        id: `n${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        ...item,
-      })),
-    ),
+    // Los ids los genera el backend (uuid4, seguro para modo remoto/Postgres).
+    body: JSON.stringify(items),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Settings (data mode: local SQLite / remoto PostgreSQL)
+// ---------------------------------------------------------------------------
+
+export function getSettings(): Promise<AppSettings> {
+  return apiFetch<AppSettings>("/settings");
+}
+
+export interface UpdateSettingsInput {
+  dataMode: AppSettings["dataMode"];
+  /** Obligatoria para "remoto"; por defecto la app borra la URL al volver a local. */
+  databaseUrl?: string;
+}
+
+export function updateSettings(data: UpdateSettingsInput): Promise<AppSettings> {
+  return apiFetch<AppSettings>("/settings", {
+    method: "PUT",
+    body: JSON.stringify(data),
   });
 }
 

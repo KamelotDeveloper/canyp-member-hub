@@ -105,6 +105,27 @@ export function useParcelas(predio?: string) {
   });
 }
 
+/** Current data-mode settings (badge + wizard + Ajustes). */
+export function useSettings() {
+  return useQuery({
+    queryKey: ["settings"],
+    queryFn: api.getSettings,
+    staleTime: 30_000,
+  });
+}
+
+/** Save data-mode settings; refreshes the cached value immediately. */
+export function useUpdateSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: api.UpdateSettingsInput) => api.updateSettings(data),
+    onSuccess: (updated) => {
+      qc.setQueryData(["settings"], updated);
+      qc.invalidateQueries({ queryKey: ["settings"] });
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // MUTATIONS — Socios
 // ---------------------------------------------------------------------------

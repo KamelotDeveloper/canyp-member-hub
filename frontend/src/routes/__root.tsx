@@ -12,6 +12,7 @@ import { useEffect, type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { AppShell } from "../components/canyp/AppShell";
+import { DataModeWizard } from "../components/canyp/DataModeWizard";
 import { Toaster } from "../components/ui/sonner";
 
 function NotFoundComponent() {
@@ -148,6 +149,8 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
+      {/* Wizard de primer uso: aparece solo mientras no haya modo configurado. */}
+      <DataModeWizard />
       <AppShell>
         {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
         <Outlet />

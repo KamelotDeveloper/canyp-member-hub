@@ -17,13 +17,22 @@ import {
   executeImport,
   getImportTemplate,
   getParcelas,
+  getSettings,
   getSocios,
   importParcelas,
   previewImport,
   setBatchEstado,
   setBatchVencimiento,
+  updateSettings,
 } from "../api";
-import type { ExecuteResult, ImportPayload, Parcela, PreviewResult, Socio } from "../types";
+import type {
+  AppSettings,
+  ExecuteResult,
+  ImportPayload,
+  Parcela,
+  PreviewResult,
+  Socio,
+} from "../types";
 
 // ---------------------------------------------------------------------------
 // Compile-time: exports exist with the expected shapes
@@ -41,6 +50,12 @@ const _parcelasIsPromise: IsPromise<GetParcelasReturns> = true;
 
 type DeleteMembresiaReturns = ReturnType<typeof deleteMembresia>;
 const _deleteMembresiaIsPromise: IsPromise<DeleteMembresiaReturns> = true;
+
+type GetSettingsReturns = ReturnType<typeof getSettings>;
+const _settingsIsPromise: IsPromise<GetSettingsReturns> = true;
+
+type UpdateSettingsReturns = ReturnType<typeof updateSettings>;
+const _updateSettingsIsPromise: IsPromise<UpdateSettingsReturns> = true;
 
 type ApiErrorExtendsError = ApiError extends Error ? true : false;
 const _apiErrorCheck: ApiErrorExtendsError = true;
@@ -311,6 +326,8 @@ describe("unidades compartidas API (PR 3)", () => {
     const body = JSON.parse(init.body as string);
     expect(body.items).toHaveLength(1);
     expect(body.membresiaIds).toEqual(["m1", "m2", "m3"]);
+    // El id lo genera el backend: el cliente nunca lo envía (seguro para Postgres).
+    expect(body.id).toBeUndefined();
   });
 
   it("createPago derives membresiaIds from items when not provided", async () => {
@@ -334,6 +351,58 @@ describe("unidades compartidas API (PR 3)", () => {
     const body = JSON.parse(init.body as string);
     expect(body.items.map((i: { membresiaId: string }) => i.membresiaId)).toEqual(["m1", "m2"]);
     expect(body.membresiaIds).toEqual(["m1", "m2"]);
+    expect(body.id).toBeUndefined();
+  });
+});
+
+describe("settings API (modo de datos)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("getSettings GETs /settings and returns AppSettings", async () => {
+    const settings: AppSettings = { dataMode: "local", databaseUrl: "", configured: true };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(settings), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getSettings();
+    expect(result).toEqual(settings);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit | undefined];
+    expect(url).toBe("/api/settings");
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+
+  it("updateSettings PUTs {dataMode, databaseUrl} to /settings", async () => {
+    const updated: AppSettings = {
+      dataMode: "remoto",
+      databaseUrl: "postgresql://u:p@h/db",
+      configured: true,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(updated), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await updateSettings({
+      dataMode: "remoto",
+      databaseUrl: "postgresql://u:p@h/db",
+    });
+    expect(result).toEqual(updated);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/settings");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({
+      dataMode: "remoto",
+      databaseUrl: "postgresql://u:p@h/db",
+    });
   });
 });
 
