@@ -23,11 +23,19 @@ import type {
 // QUERIES
 // ---------------------------------------------------------------------------
 
+/**
+ * Auto-refresh cadence for list/dashboard queries (ms).
+ * En modo remoto dos PCs comparten la base: refrescar cada ~15s mantiene la
+ * UI al día sin realtime. El cache de TanStack Query ya cubre el resto.
+ */
+const REFRESH_INTERVAL_MS = 15_000;
+
 /** List all socios, optionally filtered by search term */
 export function useSocios(params?: { search?: string }) {
   return useQuery({
     queryKey: ["socios", params],
     queryFn: () => api.getSocios(params),
+    refetchInterval: REFRESH_INTERVAL_MS,
   });
 }
 
@@ -45,6 +53,7 @@ export function useMembresias(filters?: { predio?: string; estado?: string; soci
   return useQuery({
     queryKey: ["membresias", filters],
     queryFn: () => api.getMembresias(filters),
+    refetchInterval: REFRESH_INTERVAL_MS,
   });
 }
 
@@ -62,6 +71,7 @@ export function useAranceles(params?: { predio?: string; area?: string }) {
   return useQuery({
     queryKey: ["aranceles", params],
     queryFn: () => api.getAranceles(params),
+    refetchInterval: REFRESH_INTERVAL_MS,
   });
 }
 
@@ -70,6 +80,7 @@ export function usePagos(socioId?: string) {
   return useQuery({
     queryKey: ["pagos", socioId],
     queryFn: () => api.getPagos(socioId ? { socioId } : undefined),
+    refetchInterval: REFRESH_INTERVAL_MS,
   });
 }
 
@@ -78,6 +89,7 @@ export function useNotificaciones(socioId?: string) {
   return useQuery({
     queryKey: ["notificaciones", socioId],
     queryFn: () => api.getNotificaciones(socioId ? { socioId } : undefined),
+    refetchInterval: REFRESH_INTERVAL_MS,
   });
 }
 
@@ -86,6 +98,7 @@ export function useDashboardStats() {
   return useQuery({
     queryKey: ["dashboard", "stats"],
     queryFn: api.getDashboardStats,
+    refetchInterval: REFRESH_INTERVAL_MS,
   });
 }
 
@@ -94,6 +107,7 @@ export function useDashboardAlertas() {
   return useQuery({
     queryKey: ["dashboard", "alertas"],
     queryFn: api.getDashboardAlertas,
+    refetchInterval: REFRESH_INTERVAL_MS,
   });
 }
 
@@ -102,6 +116,7 @@ export function useParcelas(predio?: string) {
   return useQuery({
     queryKey: ["parcelas", predio],
     queryFn: () => api.getParcelas(predio ? { predio } : undefined),
+    refetchInterval: REFRESH_INTERVAL_MS,
   });
 }
 
