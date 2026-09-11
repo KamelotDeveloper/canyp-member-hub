@@ -9,6 +9,7 @@ from backend.config import settings
 from backend.database import Base, engine
 from backend.routers import (
     aranceles,
+    backup,
     dashboard,
     export,
     membresias,
@@ -24,6 +25,12 @@ from backend.routers import (
 async def lifespan(app: FastAPI):
     """Create tables on startup."""
     Base.metadata.create_all(bind=engine)
+    try:
+        from backend.services.backup import run_backup_if_needed
+
+        run_backup_if_needed(engine)
+    except Exception:
+        pass
     yield
 
 
@@ -44,6 +51,7 @@ app.add_middleware(
 )
 
 # Routers
+app.include_router(backup.router)
 app.include_router(socios.router)
 app.include_router(membresias.router)
 app.include_router(aranceles.router)
