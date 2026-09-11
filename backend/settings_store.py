@@ -69,7 +69,9 @@ def load_settings(path: str | None = None) -> AppSettings:
     if not os.path.exists(path):
         return AppSettings()
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        # utf-8-sig tolerates a UTF-8 BOM (Windows PowerShell/Notepad write one),
+        # so a manually edited settings file never silently falls back to local.
+        with open(path, "r", encoding="utf-8-sig") as fh:
             raw = json.load(fh)
     except (OSError, json.JSONDecodeError):
         return AppSettings()

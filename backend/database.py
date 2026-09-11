@@ -32,11 +32,19 @@ def _is_postgres(url: str) -> bool:
     return url.startswith("postgresql")
 
 
+def _normalize_postgres_url(url: str) -> str:
+    """Force the declared psycopg 3 driver for bare ``postgresql://`` URLs
+    (SQLAlchemy 2.x still defaults bare ``postgresql://`` to psycopg2)."""
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+
 def _build_engine(database_url: str):
     """Dialect-aware engine factory (SQLite vs PostgreSQL)."""
     if _is_postgres(database_url):
         return create_engine(
-            database_url,
+            _normalize_postgres_url(database_url),
             pool_pre_ping=True,
             pool_size=5,
             max_overflow=5,

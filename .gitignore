@@ -42,3 +42,7 @@ frontend/.lovable/
 *.mp4
 *.pdf
 cosas.txt
+
+# Secretos y datos locales
+canyp-settings.json
+backups/
