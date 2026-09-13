@@ -101,7 +101,8 @@ function SociosPage() {
       .map((s: Socio) => {
         const ms = membresias.filter((m: Membresia) => m.socioId === s.id);
         const estados = ms.map(estadoVisual);
-        const general = prioridad.find((p) => estados.includes(p)) ?? "baja";
+        const general =
+          prioridad.find((p) => estados.includes(p)) ?? (s.activo ? "activa" : "baja");
         return { socio: s, membresias: ms, estados, general };
       })
       .filter((f) => {

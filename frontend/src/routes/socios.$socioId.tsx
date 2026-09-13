@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate, useParams } from "@tanstack/react-router";
-import { ArrowLeft, CreditCard, Pencil, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, CreditCard, Pencil, Plus, Trash2, UserCheck, UserX } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -52,7 +52,7 @@ import {
   useDeleteSocio,
   useAranceles,
 } from "@/lib/canyp/queries";
-import type { Arancel, Area, Membresia, Predio, Socio } from "@/lib/canyp/types";
+import type { Arancel, Area, Membresia, Predio, Rol, Socio } from "@/lib/canyp/types";
 
 export const Route = createFileRoute("/socios/$socioId")({
   head: () => ({
@@ -93,18 +93,21 @@ function FichaSocio() {
   const [memOpen, setMemOpen] = useState(false);
   const [edit, setEdit] = useState<Socio | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [bajaOpen, setBajaOpen] = useState(false);
   const [nueva, setNueva] = useState<{
     predio: Predio;
     area: Area;
     vencimiento: string;
     detalle: string;
     arancelId: string;
+    rol: Rol | "";
   }>({
     predio: "Embalse",
     area: "Balseros",
     vencimiento: new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10),
     detalle: "",
     arancelId: "",
+    rol: "Titular",
   });
 
   if (loadingSocio) {
@@ -140,6 +143,12 @@ function FichaSocio() {
         <ArrowLeft className="size-3.5" /> Volver a socios
       </Link>
 
+      {socio.activo === false && (
+        <div className="mb-3">
+          <EstadoBadge estado="baja" />
+        </div>
+      )}
+
       <PageHeader
         title={socio.nombre}
         subtitle={`${socio.dni ? `DNI ${socio.dni} · ` : ""}Socio desde ${formatFecha(socio.fechaAlta)}`}
@@ -162,6 +171,26 @@ function FichaSocio() {
             >
               <CreditCard className="mr-2 size-4" /> Registrar pago
             </Button>
+            {socio.activo ? (
+              <Button variant="outline" onClick={() => setBajaOpen(true)}>
+                <UserX className="mr-2 size-4" /> Dar de baja
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                onClick={() =>
+                  updateSocio.mutate(
+                    { id: socio.id, data: { activo: true } },
+                    {
+                      onSuccess: () => toast.success("Socio reactivado"),
+                      onError: () => toast.error("Error al reactivar el socio"),
+                    },
+                  )
+                }
+              >
+                <UserCheck className="mr-2 size-4" /> Reactivar
+              </Button>
+            )}
             <Button
               variant="outline"
               className="text-destructive hover:bg-destructive hover:text-destructive-foreground"
@@ -379,6 +408,7 @@ function FichaSocio() {
                     ...nueva,
                     predio: v as Predio,
                     area: areasPorPredio[v as Predio][0]!,
+                    rol: "Titular",
                     arancelId: "",
                   })
                 }
@@ -396,7 +426,12 @@ function FichaSocio() {
               <Label>Área</Label>
               <Select
                 value={nueva.area}
-                onValueChange={(v) => setNueva({ ...nueva, area: v as Area, arancelId: "" })}
+                onValueChange={(v) => {
+                  const area = v as Area;
+                  const rol: Rol | "" =
+                    area === "Balseros" || area === "Cabañeros" ? "Titular" : "";
+                  setNueva({ ...nueva, area, rol, arancelId: "" });
+                }}
               >
                 <SelectTrigger className="mt-1.5">
                   <SelectValue />
@@ -410,6 +445,23 @@ function FichaSocio() {
                 </SelectContent>
               </Select>
             </div>
+            {(nueva.area === "Balseros" || nueva.area === "Cabañeros") && (
+              <div>
+                <Label>Rol</Label>
+                <Select
+                  value={nueva.rol}
+                  onValueChange={(v) => setNueva({ ...nueva, rol: v as Rol })}
+                >
+                  <SelectTrigger className="mt-1.5">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Titular">Titular</SelectItem>
+                    <SelectItem value="Integrante">Integrante</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div>
               <Label>Vencimiento</Label>
               <Input
@@ -456,9 +508,15 @@ function FichaSocio() {
             </Button>
             <Button
               onClick={() => {
-                const { arancelId, ...resto } = nueva;
+                const { arancelId, rol, ...resto } = nueva;
                 createMembresia.mutate(
-                  { socioId: socio.id, estado: "activa", ...resto, ...(arancelId ? { arancelId } : {}) },
+                  {
+                    socioId: socio.id,
+                    estado: "activa",
+                    ...resto,
+                    ...(rol ? { rol } : {}),
+                    ...(arancelId ? { arancelId } : {}),
+                  },
                   {
                     onSuccess: () => {
                       setMemOpen(false);
@@ -500,6 +558,37 @@ function FichaSocio() {
               }}
             >
               Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={bajaOpen} onOpenChange={setBajaOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Dar de baja al socio</AlertDialogTitle>
+            <AlertDialogDescription>
+              ¿Seguro que querés dar de baja a <strong>{socio.nombre}</strong>? El socio dejará de
+              estar activo pero conservará su historial de membresías y pagos.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                updateSocio.mutate(
+                  { id: socio.id, data: { activo: false } },
+                  {
+                    onSuccess: () => {
+                      setBajaOpen(false);
+                      toast.success("Socio dado de baja");
+                    },
+                    onError: () => toast.error("Error al dar de baja al socio"),
+                  },
+                );
+              }}
+            >
+              Dar de baja
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
