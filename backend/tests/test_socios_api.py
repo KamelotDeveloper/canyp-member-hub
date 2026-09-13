@@ -2,6 +2,9 @@
 
 from datetime import date
 
+from backend.models.membresia import Membresia
+from backend.models.pago import Pago
+
 
 SOCIO_PAYLOAD = {
     "id": "s100",
@@ -161,6 +164,51 @@ class TestSociosFrontendPayload:
         )
         assert resp.status_code == 201
         assert resp.json()["fechaAlta"] == "2023-05-01"
+
+
+class TestSociosNullableTextFields:
+    """Regression: a socio with NULL text fields must serialize without 500.
+
+    SocioCreate allows dni/telefono/email/direccion to be omitted (None), but
+    SocioResponse inherited them as mandatory strings from SocioBase. One socio
+    with a NULL field broke the serialization of the ENTIRE /api/socios list
+    with ResponseValidationError.
+    """
+
+    def test_create_without_dni_serializes(self, test_client):
+        resp = test_client.post(
+            "/api/socios",
+            json={
+                "id": "sNull1",
+                "nombre": "Sin DNI",
+                "activo": True,
+            },
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["nombre"] == "Sin DNI"
+        assert body["dni"] is None
+
+    def test_list_with_null_dni_does_not_break_list(self, test_client):
+        test_client.post(
+            "/api/socios",
+            json={
+                "id": "sNull2",
+                "nombre": "Sin Datos",
+                "activo": True,
+            },
+        )
+        test_client.post(
+            "/api/socios",
+            json={**SOCIO_PAYLOAD, "id": "sNull3", "nombre": "Completo"},
+        )
+        resp = test_client.get("/api/socios")
+        assert resp.status_code == 200
+        socios = resp.json()
+        assert len(socios) == 2
+        by_id = {s["id"]: s for s in socios}
+        assert by_id["sNull2"]["dni"] is None
+        assert by_id["sNull3"]["dni"] == "30123456"
 
 
 class TestSociosEdgeCases:
@@ -418,3 +466,96 @@ class TestDeleteSocioCascade:
             membresias = resp.json()
             assert len(membresias) == 1
             assert membresias[0]["rol"] == "Titular"
+
+
+class TestDeleteSocioConPagos:
+    """Contable: a socio with payments cannot be deleted (409) — darlo de baja en su lugar."""
+
+    def _seed_socio_con_pago(self, test_client, test_db):
+        """Create socio + membresia + arancel + pago for deletion tests."""
+        test_client.post(
+            "/api/socios",
+            json={
+                "id": "sPagos",
+                "nombre": "Socio Con Pagos",
+                "dni": "91000001",
+                "telefono": "",
+                "email": "",
+                "direccion": "",
+                "activo": True,
+            },
+        )
+        test_client.post(
+            "/api/membresias",
+            json={
+                "id": "mPagos",
+                "socioId": "sPagos",
+                "area": "Balseros",
+                "predio": "Embalse",
+                "estado": "activa",
+                "vencimiento": "2026-12-31",
+                "rol": "Titular",
+            },
+        )
+        test_client.post(
+            "/api/aranceles",
+            json={
+                "id": "aPagos",
+                "nombre": "Cuota Socio Con Pagos",
+                "area": "Balseros",
+                "predio": "Embalse",
+                "monto": 10000.0,
+                "vigenteDesde": "2026-01-01",
+            },
+        )
+        resp = test_client.post(
+            "/api/pagos",
+            json={
+                "id": "pPagos",
+                "socioId": "sPagos",
+                "fecha": "2026-02-01",
+                "medio": "efectivo",
+                "total": 10000.0,
+                "items": [
+                    {
+                        "arancelId": "aPagos",
+                        "membresiaId": "mPagos",
+                        "montoAplicado": 10000.0,
+                        "arancelNombre": "Cuota Socio Con Pagos",
+                    }
+                ],
+                "membresiaIds": ["mPagos"],
+            },
+        )
+        assert resp.status_code == 201
+
+    def test_delete_socio_con_pagos_returns_409(self, test_client, test_db):
+        """Deleting a socio with payments is rejected to preserve the comprobante history."""
+        self._seed_socio_con_pago(test_client, test_db)
+
+        resp = test_client.delete("/api/socios/sPagos")
+        assert resp.status_code == 409
+        assert "pagos" in resp.json()["detail"].lower()
+
+        # Socio still exists and history is intact
+        assert test_client.get("/api/socios/sPagos").status_code == 200
+        assert test_db.query(Pago).filter(Pago.socioId == "sPagos").count() == 1
+        assert test_db.query(Membresia).filter(Membresia.socioId == "sPagos").count() == 1
+
+    def test_delete_socio_sin_pagos_permite(self, test_client):
+        """A socio without payments can still be deleted normally."""
+        test_client.post(
+            "/api/socios",
+            json={
+                "id": "sSinPagos",
+                "nombre": "Socio Sin Pagos",
+                "dni": "91000002",
+                "telefono": "",
+                "email": "",
+                "direccion": "",
+                "activo": True,
+            },
+        )
+        resp = test_client.delete("/api/socios/sSinPagos")
+        assert resp.status_code == 204
+        assert test_client.get("/api/socios/sSinPagos").status_code == 404

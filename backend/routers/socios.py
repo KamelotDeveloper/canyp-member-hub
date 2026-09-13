@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend.models.membresia import Membresia
 from backend.models.notificacion import Notificacion
+from backend.models.pago import Pago
 from backend.models.socio import Socio
 from backend.schemas.import_bulk import (
     MAX_FILE_BYTES,
@@ -166,6 +167,17 @@ def delete_socio(socio_id: str, db: Session = Depends(get_db)):
     socio = db.query(Socio).filter(Socio.id == socio_id).first()
     if socio is None:
         raise HTTPException(status_code=404, detail=f"Socio {socio_id} not found")
+
+    # Contable: un socio con pagos registrados NO se borra — se da de baja.
+    # El historial de comprobantes se conserva para poder atender reclamos.
+    if db.query(Pago).filter(Pago.socioId == socio_id).first():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "No se puede eliminar el socio porque tiene pagos registrados. "
+                "Podés darlo de baja para conservar el historial."
+            ),
+        )
 
     # Promote Titular → first Integrante in every unit where this socio is Titular.
     titular_membresias = (
