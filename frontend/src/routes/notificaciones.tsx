@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Mail, MessageCircle } from "lucide-react";
-import { useState } from "react";
+
+import { Mail, MessageCircle, SkipForward } from "lucide-react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -51,6 +52,44 @@ export const Route = createFileRoute("/notificaciones")({
   component: NotificacionesPage,
 });
 
+// ---------------------------------------------------------------------------
+// WhatsApp helpers
+// ---------------------------------------------------------------------------
+
+interface EnvioWhatsApp {
+  socioId: string;
+  nombre: string;
+  telefono: string;
+  mensaje: string;
+}
+
+function armarMensaje(nombre: string, area: string, predio: string, vencimiento: string): string {
+  return (
+    `Hola ${nombre}, te escribimos del Club Náutico CANYP. ` +
+    `Tu membresía de ${area} en el predio ${predio} vence el ${formatFecha(vencimiento)}. ` +
+    `Podés regularizarla en administración. ¡Gracias!`
+  );
+}
+
+async function abrirWhatsApp(telefono: string, mensaje: string) {
+  const tel = `549${telefono.replace(/\D/g, "")}`;
+  const msg = encodeURIComponent(mensaje);
+  const url = `whatsapp://send?phone=${tel}&text=${msg}`;
+  const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  if (isTauri) {
+    // Dynamic import so the SSR/Nitro build never tries to resolve the Tauri-only module.
+    const { open } = await import("@tauri-apps/plugin-shell");
+    await open(url);
+  } else {
+    // Browser fallback: wa.me opens WhatsApp Web or the desktop app.
+    window.open(`https://wa.me/${tel}?text=${msg}`, "_blank");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Page component
+// ---------------------------------------------------------------------------
+
 function NotificacionesPage() {
   const { data: membresias = [], isLoading: loadingMembresias } = useMembresias();
   const { data: socios = [] } = useSocios();
@@ -58,14 +97,21 @@ function NotificacionesPage() {
   const createNotificacion = useCreateNotificacion();
 
   const [sel, setSel] = useState<string[]>([]);
+  // Sequential WhatsApp send state
+  const [envios, setEnvios] = useState<EnvioWhatsApp[]>([]);
+  const [idxActual, setIdxActual] = useState(0);
   const [wa, setWa] = useState<string | null>(null);
 
-  const socioMap = new Map(socios.map((s: Socio) => [s.id, s]));
+  const socioMap = useMemo(() => new Map(socios.map((s: Socio) => [s.id, s])), [socios]);
 
-  const pendientes = membresias
-    .map((m) => ({ m, e: estadoVisual(m) }))
-    .filter((x) => x.e === "vencida" || x.e === "por_vencer")
-    .sort((a, b) => diasRestantes(a.m.vencimiento) - diasRestantes(b.m.vencimiento));
+  const pendientes = useMemo(
+    () =>
+      membresias
+        .map((m) => ({ m, e: estadoVisual(m) }))
+        .filter((x) => x.e === "vencida" || x.e === "por_vencer")
+        .sort((a, b) => diasRestantes(a.m.vencimiento) - diasRestantes(b.m.vencimiento)),
+    [membresias],
+  );
 
   const toggle = (id: string, on: boolean) =>
     setSel((prev) => (on ? [...prev, id] : prev.filter((x) => x !== id)));
@@ -74,6 +120,7 @@ function NotificacionesPage() {
     ...new Set(pendientes.filter((p) => sel.includes(p.m.id)).map((p) => p.m.socioId)),
   ];
 
+  // --- Email ---
   function enviarEmail() {
     if (socioIdsSeleccionados.length === 0) {
       toast.error("Seleccioná al menos un socio");
@@ -91,16 +138,64 @@ function NotificacionesPage() {
     );
   }
 
-  function generarWhatsapp() {
+  // --- WhatsApp sequential send ---
+  function iniciarWhatsApp() {
     if (socioIdsSeleccionados.length === 0) {
       toast.error("Seleccioná al menos un socio");
       return;
     }
-    const primero = pendientes.find((p) => sel.includes(p.m.id))!;
-    const socio = socioMap.get(primero.m.socioId);
-    setWa(
-      `Hola ${socio?.nombre}, te escribimos del Club Náutico CANYP. Tu membresía de ${primero.m.area} en el predio ${primero.m.predio} vence el ${formatFecha(primero.m.vencimiento)}. Podés regularizarla en administración. ¡Gracias!`,
+    const lista: EnvioWhatsApp[] = [];
+    for (const p of pendientes.filter((p) => sel.includes(p.m.id))) {
+      const socio = socioMap.get(p.m.socioId);
+      if (!socio || !socio.telefono) continue;
+      lista.push({
+        socioId: p.m.socioId,
+        nombre: socio.nombre,
+        telefono: socio.telefono,
+        mensaje: armarMensaje(socio.nombre, p.m.area, p.m.predio, p.m.vencimiento),
+      });
+    }
+    if (lista.length === 0) {
+      toast.error("Ninguno de los socios seleccionados tiene teléfono cargado");
+      return;
+    }
+    setEnvios(lista);
+    setIdxActual(0);
+    setWa(lista[0].mensaje);
+    abrirWhatsApp(lista[0].telefono, lista[0].mensaje);
+  }
+
+  function siguienteSocio() {
+    const next = idxActual + 1;
+    if (next >= envios.length) {
+      finalizarWhatsApp();
+      return;
+    }
+    setIdxActual(next);
+    setWa(envios[next].mensaje);
+    abrirWhatsApp(envios[next].telefono, envios[next].mensaje);
+  }
+
+  function finalizarWhatsApp() {
+    const socioIds = [...new Set(envios.map((e) => e.socioId))];
+    createNotificacion.mutate(
+      { socioIds, canal: "whatsapp", motivo: "Recordatorio de vencimiento" },
+      {
+        onSuccess: () => {
+          setSel([]);
+          setEnvios([]);
+          setIdxActual(0);
+          setWa(null);
+          toast.success(`Notificaciones registradas: ${socioIds.length} socio(s)`);
+        },
+      },
     );
+  }
+
+  function cancelarWhatsApp() {
+    setEnvios([]);
+    setIdxActual(0);
+    setWa(null);
   }
 
   if (loadingMembresias) {
@@ -122,7 +217,7 @@ function NotificacionesPage() {
         actions={
           <>
             <ExportButton resource="notificaciones" label="notificaciones" />
-            <Button variant="outline" onClick={generarWhatsapp}>
+            <Button variant="outline" onClick={iniciarWhatsApp}>
               <MessageCircle className="mr-2 size-4" /> Enviar por WhatsApp
             </Button>
             <Button onClick={enviarEmail} disabled={createNotificacion.isPending}>
@@ -186,7 +281,7 @@ function NotificacionesPage() {
             {pendientes.length === 0 && (
               <TableRow>
                 <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
-                  No hay vencimientos pendientes. 🎉
+                  No hay vencimientos pendientes.
                 </TableCell>
               </TableRow>
             )}
@@ -218,39 +313,30 @@ function NotificacionesPage() {
         </ul>
       </Card>
 
-      <Dialog open={!!wa} onOpenChange={(o) => !o && setWa(null)}>
+      {/* WhatsApp sequential send dialog */}
+      <Dialog open={!!wa} onOpenChange={(o) => !o && cancelarWhatsApp()}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Mensaje de WhatsApp listo para enviar</DialogTitle>
+            <DialogTitle>Enviar WhatsApp — socio {idxActual + 1} de {envios.length}</DialogTitle>
             <DialogDescription>
-              Se generó un mensaje por cada socio seleccionado. Este es el primero.
+              Se abrió WhatsApp Desktop con el mensaje para <strong>{envios[idxActual]?.nombre}</strong>.
+              Revisalo y mandalo. Luego hacé clic en "Siguiente socio".
             </DialogDescription>
           </DialogHeader>
-          <p className="rounded-lg bg-success/10 p-4 text-sm leading-relaxed">{wa}</p>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setWa(null)}>
-              Cerrar
+          <p className="rounded-lg bg-success/10 p-4 text-sm leading-relaxed whitespace-pre-wrap">{wa}</p>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={cancelarWhatsApp}>
+              Cancelar
             </Button>
-            <Button
-              onClick={() => {
-                createNotificacion.mutate(
-                  {
-                    socioIds: socioIdsSeleccionados,
-                    canal: "whatsapp",
-                    motivo: "Recordatorio de vencimiento",
-                  },
-                  {
-                    onSuccess: () => {
-                      setSel([]);
-                      setWa(null);
-                      toast.success("Mensajes generados y registrados en el historial");
-                    },
-                  },
-                );
-              }}
-            >
-              Marcar como enviados
-            </Button>
+            {idxActual + 1 < envios.length ? (
+              <Button onClick={siguienteSocio}>
+                <SkipForward className="mr-2 size-4" /> Siguiente socio
+              </Button>
+            ) : (
+              <Button onClick={finalizarWhatsApp}>
+                Finalizar y registrar ({envios.length})
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
