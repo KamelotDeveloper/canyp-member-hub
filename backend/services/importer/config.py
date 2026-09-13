@@ -22,6 +22,7 @@ from backend.schemas.import_bulk import (
     ImportMembresiaResolveRow,
     ImportSocioRow,
 )
+from backend.services.telefonos import normalizar_telefono
 
 # Type alias for a normalizer: raw cell value -> canonical Python value.
 Normalizer = Callable[[Any], Any]
@@ -256,7 +257,7 @@ _IMPORT_SOCIOS: dict[str, Any] = {
     "normalizers": {
         "nombre": norm_str,
         "dni": norm_str_optional,
-        "telefono": norm_str,
+        "telefono": normalizar_telefono,
         "email": norm_email,
         "direccion": norm_str,
         "fechaAlta": norm_date,

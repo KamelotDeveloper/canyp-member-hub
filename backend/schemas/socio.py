@@ -2,9 +2,10 @@
 
 from datetime import date
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from backend.schemas.common import OrmConfig
+from backend.services.telefonos import normalizar_telefono
 
 
 class SocioBase(OrmConfig, BaseModel):
@@ -15,6 +16,11 @@ class SocioBase(OrmConfig, BaseModel):
     direccion: str = ""
     fechaAlta: date
     activo: bool = True
+
+    @field_validator("telefono")
+    @classmethod
+    def _normalizar_telefono(cls, v: str) -> str:
+        return normalizar_telefono(v)
 
 
 class SocioCreate(SocioBase):
@@ -36,6 +42,19 @@ class SocioUpdate(BaseModel):
     fechaAlta: date | None = None
     activo: bool | None = None
 
+    @field_validator("telefono")
+    @classmethod
+    def _normalizar_telefono(cls, v: str | None) -> str | None:
+        return normalizar_telefono(v) if v is not None else None
+
 
 class SocioResponse(SocioBase):
     id: str
+    # La base persiste estos campos como NULL cuando no se enviaron (SocioCreate
+    # los declara opcionales). Si la respuesta los declarara obligatorios, un
+    # único socio con algún campo NULL rompería la serialización de TODA la
+    # lista con ResponseValidationError 500.
+    dni: str | None = None
+    telefono: str | None = None
+    email: str | None = None
+    direccion: str | None = None
