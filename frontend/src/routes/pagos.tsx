@@ -436,7 +436,7 @@ function ComprobanteView({
       <div className="flex items-start justify-between border-b border-border pb-3">
         <div className="flex items-center gap-2">
           <img
-            src="/CANYP_Almafuerte_logo.svg"
+            src="/CANYP_Almafuerte_logo.svg?v=3"
             alt="CANYP logo"
             className="size-9 object-contain"
           />
