@@ -42,9 +42,10 @@ import {
   usePagos,
   useCreatePago,
   useParcelas,
+  useUsuarios,
 } from "@/lib/canyp/queries";
 import { EstadoBadge } from "@/components/canyp/EstadoBadge";
-import type { Membresia, Pago, Socio } from "@/lib/canyp/types";
+import type { Membresia, Pago, Socio, Usuario } from "@/lib/canyp/types";
 
 export const Route = createFileRoute("/pagos")({
   validateSearch: (s: Record<string, unknown>): { nuevo?: string; socioId?: string } => ({
@@ -77,9 +78,18 @@ function PagosPage() {
   const { data: aranceles = [] } = useAranceles();
   const { data: pagos = [] } = usePagos();
   const { data: parcelas = [] } = useParcelas();
+  const { data: usuarios = [] } = useUsuarios();
   const createPago = useCreatePago();
 
   const socioMap = useMemo(() => new Map(socios.map((s: Socio) => [s.id, s])), [socios]);
+  const usuarioMap = useMemo(
+    () => new Map(usuarios.map((u: Usuario) => [u.id, u.username])),
+    [usuarios],
+  );
+
+  /** Usuario que cobró el pago; "sin operador" para pagos previos al multi-usuario. */
+  const operadorLabel = (createdBy?: string | null) =>
+    createdBy ? (usuarioMap.get(createdBy) ?? "sin operador") : "sin operador";
 
   const [open, setOpen] = useState(false);
   const [socioId, setSocioId] = useState<string>("");
@@ -227,6 +237,7 @@ function PagosPage() {
               <TableHead>Socio</TableHead>
               <TableHead>Detalle</TableHead>
               <TableHead>Medio</TableHead>
+              <TableHead>Operador</TableHead>
               <TableHead className="text-right">Total</TableHead>
               <TableHead className="text-right">Acciones</TableHead>
             </TableRow>
@@ -241,6 +252,7 @@ function PagosPage() {
                   {p.items.map((i) => i.nombre).join(" + ")}
                 </TableCell>
                 <TableCell className="text-xs">{p.medio}</TableCell>
+                <TableCell className="text-xs">{operadorLabel(p.created_by)}</TableCell>
                 <TableCell className="text-right font-semibold tabular-nums">
                   {formatARS(p.total)}
                 </TableCell>
@@ -253,7 +265,7 @@ function PagosPage() {
             ))}
             {historico.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
                   No hay comprobantes con estos filtros.
                 </TableCell>
               </TableRow>

@@ -18,6 +18,7 @@ import { Route as NotificacionesRouteImport } from './routes/notificaciones'
 import { Route as PagosRouteImport } from './routes/pagos'
 import { Route as SociosIndexRouteImport } from './routes/socios.index'
 import { Route as SociosSocioIdRouteImport } from './routes/socios.$socioId'
+import { Route as UsuariosRouteImport } from './routes/usuarios'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -64,6 +65,11 @@ const SociosSocioIdRoute = SociosSocioIdRouteImport.update({
   path: '/socios/$socioId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const UsuariosRoute = UsuariosRouteImport.update({
+  id: '/usuarios',
+  path: '/usuarios',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -75,6 +81,7 @@ export interface FileRoutesByFullPath {
   '/pagos': typeof PagosRoute
   '/socios/$socioId': typeof SociosSocioIdRoute
   '/socios/': typeof SociosIndexRoute
+  '/usuarios': typeof UsuariosRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -86,6 +93,7 @@ export interface FileRoutesByTo {
   '/pagos': typeof PagosRoute
   '/socios/$socioId': typeof SociosSocioIdRoute
   '/socios': typeof SociosIndexRoute
+  '/usuarios': typeof UsuariosRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -98,6 +106,7 @@ export interface FileRoutesById {
   '/pagos': typeof PagosRoute
   '/socios/$socioId': typeof SociosSocioIdRoute
   '/socios/': typeof SociosIndexRoute
+  '/usuarios': typeof UsuariosRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -111,6 +120,7 @@ export interface FileRouteTypes {
     | '/pagos'
     | '/socios/$socioId'
     | '/socios/'
+    | '/usuarios'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -122,6 +132,7 @@ export interface FileRouteTypes {
     | '/pagos'
     | '/socios/$socioId'
     | '/socios'
+    | '/usuarios'
   id:
     | '__root__'
     | '/'
@@ -133,6 +144,7 @@ export interface FileRouteTypes {
     | '/pagos'
     | '/socios/$socioId'
     | '/socios/'
+    | '/usuarios'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -145,6 +157,7 @@ export interface RootRouteChildren {
   PagosRoute: typeof PagosRoute
   SociosSocioIdRoute: typeof SociosSocioIdRoute
   SociosIndexRoute: typeof SociosIndexRoute
+  UsuariosRoute: typeof UsuariosRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -212,6 +225,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SociosSocioIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/usuarios': {
+      id: '/usuarios'
+      path: '/usuarios'
+      fullPath: '/usuarios'
+      preLoaderRoute: typeof UsuariosRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -225,6 +245,7 @@ const rootRouteChildren: RootRouteChildren = {
   PagosRoute: PagosRoute,
   SociosSocioIdRoute: SociosSocioIdRoute,
   SociosIndexRoute: SociosIndexRoute,
+  UsuariosRoute: UsuariosRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate, useParams } from "@tanstack/react-router";
 import { ArrowLeft, CreditCard, Pencil, Plus, Trash2, UserCheck, UserX } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -51,8 +51,9 @@ import {
   useUpdateMembresia,
   useDeleteSocio,
   useAranceles,
+  useUsuarios,
 } from "@/lib/canyp/queries";
-import type { Arancel, Area, Membresia, Predio, Rol, Socio } from "@/lib/canyp/types";
+import type { Arancel, Area, Membresia, Predio, Rol, Socio, Usuario } from "@/lib/canyp/types";
 
 export const Route = createFileRoute("/socios/$socioId")({
   head: () => ({
@@ -88,6 +89,7 @@ function FichaSocio() {
   const updateMembresia = useUpdateMembresia();
   const deleteSocio = useDeleteSocio();
   const { data: aranceles = [] } = useAranceles();
+  const { data: usuarios = [] } = useUsuarios();
 
   const [editOpen, setEditOpen] = useState(false);
   const [memOpen, setMemOpen] = useState(false);
@@ -129,6 +131,11 @@ function FichaSocio() {
 
   const membresias = allMembresias.filter((m: Membresia) => m.socioId === socio.id);
   const pagosSocio = pagos.filter((p) => p.socioId === socio.id);
+
+  const usuarioMap = useMemo(
+    () => new Map(usuarios.map((u: Usuario) => [u.id, u.username])),
+    [usuarios],
+  );
 
   const arancelesArea = aranceles.filter(
     (a: Arancel) => a.area === nueva.area && a.predio === nueva.predio,
@@ -316,6 +323,11 @@ function FichaSocio() {
           </dl>
         </Card>
       </section>
+
+      <p className="mt-6 text-xs text-muted-foreground">
+        Creado por {usuarioMap.get(socio.created_by ?? "") ?? "sin operador"} · Modificado por{" "}
+        {usuarioMap.get(socio.updated_by ?? "") ?? "—"}
+      </p>
 
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent>
