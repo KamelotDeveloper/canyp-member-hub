@@ -16,6 +16,9 @@ class Settings(BaseSettings):
         "http://localhost:5173,http://localhost:3000,"
         "http://localhost:8080,http://tauri.localhost,https://tauri.localhost,tauri://localhost"
     )
+    JWT_SECRET: str = ""
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXPIRATION_MINUTES: int = 1440
 
     def get_cors_origins(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

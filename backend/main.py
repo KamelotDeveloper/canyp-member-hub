@@ -9,6 +9,7 @@ from backend.config import settings
 from backend.database import Base, engine
 from backend.routers import (
     aranceles,
+    auth,
     backup,
     dashboard,
     export,
@@ -51,6 +52,7 @@ app.add_middleware(
 )
 
 # Routers
+app.include_router(auth.router)
 app.include_router(backup.router)
 app.include_router(socios.router)
 app.include_router(membresias.router)

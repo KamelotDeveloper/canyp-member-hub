@@ -9,3 +9,5 @@ python-dateutil
 openpyxl
 python-multipart
 psycopg[binary]
+bcrypt
+pyjwt

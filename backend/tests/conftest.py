@@ -21,6 +21,8 @@ from sqlalchemy.pool import StaticPool
 
 from backend.database import Base, get_db
 from backend.main import app
+from backend.models.usuario import Usuario
+from backend.security import create_access_token, hash_password
 
 # Force model registration with Base.metadata before any create_all.
 import backend.models  # noqa: F401
@@ -68,8 +70,11 @@ def test_db():
 
 
 @pytest.fixture()
-def test_client(test_db: Session):
-    """FastAPI TestClient with DB dependency overridden."""
+def raw_client(test_db: Session):
+    """FastAPI TestClient with DB dependency overridden (no auth headers).
+
+    This is the original test_client — zero call-site churn for existing tests.
+    """
 
     def _override():
         try:
@@ -81,3 +86,28 @@ def test_client(test_db: Session):
     client = TestClient(app)
     yield client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def auth_headers(test_db: Session) -> dict[str, str]:
+    """Create a test user and return Bearer authorization headers."""
+    user = Usuario(
+        username="testuser",
+        password_hash=hash_password("testpass123"),
+    )
+    test_db.add(user)
+    test_db.commit()
+    test_db.refresh(user)
+
+    token = create_access_token(user.id, user.username)
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture()
+def test_client(raw_client: TestClient, auth_headers: dict[str, str]) -> TestClient:
+    """TestClient with auth headers attached by default.
+
+    Callers can still override per-request headers when needed.
+    """
+    raw_client.headers.update(auth_headers)
+    return raw_client
