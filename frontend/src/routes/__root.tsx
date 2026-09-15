@@ -11,7 +11,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
-import { TOKEN_KEY } from "../lib/canyp/api";
+import { TOKEN_KEY, clearToken, logout } from "../lib/canyp/api";
 import { AppShell } from "../components/canyp/AppShell";
 import { DataModeWizard } from "../components/canyp/DataModeWizard";
 import { LoginGate } from "../components/canyp/LoginGate";
@@ -175,7 +175,15 @@ function AuthGate() {
   if (token) {
     return (
       <>
-        <AppShell>
+        <AppShell
+          onLogout={() => {
+            // Cerrar sesión: avisa al backend, limpia el token y vuelve al login.
+            void logout();
+            clearToken();
+            setToken(null);
+            queryClient.clear();
+          }}
+        >
           {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
           <Outlet />
         </AppShell>

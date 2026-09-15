@@ -3,6 +3,7 @@ import {
   BellRing,
   CreditCard,
   LayoutDashboard,
+  LogOut,
   ScrollText,
   Settings,
   Tags,
@@ -27,7 +28,13 @@ const nav: { to: string; label: string; icon: typeof Users; exact?: boolean }[] 
   { to: "/ajustes", label: "Ajustes", icon: Settings },
 ];
 
-export function AppShell({ children }: { children: ReactNode }) {
+export function AppShell({
+  children,
+  onLogout,
+}: {
+  children: ReactNode;
+  onLogout?: () => void;
+}) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const { data: membresias = [] } = useMembresias();
   const alertas = membresias.filter((m) => {
@@ -39,7 +46,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     <TooltipProvider delayDuration={0}>
       <div className="flex min-h-screen w-full bg-background">
         <aside className="fixed inset-y-0 left-0 z-20 hidden w-60 flex-col bg-sidebar text-sidebar-foreground md:flex">
-          <div className="flex flex-col items-center gap-3 border-b border-sidebar-border px-5 py-6">
+          <div className="flex shrink-0 flex-col items-center gap-3 border-b border-sidebar-border px-5 py-6">
             <div className="flex h-20 w-[70px] items-center justify-center">
               <img
                 src="/CANYP_Almafuerte_logo.svg?v=3"
@@ -52,7 +59,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <p className="text-[11px] text-sidebar-foreground/60">Sistema de Gestión</p>
             </div>
           </div>
-          <nav className="flex-1 space-y-1 p-3">
+          <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
             {nav.map((item) => {
               const active = item.exact ? pathname === item.to : pathname.startsWith(item.to);
               return (
@@ -77,9 +84,18 @@ export function AppShell({ children }: { children: ReactNode }) {
               );
             })}
           </nav>
-          <div className="flex items-center justify-between gap-2 border-t border-sidebar-border px-5 py-4 text-[11px] text-sidebar-foreground/55">
-            Predios: Embalse · Almafuerte
+          <div className="shrink-0 flex items-center justify-between gap-2 border-t border-sidebar-border px-4 py-3">
             <DataModeBadge />
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                title="Cerrar sesión"
+                className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-sidebar-foreground/65 transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
+              >
+                <LogOut className="size-3.5" />
+                Salir
+              </button>
+            )}
           </div>
         </aside>
 

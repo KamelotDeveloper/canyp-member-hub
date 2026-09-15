@@ -78,6 +78,20 @@ export function clearToken(): void {
 }
 
 /**
+ * Cerrar sesión: avisa al backend (open, sin guard) y descarta el token local.
+ * El endpoint no revoca el JWT en v1 (D4) — el "logout" real es eliminar el
+ * token del cliente. Se ignora cualquier error para que el cierre nunca falle.
+ */
+export async function logout(): Promise<void> {
+  try {
+    await fetch(`${BASE_URL}/auth/logout`, { method: "POST" });
+  } catch {
+    // network failure — still clear the local token below
+  }
+  clearToken();
+}
+
+/**
  * Auth endpoints (login/first-user/status/logout) are open by design, so a 401
  * there is a legitimate credential error — never trigger the token-clear
  * reload. Settings is conditionally guarded (open pre-config, guarded after),

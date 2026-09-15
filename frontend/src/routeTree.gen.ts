@@ -16,9 +16,9 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as MembresiasRouteImport } from './routes/membresias'
 import { Route as NotificacionesRouteImport } from './routes/notificaciones'
 import { Route as PagosRouteImport } from './routes/pagos'
+import { Route as UsuariosRouteImport } from './routes/usuarios'
 import { Route as SociosIndexRouteImport } from './routes/socios.index'
 import { Route as SociosSocioIdRouteImport } from './routes/socios.$socioId'
-import { Route as UsuariosRouteImport } from './routes/usuarios'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -55,6 +55,11 @@ const PagosRoute = PagosRouteImport.update({
   path: '/pagos',
   getParentRoute: () => rootRouteImport,
 } as any)
+const UsuariosRoute = UsuariosRouteImport.update({
+  id: '/usuarios',
+  path: '/usuarios',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SociosIndexRoute = SociosIndexRouteImport.update({
   id: '/socios/',
   path: '/socios/',
@@ -63,11 +68,6 @@ const SociosIndexRoute = SociosIndexRouteImport.update({
 const SociosSocioIdRoute = SociosSocioIdRouteImport.update({
   id: '/socios/$socioId',
   path: '/socios/$socioId',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const UsuariosRoute = UsuariosRouteImport.update({
-  id: '/usuarios',
-  path: '/usuarios',
   getParentRoute: () => rootRouteImport,
 } as any)
 
@@ -79,9 +79,9 @@ export interface FileRoutesByFullPath {
   '/membresias': typeof MembresiasRoute
   '/notificaciones': typeof NotificacionesRoute
   '/pagos': typeof PagosRoute
+  '/usuarios': typeof UsuariosRoute
   '/socios/$socioId': typeof SociosSocioIdRoute
   '/socios/': typeof SociosIndexRoute
-  '/usuarios': typeof UsuariosRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -91,9 +91,9 @@ export interface FileRoutesByTo {
   '/membresias': typeof MembresiasRoute
   '/notificaciones': typeof NotificacionesRoute
   '/pagos': typeof PagosRoute
+  '/usuarios': typeof UsuariosRoute
   '/socios/$socioId': typeof SociosSocioIdRoute
   '/socios': typeof SociosIndexRoute
-  '/usuarios': typeof UsuariosRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -104,9 +104,9 @@ export interface FileRoutesById {
   '/membresias': typeof MembresiasRoute
   '/notificaciones': typeof NotificacionesRoute
   '/pagos': typeof PagosRoute
+  '/usuarios': typeof UsuariosRoute
   '/socios/$socioId': typeof SociosSocioIdRoute
   '/socios/': typeof SociosIndexRoute
-  '/usuarios': typeof UsuariosRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -118,9 +118,9 @@ export interface FileRouteTypes {
     | '/membresias'
     | '/notificaciones'
     | '/pagos'
+    | '/usuarios'
     | '/socios/$socioId'
     | '/socios/'
-    | '/usuarios'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -130,9 +130,9 @@ export interface FileRouteTypes {
     | '/membresias'
     | '/notificaciones'
     | '/pagos'
+    | '/usuarios'
     | '/socios/$socioId'
     | '/socios'
-    | '/usuarios'
   id:
     | '__root__'
     | '/'
@@ -142,9 +142,9 @@ export interface FileRouteTypes {
     | '/membresias'
     | '/notificaciones'
     | '/pagos'
+    | '/usuarios'
     | '/socios/$socioId'
     | '/socios/'
-    | '/usuarios'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -155,9 +155,9 @@ export interface RootRouteChildren {
   MembresiasRoute: typeof MembresiasRoute
   NotificacionesRoute: typeof NotificacionesRoute
   PagosRoute: typeof PagosRoute
+  UsuariosRoute: typeof UsuariosRoute
   SociosSocioIdRoute: typeof SociosSocioIdRoute
   SociosIndexRoute: typeof SociosIndexRoute
-  UsuariosRoute: typeof UsuariosRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -211,6 +211,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PagosRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/usuarios': {
+      id: '/usuarios'
+      path: '/usuarios'
+      fullPath: '/usuarios'
+      preLoaderRoute: typeof UsuariosRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/socios/': {
       id: '/socios/'
       path: '/socios'
@@ -225,13 +232,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SociosSocioIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/usuarios': {
-      id: '/usuarios'
-      path: '/usuarios'
-      fullPath: '/usuarios'
-      preLoaderRoute: typeof UsuariosRouteImport
-      parentRoute: typeof rootRouteImport
-    }
   }
 }
 
@@ -243,9 +243,9 @@ const rootRouteChildren: RootRouteChildren = {
   MembresiasRoute: MembresiasRoute,
   NotificacionesRoute: NotificacionesRoute,
   PagosRoute: PagosRoute,
+  UsuariosRoute: UsuariosRoute,
   SociosSocioIdRoute: SociosSocioIdRoute,
   SociosIndexRoute: SociosIndexRoute,
-  UsuariosRoute: UsuariosRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

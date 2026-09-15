@@ -1,4 +1,4 @@
-import { Lock, Loader2, UserPlus } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -58,7 +58,6 @@ export function LoginGate({ onAuthenticated }: { onAuthenticated: (token: string
       <AuthShell
         title="Crear el primer usuario"
         description="Todavía no hay usuarios. Definí las credenciales del administrador."
-        icon={<UserPlus className="size-5 text-muted-foreground" />}
       >
         <FirstUserForm onAuthenticated={onAuthenticated} />
       </AuthShell>
@@ -69,7 +68,6 @@ export function LoginGate({ onAuthenticated }: { onAuthenticated: (token: string
     <AuthShell
       title="Ingresar"
       description="Ingresá con tu usuario para acceder al sistema."
-      icon={<Lock className="size-5 text-muted-foreground" />}
     >
       <LoginForm onAuthenticated={onAuthenticated} />
     </AuthShell>
@@ -79,21 +77,21 @@ export function LoginGate({ onAuthenticated }: { onAuthenticated: (token: string
 function AuthShell({
   title,
   description,
-  icon,
   children,
 }: {
   title: string;
   description: string;
-  icon: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
-          <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full border">
-            {icon}
-          </div>
+          <img
+            src="/CANYP_Almafuerte_logo.svg?v=3"
+            alt="CANYP logo"
+            className="mx-auto mb-3 size-16 object-contain"
+          />
           <CardTitle>{title}</CardTitle>
           <CardDescription>{description}</CardDescription>
         </CardHeader>
