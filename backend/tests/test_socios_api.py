@@ -559,3 +559,40 @@ class TestDeleteSocioConPagos:
         resp = test_client.delete("/api/socios/sSinPagos")
         assert resp.status_code == 204
         assert test_client.get("/api/socios/sSinPagos").status_code == 404
+
+
+class TestSocioAuditColumns:
+    """Audit (D7): created_by on create, updated_by on update, pre-feature null."""
+
+    def test_create_sets_created_by(self, test_client, current_user_id):
+        resp = test_client.post("/api/socios", json=SOCIO_PAYLOAD)
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["createdBy"] == current_user_id
+        assert body["updatedBy"] is None
+
+    def test_update_sets_updated_by(self, test_client, current_user_id):
+        test_client.post("/api/socios", json=SOCIO_PAYLOAD)
+        resp = test_client.put("/api/socios/s100", json={"nombre": "Renombrado"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["createdBy"] == current_user_id
+        assert body["updatedBy"] == current_user_id
+
+    def test_pre_feature_rows_are_null(self, test_client, test_db):
+        """Rows inserted outside the router (no operator) serialize null audit ids."""
+        from backend.models.socio import Socio
+
+        socio = Socio(
+            id="sLegacy",
+            nombre="Legacy",
+            dni="30999988",
+            fechaAlta=date(2024, 1, 1),
+        )
+        test_db.add(socio)
+        test_db.commit()
+        resp = test_client.get("/api/socios/sLegacy")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["createdBy"] is None
+        assert body["updatedBy"] is None

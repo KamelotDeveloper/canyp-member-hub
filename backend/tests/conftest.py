@@ -111,3 +111,10 @@ def test_client(raw_client: TestClient, auth_headers: dict[str, str]) -> TestCli
     """
     raw_client.headers.update(auth_headers)
     return raw_client
+
+
+@pytest.fixture()
+def current_user_id(test_db: Session, auth_headers: dict[str, str]) -> str:
+    """The id of the test user created by ``auth_headers`` (for audit asserts)."""
+    user = test_db.query(Usuario).filter(Usuario.username == "testuser").first()
+    return user.id

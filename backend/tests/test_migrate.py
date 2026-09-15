@@ -167,10 +167,15 @@ class TestMigration:
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
 
+        from backend.migrations import run_column_migrations
         from backend.models.enums import RolMembresia
         from backend.models.membresia import Membresia
 
         engine = create_engine(f"sqlite:///{legacy_db_path}")
+        # The audit-column runner adds created_by/updated_by (D7) to the legacy
+        # DB — the same additive step the app lifespan runs on startup — so the
+        # full ORM model (which now includes those columns) can hydrate.
+        run_column_migrations(engine)
         session = sessionmaker(bind=engine)()
         try:
             by_id = {m.id: m for m in session.query(Membresia).all()}

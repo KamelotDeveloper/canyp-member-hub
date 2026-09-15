@@ -454,3 +454,55 @@ class TestPagoSchemaOpenApi:
         pago_create = schema.get("PagoCreate", {})
         assert "items" in pago_create.get("properties", {})
         assert "membresiaIds" in pago_create.get("properties", {})
+
+
+class TestPagoAuditColumns:
+    """Audit (D7): created_by on create; updated_by never written (no update endpoint)."""
+
+    def _post_pago(self, test_client):
+        resp = test_client.post(
+            "/api/pagos",
+            json={
+                "socioId": "s1",
+                "fecha": "2025-07-10",
+                "medio": "efectivo",
+                "total": 15000.0,
+                "items": [
+                    {
+                        "arancelId": "a1",
+                        "membresiaId": "m1",
+                        "montoAplicado": 15000.0,
+                        "arancelNombre": "Cuota Balseros Embalse",
+                    }
+                ],
+                "membresiaIds": ["m1"],
+            },
+        )
+        assert resp.status_code == 201
+        return resp
+
+    def test_create_sets_created_by(self, test_client, test_db, current_user_id):
+        _seed_pago_prereqs(test_db)
+        body = self._post_pago(test_client).json()
+        assert body["createdBy"] == current_user_id
+        assert body["updatedBy"] is None
+
+    def test_pre_feature_rows_are_null(self, test_client, test_db):
+        """Pago inserted outside the router (legacy) serializes null audit ids."""
+        _seed_pago_prereqs(test_db)
+        pago = Pago(
+            id="pLegacy",
+            numero="9999-00009999",
+            socioId="s1",
+            fecha=date(2025, 7, 1),
+            medio="efectivo",
+            total=15000.0,
+        )
+        test_db.add(pago)
+        test_db.commit()
+
+        resp = test_client.get("/api/pagos/pLegacy")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["createdBy"] is None
+        assert body["updatedBy"] is None

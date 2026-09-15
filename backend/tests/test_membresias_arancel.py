@@ -208,3 +208,41 @@ class TestResolverMontoExplicitArancel:
             arancel_id="no-existe",
         )
         assert arancel is None
+
+
+class TestMembresiaAuditColumns:
+    """Audit (D7): created_by on create, updated_by on arancelId update."""
+
+    def test_create_sets_created_by(self, test_client, test_db, current_user_id):
+        _seed_socio(test_db)
+        resp = test_client.post(
+            "/api/membresias",
+            json={
+                "id": "mAud",
+                "socioId": "s1",
+                "area": "Cabañeros",
+                "predio": "Almafuerte",
+                "estado": "activa",
+                "vencimiento": "2026-01-01",
+            },
+        )
+        assert resp.status_code == 201
+        assert resp.json()["createdBy"] == current_user_id
+        assert resp.json()["updatedBy"] is None
+
+    def test_update_sets_updated_by(self, test_client, test_db, current_user_id):
+        _seed_socio(test_db)
+        test_client.post(
+            "/api/membresias",
+            json={
+                "id": "mAud",
+                "socioId": "s1",
+                "area": "Cabañeros",
+                "predio": "Almafuerte",
+                "estado": "activa",
+                "vencimiento": "2026-01-01",
+            },
+        )
+        resp = test_client.put("/api/membresias/mAud", json={"detalle": "actualizado"})
+        assert resp.status_code == 200
+        assert resp.json()["updatedBy"] == current_user_id

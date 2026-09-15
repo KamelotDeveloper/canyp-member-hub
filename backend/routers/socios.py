@@ -13,6 +13,7 @@ from backend.models.membresia import Membresia
 from backend.models.notificacion import Notificacion
 from backend.models.pago import Pago
 from backend.models.socio import Socio
+from backend.models.usuario import Usuario
 from backend.schemas.import_bulk import (
     MAX_FILE_BYTES,
     MAX_PARSEABLE_ROWS,
@@ -22,6 +23,7 @@ from backend.schemas.import_bulk import (
 )
 from backend.schemas.membresia import MembresiaResponse
 from backend.schemas.socio import SocioCreate, SocioResponse, SocioUpdate
+from backend.security import get_current_user
 from backend.services.importer.exporter import build_template
 from backend.services.importer.parser import ParseError
 from backend.services.importer.pipeline import execute_rows, preview_file
@@ -127,12 +129,17 @@ def get_socio(socio_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=SocioResponse, status_code=201)
-def create_socio(data: SocioCreate, db: Session = Depends(get_db)):
+def create_socio(
+    data: SocioCreate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
+):
     """Create a new socio."""
     socio_id = data.id or f"s{uuid.uuid4().hex[:8]}"
     socio = Socio(
         id=socio_id,
         fechaAlta=data.fechaAlta or date.today(),
+        created_by=current_user.id,
         **data.model_dump(exclude={"id", "fechaAlta"}),
     )
     db.add(socio)
@@ -142,13 +149,19 @@ def create_socio(data: SocioCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/{socio_id}", response_model=SocioResponse)
-def update_socio(socio_id: str, data: SocioUpdate, db: Session = Depends(get_db)):
+def update_socio(
+    socio_id: str,
+    data: SocioUpdate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
+):
     """Update a socio."""
     socio = db.query(Socio).filter(Socio.id == socio_id).first()
     if socio is None:
         raise HTTPException(status_code=404, detail=f"Socio {socio_id} not found")
     for key, value in data.model_dump(exclude_unset=True).items():
         setattr(socio, key, value)
+    socio.updated_by = current_user.id
     db.commit()
     db.refresh(socio)
     return socio

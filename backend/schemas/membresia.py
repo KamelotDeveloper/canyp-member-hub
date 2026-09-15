@@ -40,3 +40,6 @@ class MembresiaUpdate(BaseModel):
 
 class MembresiaResponse(MembresiaBase):
     id: str
+    # Audit columns (D7): null for rows created before multi-user auth.
+    created_by: str | None = None
+    updated_by: str | None = None

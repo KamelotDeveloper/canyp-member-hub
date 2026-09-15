@@ -118,6 +118,75 @@ class TestSettingsApi:
         assert resp.json()["configured"] is True
 
 
+class TestSettingsConditionalAuth:
+    """D9: settings open pre-config, guarded + masked once configured."""
+
+    def _write_configured(self, monkeypatch, tmp_path, payload):
+        target = _patch_settings_path(monkeypatch, tmp_path)
+        target.write_text(json.dumps(payload), encoding="utf-8")
+        return target
+
+    def test_unconfigured_get_is_open_without_auth(self, raw_client, monkeypatch, tmp_path):
+        _patch_settings_path(monkeypatch, tmp_path)
+        resp = raw_client.get("/api/settings")
+        assert resp.status_code == 200
+        assert resp.json() == {"dataMode": "local", "databaseUrl": "", "configured": False}
+
+    def test_unconfigured_put_is_open_without_auth(self, raw_client, monkeypatch, tmp_path):
+        target = _patch_settings_path(monkeypatch, tmp_path)
+        resp = raw_client.put(
+            "/api/settings",
+            json={"dataMode": "remoto", "databaseUrl": "postgresql://u:p@host/db"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["configured"] is True
+        assert json.loads(target.read_text(encoding="utf-8"))["configured"] is True
+
+    def test_configured_get_requires_auth(self, raw_client, monkeypatch, tmp_path):
+        self._write_configured(
+            monkeypatch,
+            tmp_path,
+            {"dataMode": "remoto", "databaseUrl": "postgresql://u:p@host/db", "configured": True},
+        )
+        resp = raw_client.get("/api/settings")
+        assert resp.status_code == 401
+
+    def test_configured_put_requires_auth(self, raw_client, monkeypatch, tmp_path):
+        self._write_configured(
+            monkeypatch,
+            tmp_path,
+            {"dataMode": "local", "databaseUrl": "", "configured": True},
+        )
+        resp = raw_client.put("/api/settings", json={"dataMode": "local"})
+        assert resp.status_code == 401
+
+    def test_configured_get_masks_remoto_url(self, test_client, monkeypatch, tmp_path):
+        url = "postgresql://u:p@host/db"
+        self._write_configured(
+            monkeypatch,
+            tmp_path,
+            {"dataMode": "remoto", "databaseUrl": url, "configured": True},
+        )
+        resp = test_client.get("/api/settings")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["databaseUrl"] == "***" + url[-8:]
+        assert body["databaseUrl"].startswith("***")
+        # Full URL (and credentials) never leak in the masked GET.
+        assert "u:p" not in body["databaseUrl"]
+        assert url not in body["databaseUrl"]
+
+    def test_configured_get_local_returns_empty_url(self, test_client, monkeypatch, tmp_path):
+        self._write_configured(
+            monkeypatch,
+            tmp_path,
+            {"dataMode": "local", "databaseUrl": "", "configured": True},
+        )
+        resp = test_client.get("/api/settings")
+        assert resp.status_code == 200
+        assert resp.json()["databaseUrl"] == ""
+
+
 class TestDesktopRunGlue:
     """backend.desktop_run maps persisted settings to DATABASE_URL."""
 

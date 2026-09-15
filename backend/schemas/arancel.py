@@ -41,3 +41,6 @@ class ArancelUpdate(BaseModel):
 
 class ArancelResponse(ArancelBase):
     id: str
+    # Audit columns (D7): null for rows created before multi-user auth.
+    created_by: str | None = None
+    updated_by: str | None = None

@@ -58,3 +58,6 @@ class SocioResponse(SocioBase):
     telefono: str | None = None
     email: str | None = None
     direccion: str | None = None
+    # Audit columns (D7): null for rows imported/created before multi-user auth.
+    created_by: str | None = None
+    updated_by: str | None = None

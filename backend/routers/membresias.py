@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend.models.enums import EstadoMembresia
 from backend.models.membresia import Membresia
+from backend.models.usuario import Usuario
 from backend.schemas.import_bulk import (
     MAX_FILE_BYTES,
     MAX_PARSEABLE_ROWS,
@@ -18,6 +19,7 @@ from backend.schemas.import_bulk import (
     RowData,
 )
 from backend.schemas.membresia import MembresiaCreate, MembresiaResponse, MembresiaUpdate
+from backend.security import get_current_user
 from backend.services.estado_visual import calcular_estado_visual
 from backend.services.importer.exporter import build_template
 from backend.services.importer.parser import ParseError
@@ -210,12 +212,20 @@ def get_membresia(membresia_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=MembresiaResponse, status_code=201)
-def create_membresia(data: MembresiaCreate, db: Session = Depends(get_db)):
+def create_membresia(
+    data: MembresiaCreate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
+):
     """Create a new membresia."""
     _validate_parcela_id(db, data.parcelaId)
     _validate_socio_id(db, data.socioId)
     membresia_id = data.id or f"m{uuid.uuid4().hex[:8]}"
-    membresia = Membresia(id=membresia_id, **data.model_dump(exclude={"id"}))
+    membresia = Membresia(
+        id=membresia_id,
+        created_by=current_user.id,
+        **data.model_dump(exclude={"id"}),
+    )
     db.add(membresia)
     db.commit()
     db.refresh(membresia)
@@ -224,7 +234,10 @@ def create_membresia(data: MembresiaCreate, db: Session = Depends(get_db)):
 
 @router.put("/{membresia_id}", response_model=MembresiaResponse)
 def update_membresia(
-    membresia_id: str, data: MembresiaUpdate, db: Session = Depends(get_db)
+    membresia_id: str,
+    data: MembresiaUpdate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
 ):
     """Update a membresia."""
     m = db.query(Membresia).filter(Membresia.id == membresia_id).first()
@@ -236,6 +249,7 @@ def update_membresia(
         _validate_parcela_id(db, data.parcelaId)
     for key, value in data.model_dump(exclude_unset=True).items():
         setattr(m, key, value)
+    m.updated_by = current_user.id
     db.commit()
     db.refresh(m)
     return m
@@ -274,6 +288,7 @@ def set_estado_membresia(
     membresia_id: str,
     data: MembresiaUpdate,
     db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
 ):
     """Set membresia estado (suspendida/baja)."""
     m = db.query(Membresia).filter(Membresia.id == membresia_id).first()
@@ -281,6 +296,7 @@ def set_estado_membresia(
         raise HTTPException(status_code=404, detail=f"Membresia {membresia_id} not found")
     if data.estado is not None:
         m.estado = data.estado
+    m.updated_by = current_user.id
     db.commit()
     db.refresh(m)
     return m

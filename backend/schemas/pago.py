@@ -61,3 +61,6 @@ class PagoUpdate(BaseModel):
 
 class PagoResponse(PagoBase):
     id: str
+    # Audit columns (D7): null for rows created before multi-user auth.
+    created_by: str | None = None
+    updated_by: str | None = None

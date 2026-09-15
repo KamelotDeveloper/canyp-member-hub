@@ -26,8 +26,11 @@ from backend.security import get_current_user
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Create tables on startup."""
+    """Create tables on startup, then apply additive column migrations."""
     Base.metadata.create_all(bind=engine)
+    from backend.migrations import run_column_migrations
+
+    run_column_migrations(engine)
     try:
         from backend.services.backup import run_backup_if_needed
 
@@ -54,8 +57,9 @@ app.add_middleware(
 )
 
 # Routers
-# Auth is open (login/logout/status/first-user bootstrap). Settings stays open
-# until Phase 3 (conditional auth). Everything else is guarded (D8).
+# Auth is open (login/logout/status/first-user bootstrap). Settings is included
+# WITHOUT a router-level guard — its own router enforces conditional auth (D9):
+# open while unconfigured, guarded once configured. Everything else is guarded (D8).
 app.include_router(auth.router)
 
 _guarded = [Depends(get_current_user)]

@@ -160,3 +160,47 @@ class TestDeleteArancel:
     def test_delete_nonexistent_returns_404(self, test_client):
         resp = test_client.delete("/api/aranceles/doesnotexist")
         assert resp.status_code == 404
+
+
+class TestArancelAuditColumns:
+    """Audit (D7): created_by on create, updated_by on update + /monto sub-update."""
+
+    def test_create_sets_created_by(self, test_client, current_user_id):
+        resp = test_client.post(
+            "/api/aranceles",
+            json={
+                "id": "aAud",
+                "nombre": "Cuota Audit",
+                "area": "Cabañeros",
+                "predio": "Almafuerte",
+                "monto": 10000.0,
+                "vigenteDesde": "2025-06-01",
+                "historico": [],
+            },
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["createdBy"] == current_user_id
+        assert body["updatedBy"] is None
+
+    def test_update_sets_updated_by(self, test_client, test_db, current_user_id):
+        _seed_arancel(test_db)
+        resp = test_client.put("/api/aranceles/a1", json={"nombre": "Renombrado"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["updatedBy"] == current_user_id
+
+    def test_update_monto_sets_updated_by(self, test_client, test_db, current_user_id):
+        _seed_arancel(test_db)
+        resp = test_client.put("/api/aranceles/a1/monto", json={"monto": 16000.0})
+        assert resp.status_code == 200
+        assert resp.json()["updatedBy"] == current_user_id
+
+    def test_pre_feature_rows_are_null(self, test_client, test_db):
+        """Arancel inserted outside the router serializes null audit ids."""
+        _seed_arancel(test_db)
+        resp = test_client.get("/api/aranceles/a1")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["createdBy"] is None
+        assert body["updatedBy"] is None
