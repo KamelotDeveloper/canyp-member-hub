@@ -35,8 +35,8 @@ export interface Socio {
   fechaAlta: string;
   activo: boolean;
   /** Usuario que creó el registro; null en importes masivos (sin operador). */
-  created_by?: string | null;
-  updated_by?: string | null;
+  createdBy?: string | null;
+  updatedBy?: string | null;
 }
 
 export interface Membresia {
@@ -53,8 +53,8 @@ export interface Membresia {
   parcelaId?: string;
   /** Arancel asignado explícitamente (null = resolver por heurística area+predio+categoria). */
   arancelId?: string;
-  created_by?: string | null;
-  updated_by?: string | null;
+  createdBy?: string | null;
+  updatedBy?: string | null;
 }
 
 export interface Arancel {
@@ -67,8 +67,8 @@ export interface Arancel {
   categoria?: CategoriaParcela;
   vigenteDesde: string;
   historico: { monto: number; vigenteDesde: string }[];
-  created_by?: string | null;
-  updated_by?: string | null;
+  createdBy?: string | null;
+  updatedBy?: string | null;
 }
 
 export interface PagoItem {
@@ -97,8 +97,8 @@ export interface Pago {
   items: PagoItem[];
   total: number;
   membresiaIds: string[];
-  created_by?: string | null;
-  updated_by?: string | null;
+  createdBy?: string | null;
+  updatedBy?: string | null;
 }
 
 export interface Notificacion {

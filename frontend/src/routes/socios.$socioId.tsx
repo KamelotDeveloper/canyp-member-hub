@@ -325,8 +325,8 @@ function FichaSocio() {
       </section>
 
       <p className="mt-6 text-xs text-muted-foreground">
-        Creado por {usuarioMap.get(socio.created_by ?? "") ?? "sin operador"} · Modificado por{" "}
-        {usuarioMap.get(socio.updated_by ?? "") ?? "—"}
+        Creado por {usuarioMap.get(socio.createdBy ?? "") ?? "sin operador"} · Modificado por{" "}
+        {usuarioMap.get(socio.updatedBy ?? "") ?? "—"}
       </p>
 
       <Dialog open={editOpen} onOpenChange={setEditOpen}>

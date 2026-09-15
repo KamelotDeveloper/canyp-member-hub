@@ -252,7 +252,7 @@ function PagosPage() {
                   {p.items.map((i) => i.nombre).join(" + ")}
                 </TableCell>
                 <TableCell className="text-xs">{p.medio}</TableCell>
-                <TableCell className="text-xs">{operadorLabel(p.created_by)}</TableCell>
+                <TableCell className="text-xs">{operadorLabel(p.createdBy)}</TableCell>
                 <TableCell className="text-right font-semibold tabular-nums">
                   {formatARS(p.total)}
                 </TableCell>
