@@ -23,6 +23,7 @@ import type {
   PreviewResult,
   RowData,
   Socio,
+  Usuario,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -43,6 +44,65 @@ function resolveBaseUrl(): string {
 
 const BASE_URL = resolveBaseUrl();
 
+/**
+ * localStorage key where the JWT is persisted after login / first-user.
+ * Read/write are client-guarded so the SSR pass (no `window`) never throws.
+ */
+export const TOKEN_KEY = "canyp.token";
+
+function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setToken(token: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    // Storage may be unavailable (private mode); auth still works in-memory.
+  }
+}
+
+export function clearToken(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Auth endpoints (login/first-user/status/logout) are open by design, so a 401
+ * there is a legitimate credential error — never trigger the token-clear
+ * reload. Settings is conditionally guarded (open pre-config, guarded after),
+ * so it is also excluded to avoid a reload loop while the login gate boots.
+ */
+function isAuthPath(path: string): boolean {
+  return path.startsWith("/auth/") || path === "/settings";
+}
+
+function attachAuthHeaders(init?: RequestInit): RequestInit {
+  const token = getToken();
+  if (!token) return init ?? {};
+  return {
+    ...init,
+    headers: { Authorization: `Bearer ${token}`, ...init?.headers },
+  };
+}
+
+/** On an expired/invalid token, drop it and reload so the login gate renders. */
+function handleUnauthorized(path: string): void {
+  if (isAuthPath(path)) return;
+  clearToken();
+  if (typeof window !== "undefined") window.location.reload();
+}
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -55,11 +115,12 @@ export class ApiError extends Error {
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${BASE_URL}${path}`;
-  const res = await fetch(url, {
+  const res = await fetch(url, attachAuthHeaders({
     headers: { "Content-Type": "application/json", ...init?.headers },
     ...init,
-  });
+  }));
   if (!res.ok) {
+    if (res.status === 401) handleUnauthorized(path);
     const body = await res.json().catch(() => ({ detail: res.statusText }));
     throw new ApiError(res.status, body.detail ?? res.statusText);
   }
@@ -76,8 +137,9 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
  */
 export async function apiFetchRaw(path: string, init?: RequestInit): Promise<Response> {
   const url = `${BASE_URL}${path}`;
-  const res = await fetch(url, init);
+  const res = await fetch(url, attachAuthHeaders(init));
   if (!res.ok) {
+    if (res.status === 401) handleUnauthorized(path);
     const body = await res.json().catch(() => ({ detail: res.statusText }));
     throw new ApiError(res.status, body.detail ?? res.statusText);
   }
@@ -394,6 +456,47 @@ export function updateSettings(data: UpdateSettingsInput): Promise<AppSettings> 
   return apiFetch<AppSettings>("/settings", {
     method: "PUT",
     body: JSON.stringify(data),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Auth + Usuarios
+// ---------------------------------------------------------------------------
+
+/** Open endpoint (no auth): whether any user exists yet. */
+export function getAuthStatus(): Promise<{ users_exist: boolean }> {
+  return apiFetch<{ users_exist: boolean }>("/auth/status");
+}
+
+/** POST /api/auth/login → 200 {token} | 401 "Credenciales inválidas". */
+export function login(username: string, password: string): Promise<{ token: string }> {
+  return apiFetch<{ token: string }>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+/** POST /api/auth/first-user → 201 {token, user} | 409 | 422. */
+export function createFirstUser(
+  username: string,
+  password: string,
+): Promise<{ token: string; user: Usuario }> {
+  return apiFetch<{ token: string; user: Usuario }>("/auth/first-user", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+/** GET /api/usuarios (guarded). */
+export function getUsuarios(): Promise<Usuario[]> {
+  return apiFetch<Usuario[]>("/usuarios");
+}
+
+/** POST /api/usuarios (guarded). */
+export function createUsuario(username: string, password: string): Promise<Usuario> {
+  return apiFetch<Usuario>("/usuarios", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
   });
 }
 

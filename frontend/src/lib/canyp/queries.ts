@@ -17,6 +17,7 @@ import type {
   PreviewResult,
   RowData,
   Socio,
+  Usuario,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -126,6 +127,9 @@ export function useSettings() {
     queryKey: ["settings"],
     queryFn: api.getSettings,
     staleTime: 30_000,
+    // Una vez configurado, GET /api/settings responde 401 sin token (D9). No
+    // reintentar: el LoginGate deriva `configured=true` de ese 401 al instante.
+    retry: false,
   });
 }
 
@@ -137,6 +141,43 @@ export function useUpdateSettings() {
     onSuccess: (updated) => {
       qc.setQueryData(["settings"], updated);
       qc.invalidateQueries({ queryKey: ["settings"] });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Auth + Usuarios
+// ---------------------------------------------------------------------------
+
+/**
+ * Open auth status (whether any user exists). Cached hard: it only changes
+ * after the first-user bootstrap, which reloads the app anyway.
+ */
+export function useAuthStatus() {
+  return useQuery({
+    queryKey: ["auth", "status"],
+    queryFn: api.getAuthStatus,
+    staleTime: Infinity,
+  });
+}
+
+/** List usuarios (guarded). */
+export function useUsuarios() {
+  return useQuery({
+    queryKey: ["usuarios"],
+    queryFn: api.getUsuarios,
+    refetchInterval: REFRESH_INTERVAL_MS,
+  });
+}
+
+/** Create a new usuario; invalidates the usuarios cache. */
+export function useCreateUsuario() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ username, password }: { username: string; password: string }) =>
+      api.createUsuario(username, password),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["usuarios"] });
     },
   });
 }

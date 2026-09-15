@@ -6,6 +6,7 @@ import {
   ScrollText,
   Settings,
   Tags,
+  UserPlus,
   Users,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -22,6 +23,7 @@ const nav: { to: string; label: string; icon: typeof Users; exact?: boolean }[] 
   { to: "/aranceles", label: "Aranceles", icon: Tags },
   { to: "/pagos", label: "Pagos", icon: CreditCard },
   { to: "/notificaciones", label: "Notificaciones", icon: BellRing },
+  { to: "/usuarios", label: "Usuarios", icon: UserPlus },
   { to: "/ajustes", label: "Ajustes", icon: Settings },
 ];
 

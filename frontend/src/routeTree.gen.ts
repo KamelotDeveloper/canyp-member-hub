@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AjustesRouteImport } from './routes/ajustes'
 import { Route as ArancelesRouteImport } from './routes/aranceles'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as MembresiasRouteImport } from './routes/membresias'
 import { Route as NotificacionesRouteImport } from './routes/notificaciones'
 import { Route as PagosRouteImport } from './routes/pagos'
@@ -31,6 +32,11 @@ const AjustesRoute = AjustesRouteImport.update({
 const ArancelesRoute = ArancelesRouteImport.update({
   id: '/aranceles',
   path: '/aranceles',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MembresiasRoute = MembresiasRouteImport.update({
@@ -63,6 +69,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/ajustes': typeof AjustesRoute
   '/aranceles': typeof ArancelesRoute
+  '/login': typeof LoginRoute
   '/membresias': typeof MembresiasRoute
   '/notificaciones': typeof NotificacionesRoute
   '/pagos': typeof PagosRoute
@@ -73,6 +80,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/ajustes': typeof AjustesRoute
   '/aranceles': typeof ArancelesRoute
+  '/login': typeof LoginRoute
   '/membresias': typeof MembresiasRoute
   '/notificaciones': typeof NotificacionesRoute
   '/pagos': typeof PagosRoute
@@ -84,6 +92,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/ajustes': typeof AjustesRoute
   '/aranceles': typeof ArancelesRoute
+  '/login': typeof LoginRoute
   '/membresias': typeof MembresiasRoute
   '/notificaciones': typeof NotificacionesRoute
   '/pagos': typeof PagosRoute
@@ -96,6 +105,7 @@ export interface FileRouteTypes {
     | '/'
     | '/ajustes'
     | '/aranceles'
+    | '/login'
     | '/membresias'
     | '/notificaciones'
     | '/pagos'
@@ -106,6 +116,7 @@ export interface FileRouteTypes {
     | '/'
     | '/ajustes'
     | '/aranceles'
+    | '/login'
     | '/membresias'
     | '/notificaciones'
     | '/pagos'
@@ -116,6 +127,7 @@ export interface FileRouteTypes {
     | '/'
     | '/ajustes'
     | '/aranceles'
+    | '/login'
     | '/membresias'
     | '/notificaciones'
     | '/pagos'
@@ -127,6 +139,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AjustesRoute: typeof AjustesRoute
   ArancelesRoute: typeof ArancelesRoute
+  LoginRoute: typeof LoginRoute
   MembresiasRoute: typeof MembresiasRoute
   NotificacionesRoute: typeof NotificacionesRoute
   PagosRoute: typeof PagosRoute
@@ -155,6 +168,13 @@ declare module '@tanstack/react-router' {
       path: '/aranceles'
       fullPath: '/aranceles'
       preLoaderRoute: typeof ArancelesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/membresias': {
@@ -199,6 +219,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AjustesRoute: AjustesRoute,
   ArancelesRoute: ArancelesRoute,
+  LoginRoute: LoginRoute,
   MembresiasRoute: MembresiasRoute,
   NotificacionesRoute: NotificacionesRoute,
   PagosRoute: PagosRoute,
