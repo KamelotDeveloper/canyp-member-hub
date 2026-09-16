@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/table";
 import { PageHeader } from "@/components/canyp/AppShell";
 import { ExportButton } from "@/components/export";
+import { SocioCombobox } from "@/components/canyp/SocioCombobox";
 import { estadoVisual, formatARS, formatFecha } from "@/lib/canyp/utils";
 import { itemsParaMembresiasConParcelas, esMembresiaCobrable } from "@/lib/canyp/unidad-helpers";
 import {
@@ -188,19 +189,15 @@ function PagosPage() {
       <Card className="mb-4 flex flex-wrap items-end gap-3 p-4">
         <div className="min-w-[220px] flex-1">
           <Label className="text-xs">Socio</Label>
-          <Select value={fSocio} onValueChange={setFSocio}>
-            <SelectTrigger className="mt-1.5">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="todos">Todos los socios</SelectItem>
-              {socios.map((s: Socio) => (
-                <SelectItem key={s.id} value={s.id}>
-                  {s.nombre}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <SocioCombobox
+            className="mt-1.5"
+            value={fSocio}
+            onChange={setFSocio}
+            socios={socios}
+            allowEmpty
+            emptyLabel="Todos los socios"
+            placeholder="Buscar socio..."
+          />
         </div>
         <div className="w-[170px]">
           <Label className="text-xs">Área</Label>
@@ -286,24 +283,16 @@ function PagosPage() {
           <div className="space-y-4">
             <div>
               <Label>Socio</Label>
-              <Select
+              <SocioCombobox
+                className="mt-1.5"
+                placeholder="Seleccionar socio"
                 value={socioId}
-                onValueChange={(v) => {
+                onChange={(v) => {
                   setSocioId(v);
                   setSeleccion([]);
                 }}
-              >
-                <SelectTrigger className="mt-1.5">
-                  <SelectValue placeholder="Seleccionar socio" />
-                </SelectTrigger>
-                <SelectContent>
-                  {socios.map((s: Socio) => (
-                    <SelectItem key={s.id} value={s.id}>
-                      {s.nombre} — {s.dni}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                socios={socios}
+              />
             </div>
 
             {socioId && (

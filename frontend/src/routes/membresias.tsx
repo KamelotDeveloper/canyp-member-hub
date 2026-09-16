@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
-import { Plus, Upload } from "lucide-react";
+import { Pencil, Plus, Trash2, Upload } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Select,
   SelectContent,
@@ -33,12 +43,14 @@ import { EstadoBadge } from "@/components/canyp/EstadoBadge";
 import { PageHeader } from "@/components/canyp/AppShell";
 import { ExportButton } from "@/components/export";
 import { UnidadesPanel } from "@/components/canyp/UnidadesPanel";
+import { SocioCombobox } from "@/components/canyp/SocioCombobox";
 import { ImportModal, type ImportColumnSpec } from "@/components/import";
 import { estadoVisual, formatFecha } from "@/lib/canyp/utils";
 import {
   useMembresias,
   useSocios,
   useUpdateMembresia,
+  useDeleteMembresia,
   useParcelas,
   useUpdateParcela,
   useCreateParcela,
@@ -101,11 +113,14 @@ function MembresiasPage() {
   const { data: socios = [] } = useSocios();
   const { data: parcelas = [] } = useParcelas();
   const updateMembresia = useUpdateMembresia();
+  const deleteMembresia = useDeleteMembresia();
   const updateParcela = useUpdateParcela();
   const createParcela = useCreateParcela();
   const createMembresia = useCreateMembresia();
   const { data: aranceles = [] } = useAranceles();
   const [editando, setEditando] = useState<{ id: string; fecha: string } | null>(null);
+  const [editandoFull, setEditandoFull] = useState<Membresia | null>(null);
+  const [eliminando, setEliminando] = useState<Membresia | null>(null);
   const [nuevaOpen, setNuevaOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [nueva, setNueva] = useState<{
@@ -306,6 +321,17 @@ function MembresiasPage() {
                       >
                         Vencimiento
                       </Button>
+                      <Button size="sm" variant="outline" onClick={() => setEditandoFull(m)}>
+                        <Pencil className="mr-1.5 size-3.5" /> Editar
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => setEliminando(m)}
+                      >
+                        <Trash2 className="mr-1.5 size-3.5" /> Eliminar
+                      </Button>
                       <Button
                         size="sm"
                         onClick={() =>
@@ -342,22 +368,13 @@ function MembresiasPage() {
           <div className="grid gap-4">
             <div>
               <Label>Socio</Label>
-              <Select
+              <SocioCombobox
+                className="mt-1.5"
+                placeholder="Elegí un socio..."
                 value={nueva.socioId}
-                onValueChange={(v) => setNueva((p) => ({ ...p, socioId: v }))}
-              >
-                <SelectTrigger className="mt-1.5">
-                  <SelectValue placeholder="Elegí un socio..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {socios.map((s: Socio) => (
-                    <SelectItem key={s.id} value={s.id}>
-                      {s.nombre}
-                      {s.dni ? ` — ${s.dni}` : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                onChange={(v) => setNueva((p) => ({ ...p, socioId: v }))}
+                socios={socios}
+              />
             </div>
             <div>
               <Label>Vencimiento</Label>
@@ -482,6 +499,48 @@ function MembresiasPage() {
         </DialogContent>
       </Dialog>
 
+      {editandoFull && (
+        <EditarMembresiaDialog
+          membresia={editandoFull}
+          arancelesArea={arancelesArea}
+          onClose={() => setEditandoFull(null)}
+        />
+      )}
+
+      <AlertDialog open={!!eliminando} onOpenChange={(o) => !o && setEliminando(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Eliminar membresía</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se va a eliminar la membresía de{" "}
+              <span className="font-medium text-foreground">
+                {eliminando
+                  ? (socioMap.get(eliminando.socioId)?.nombre ?? "este socio")
+                  : ""}
+              </span>{" "}
+              ({eliminando?.area} · {eliminando?.predio}). Esta acción no se puede deshacer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                if (!eliminando) return;
+                const id = eliminando.id;
+                setEliminando(null);
+                deleteMembresia.mutate(id, {
+                  onSuccess: () => toast.success("Membresía eliminada"),
+                  onError: () => toast.error("No se pudo eliminar la membresía"),
+                });
+              }}
+            >
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <ImportModal
         resource="membresias"
         resourceLabel="membresías"
@@ -563,5 +622,119 @@ function GuarderiaCategoriaCell({
         <SelectItem value="Grande">Grande</SelectItem>
       </SelectContent>
     </Select>
+  );
+}
+
+/**
+ * Dialog de edición completa de una membresía (Guardería/Windsurf): vencimiento,
+ * detalle, arancel asignado y estado. Recibe la membresía actual y arranca sus
+ * controles con esos valores; al guardar solo envía los campos modificados.
+ */
+function EditarMembresiaDialog({
+  membresia,
+  arancelesArea,
+  onClose,
+}: {
+  membresia: Membresia;
+  arancelesArea: Arancel[];
+  onClose: () => void;
+}) {
+  const updateMembresia = useUpdateMembresia();
+  const [vencimiento, setVencimiento] = useState(membresia.vencimiento);
+  const [detalle, setDetalle] = useState(membresia.detalle ?? "");
+  const [arancelId, setArancelId] = useState(membresia.arancelId ?? "");
+  const [estado, setEstado] = useState(membresia.estado);
+
+  function guardar() {
+    const data: Partial<Membresia> = {};
+    if (vencimiento !== membresia.vencimiento) data.vencimiento = vencimiento;
+    if (detalle !== (membresia.detalle ?? "")) data.detalle = detalle;
+    if (arancelId !== (membresia.arancelId ?? "")) data.arancelId = arancelId;
+    if (estado !== membresia.estado) data.estado = estado;
+    if (Object.keys(data).length === 0) {
+      onClose();
+      return;
+    }
+    updateMembresia.mutate(
+      { id: membresia.id, data },
+      {
+        onSuccess: () => {
+          onClose();
+          toast.success("Membresía actualizada");
+        },
+        onError: () => toast.error("No se pudo actualizar la membresía"),
+      },
+    );
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Editar membresía</DialogTitle>
+        </DialogHeader>
+        <div className="grid gap-4">
+          <div>
+            <Label>Vencimiento</Label>
+            <Input
+              type="date"
+              className="mt-1.5"
+              value={vencimiento}
+              onChange={(e) => setVencimiento(e.target.value)}
+            />
+          </div>
+          <div>
+            <Label>Detalle (box, locker, tabla...)</Label>
+            <Input
+              value={detalle}
+              onChange={(e) => setDetalle(e.target.value)}
+              className="mt-1.5"
+            />
+          </div>
+          <div>
+            <Label>Arancel</Label>
+            <Select
+              value={arancelId}
+              onValueChange={(v) => setArancelId(v === "__ninguno__" ? "" : v)}
+            >
+              <SelectTrigger className="mt-1.5">
+                <SelectValue placeholder="Seleccionar arancel" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__ninguno__">Sin arancel</SelectItem>
+                {arancelesArea.map((a) => (
+                  <SelectItem key={a.id} value={a.id}>
+                    {a.nombre} — ${a.monto.toLocaleString("es-AR")}
+                    {a.categoria ? ` (categoría: ${a.categoria})` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Estado</Label>
+            <Select value={estado} onValueChange={(v) => setEstado(v as Membresia["estado"])}>
+              <SelectTrigger className="mt-1.5">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="activa">Activa</SelectItem>
+                <SelectItem value="suspendida">Suspendida</SelectItem>
+                <SelectItem value="vencida">Vencida</SelectItem>
+                <SelectItem value="baja">Baja</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button onClick={guardar} disabled={updateMembresia.isPending}>
+            Guardar
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
