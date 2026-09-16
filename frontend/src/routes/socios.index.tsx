@@ -229,13 +229,20 @@ function SociosPage() {
             {filas.map((f) => (
               <TableRow key={f.socio.id}>
                 <TableCell className="font-medium">
-                  <Link
-                    to="/socios/$socioId"
-                    params={{ socioId: f.socio.id }}
-                    className="hover:underline"
-                  >
-                    {f.socio.nombre}
-                  </Link>
+                  <div className="flex items-center gap-2">
+                    <Link
+                      to="/socios/$socioId"
+                      params={{ socioId: f.socio.id }}
+                      className="hover:underline"
+                    >
+                      {f.socio.nombre}
+                    </Link>
+                    {f.socio.categoria === "vitalicio" && (
+                      <span className="rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground">
+                        Vitalicio
+                      </span>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell className="font-mono text-xs text-muted-foreground">
                   {f.socio.dni}

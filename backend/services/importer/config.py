@@ -48,6 +48,18 @@ def norm_str_optional(value: Any) -> str | None:
     return trimmed or None
 
 
+def norm_categoria(value: Any) -> str | None:
+    """Normalize an optional categoria cell: trim, lowercase, empty -> None.
+
+    Source files may carry "VITALICIO" or "Vitalicio"; the canonical stored
+    value is lowercase ("activo" | "vitalicio").
+    """
+    if value is None:
+        return None
+    trimmed = str(value).strip().lower()
+    return trimmed or None
+
+
 def norm_int(value: Any) -> int | None:
     """Normalize an integer cell (accepts numeric strings, optional)."""
     if value is None or str(value).strip() == "":
@@ -250,8 +262,12 @@ _IMPORT_SOCIOS: dict[str, Any] = {
         "Email": "email",
         "Dirección": "direccion",
         "Fecha de Alta": "fechaAlta",
+        # Both aliases normalize to "categoria" (the accented variant folds to
+        # the same key in the lookup, so the later entry wins harmlessly).
+        "Categoria": "categoria",
+        "Categoría": "categoria",
     },
-    "required": ["nombre", "telefono"],
+    "required": ["nombre"],
     "dedupe_key": "dni",
     # Field -> normalizer by canonical field name.
     "normalizers": {
@@ -262,10 +278,19 @@ _IMPORT_SOCIOS: dict[str, Any] = {
         "direccion": norm_str,
         "fechaAlta": norm_date,
         "activo": norm_bool,
+        "categoria": norm_categoria,
     },
     "defaults": _defaults_for_socios,
     # Canonical ordering of headers for the XLSX template.
-    "template_headers": ["nombre", "dni", "telefono", "email", "direccion", "fechaAlta"],
+    "template_headers": [
+        "nombre",
+        "dni",
+        "telefono",
+        "email",
+        "direccion",
+        "fechaAlta",
+        "categoria",
+    ],
 }
 
 

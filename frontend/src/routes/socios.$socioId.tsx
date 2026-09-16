@@ -150,9 +150,14 @@ function FichaSocio() {
         <ArrowLeft className="size-3.5" /> Volver a socios
       </Link>
 
-      {socio.activo === false && (
-        <div className="mb-3">
-          <EstadoBadge estado="baja" />
+      {(socio.activo === false || socio.categoria === "vitalicio") && (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          {socio.activo === false && <EstadoBadge estado="baja" />}
+          {socio.categoria === "vitalicio" && (
+            <span className="rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground">
+              Vitalicio
+            </span>
+          )}
         </div>
       )}
 

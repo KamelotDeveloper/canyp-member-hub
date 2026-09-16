@@ -245,6 +245,44 @@ class TestSociosEdgeCases:
         assert resp.json()["nombre"] == "Minimal Socio"
 
 
+class TestSocioCategoria:
+    """Optional categoria field: free string "activo" | "vitalicio", nullable."""
+
+    def test_create_with_categoria_returns_it(self, test_client):
+        resp = test_client.post(
+            "/api/socios",
+            json={**SOCIO_PAYLOAD, "id": "sCat1", "categoria": "vitalicio"},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["categoria"] == "vitalicio"
+
+    def test_create_without_categoria_defaults_null(self, test_client):
+        resp = test_client.post(
+            "/api/socios",
+            json={**SOCIO_PAYLOAD, "id": "sCat2"},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["categoria"] is None
+
+    def test_update_categoria_persists(self, test_client):
+        test_client.post(
+            "/api/socios",
+            json={**SOCIO_PAYLOAD, "id": "sCat3", "categoria": "activo"},
+        )
+        resp = test_client.put("/api/socios/sCat3", json={"categoria": "vitalicio"})
+        assert resp.status_code == 200
+        assert resp.json()["categoria"] == "vitalicio"
+
+    def test_update_without_categoria_does_not_clear_it(self, test_client):
+        test_client.post(
+            "/api/socios",
+            json={**SOCIO_PAYLOAD, "id": "sCat4", "categoria": "vitalicio"},
+        )
+        resp = test_client.put("/api/socios/sCat4", json={"nombre": "Renombrado"})
+        assert resp.status_code == 200
+        assert resp.json()["categoria"] == "vitalicio"
+
+
 class TestDeleteSocioCascade:
     """Delete socio with Titular promotion logic."""
 

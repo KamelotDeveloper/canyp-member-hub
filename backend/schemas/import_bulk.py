@@ -29,6 +29,7 @@ class ImportSocioRow(BaseModel):
     direccion: str = ""
     fechaAlta: date | None = None
     activo: bool = True
+    categoria: str | None = None
 
 
 class ImportMembresiaRow(BaseModel):

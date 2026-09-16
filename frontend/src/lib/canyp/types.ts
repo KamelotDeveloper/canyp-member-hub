@@ -34,6 +34,8 @@ export interface Socio {
   direccion: string;
   fechaAlta: string;
   activo: boolean;
+  /** Categoría libre ("activo" | "vitalicio"); null cuando no se definió. */
+  categoria?: string | null;
   /** Usuario que creó el registro; null en importes masivos (sin operador). */
   createdBy?: string | null;
   updatedBy?: string | null;

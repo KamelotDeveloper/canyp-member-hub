@@ -16,6 +16,8 @@ class SocioBase(OrmConfig, BaseModel):
     direccion: str = ""
     fechaAlta: date
     activo: bool = True
+    # Free lowercase string ("activo" | "vitalicio"), optional.
+    categoria: str | None = None
 
     @field_validator("telefono")
     @classmethod
@@ -41,6 +43,7 @@ class SocioUpdate(BaseModel):
     direccion: str | None = None
     fechaAlta: date | None = None
     activo: bool | None = None
+    categoria: str | None = None
 
     @field_validator("telefono")
     @classmethod

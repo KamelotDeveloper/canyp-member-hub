@@ -147,9 +147,11 @@ class TestValidation:
         assert any(e.campo == "nombre" for e in result.errors)
 
     def test_missing_telefono_is_error(self):
+        # Teléfono ya no es obligatorio (el modelo admite vacío); un socio
+        # sin teléfono debe importar con telefono = "".
         result = self._result_from(f"{CSV_HEADER}\nAna,30111111,\n")
-        assert result.stats.con_errores == 1
-        assert any(e.campo == "telefono" for e in result.errors)
+        assert result.stats.con_errores == 0
+        assert result.rows[0]["telefono"] == ""
 
     def test_optional_fields_defaulted(self):
         result = self._result_from(f"{CSV_HEADER}\nAna,30111111,3511111111\n")
@@ -269,6 +271,59 @@ class TestImportEndpoints:
         assert {"importados", "fallidos", "omitidos", "rows"} <= set(body)
         assert body["importados"] == 2
         assert all(r["outcome"] == "importado" for r in body["rows"])
+
+
+class TestCategoriaImport:
+    """Categoria column: optional, lowercased, empty cells -> None."""
+
+    def test_preview_lowercases_categoria(self):
+        result = preview_file(
+            "a.csv",
+            _csv_bytes("Nombre y Apellido,Dni,Categoria\nAna,60112233,VITALICIO\n"),
+            "socios",
+            db=None,
+        )
+        assert result.stats.con_errores == 0
+        assert result.rows[0]["categoria"] == "vitalicio"
+
+    def test_preview_accented_header_not_ignored(self):
+        result = preview_file(
+            "a.csv",
+            _csv_bytes("Nombre y Apellido,Dni,Categoría\nAna,60112234,\n"),
+            "socios",
+            db=None,
+        )
+        assert "Categoría" in result.columns
+        assert "Categoría" not in result.ignored_columns
+        assert result.rows[0]["categoria"] is None
+
+    def test_execute_persists_categoria(self, test_client, test_db):
+        from backend.models.socio import Socio
+
+        resp = test_client.post(
+            "/api/socios/import/execute",
+            json={
+                "rows": [
+                    {"data": {"nombre": "Vital", "dni": "60112235", "categoria": "vitalicio"}}
+                ]
+            },
+        )
+        assert resp.status_code == 201
+        assert resp.json()["importados"] == 1
+        socio = test_db.query(Socio).filter(Socio.dni == "60112235").first()
+        assert socio.categoria == "vitalicio"
+
+    def test_execute_empty_categoria_is_none(self, test_client, test_db):
+        from backend.models.socio import Socio
+
+        resp = test_client.post(
+            "/api/socios/import/execute",
+            json={"rows": [{"data": {"nombre": "Común", "dni": "60112236"}}]},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["importados"] == 1
+        socio = test_db.query(Socio).filter(Socio.dni == "60112236").first()
+        assert socio.categoria is None
 
 
 class TestLimits:
