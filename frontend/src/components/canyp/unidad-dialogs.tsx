@@ -1107,10 +1107,13 @@ export function CobrarUnidadDialog({
     return out;
   }, [aranceles, cuotaTitular]);
 
-  const lugar =
-    titular && titular.area && titular.predio
-      ? { area: titular.area, predio: titular.predio, categoria: grupo.categoria }
-      : undefined;
+  const lugar = useMemo(
+    () =>
+      titular && titular.area && titular.predio
+        ? { area: titular.area, predio: titular.predio, categoria: grupo.categoria }
+        : undefined,
+    [titular, grupo.categoria],
+  );
 
   const lineas = useMemo(
     () =>
