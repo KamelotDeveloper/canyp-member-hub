@@ -1128,7 +1128,8 @@ export function CobrarUnidadDialog({
   const total = totalEstimado(lineas);
 
   /** Precio de catálogo de un concepto, se marque o no, para poder mostrarlo. */
-  const precioDe = (concepto: ConceptoCobro) => arancelPorConcepto(aranceles, concepto, lugar)?.monto;
+  const precioDe = (concepto: ConceptoCobro) =>
+    arancelPorConcepto(aranceles, concepto, lugar)?.monto;
 
   function alternar(concepto: ConceptoCobro) {
     setMarcas((prev) =>
@@ -1205,7 +1206,9 @@ export function CobrarUnidadDialog({
                   <Checkbox checked={marcas.includes(c)} onCheckedChange={() => alternar(c)} />
                   <div className="flex-1">
                     <p className="text-sm font-medium">{labelConcepto(c)}</p>
-                    <p className="text-xs text-muted-foreground">{detalleConcepto(c, precioDe, grupo.members.length)}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {detalleConcepto(c, precioDe, grupo.members.length)}
+                    </p>
                   </div>
                 </li>
               ))}

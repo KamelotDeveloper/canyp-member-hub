@@ -331,7 +331,9 @@ function NotificacionesPage() {
       <Dialog open={!!wa} onOpenChange={(o) => !o && cancelarWhatsApp()}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Enviar WhatsApp — socio {idxActual + 1} de {envios.length}</DialogTitle>
+            <DialogTitle>
+              Enviar WhatsApp — socio {idxActual + 1} de {envios.length}
+            </DialogTitle>
             <DialogDescription>
               Podés editar el mensaje para <strong>{envios[idxActual]?.nombre}</strong> y luego tocá
               "Abrir WhatsApp".
@@ -355,9 +357,7 @@ function NotificacionesPage() {
                 <SkipForward className="mr-2 size-4" /> Siguiente socio
               </Button>
             ) : (
-              <Button onClick={finalizarWhatsApp}>
-                Finalizar y registrar ({envios.length})
-              </Button>
+              <Button onClick={finalizarWhatsApp}>Finalizar y registrar ({envios.length})</Button>
             )}
           </DialogFooter>
         </DialogContent>

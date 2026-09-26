@@ -117,7 +117,8 @@ export function CarnetPrint({ socios, onClose }: { socios: Socio[]; onClose: () 
             ))}
             {hojas.length > 1 && (
               <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
-                Vista previa: primera hoja. Al imprimir se generan las {hojas.length} hojas completas.
+                Vista previa: primera hoja. Al imprimir se generan las {hojas.length} hojas
+                completas.
               </p>
             )}
           </div>
@@ -138,8 +139,7 @@ export function CarnetPrint({ socios, onClose }: { socios: Socio[]; onClose: () 
           )}
         </DialogContent>
       </Dialog>
-      {imprentaAbierta &&
-        createPortal(<div className="print-root">{pages}</div>, document.body)}
+      {imprentaAbierta && createPortal(<div className="print-root">{pages}</div>, document.body)}
     </>
   );
 }

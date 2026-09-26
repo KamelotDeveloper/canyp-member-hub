@@ -21,7 +21,11 @@ import {
   NuevaUnidadDialog,
 } from "@/components/canyp/unidad-dialogs";
 import { formatFecha } from "@/lib/canyp/utils";
-import { estadoCriticoDe, estadoSocioPorParcela, filtrarUnidades } from "@/lib/canyp/unidad-helpers";
+import {
+  estadoCriticoDe,
+  estadoSocioPorParcela,
+  filtrarUnidades,
+} from "@/lib/canyp/unidad-helpers";
 import {
   useMembresias,
   useMembresiasParcelas,

@@ -154,7 +154,7 @@ function PagosPage() {
     const area = membresiasSocio.find(
       (m) => conceptoDeMembresia(m) === "area" && m.area !== "Windsurf",
     );
-    return { cuota: cuota?.id, area: (cuota?.id ?? area?.id) };
+    return { cuota: cuota?.id, area: cuota?.id ?? area?.id };
   }, [membresiasSocio]);
 
   // Una sola línea por concepto, compuesta contra el catálogo (PAG-01).
@@ -167,9 +167,7 @@ function PagosPage() {
         ...(anclas.area
           ? (() => {
               const m = membresiasSocio.find((x) => x.id === anclas.area);
-              const parcela = m?.parcelaId
-                ? parcelas.find((p) => p.id === m.parcelaId)
-                : undefined;
+              const parcela = m?.parcelaId ? parcelas.find((p) => p.id === m.parcelaId) : undefined;
               return m?.area && m.predio
                 ? {
                     lugar: {
@@ -516,9 +514,7 @@ function PagosPage() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Comprobante emitido</DialogTitle>
-            <DialogDescription>
-              Revisá el detalle y usá Imprimir para emitirlo.
-            </DialogDescription>
+            <DialogDescription>Revisá el detalle y usá Imprimir para emitirlo.</DialogDescription>
           </DialogHeader>
           {comprobante && <ComprobanteView comprobante={comprobante} socioMap={socioMap} />}
           <DialogFooter>

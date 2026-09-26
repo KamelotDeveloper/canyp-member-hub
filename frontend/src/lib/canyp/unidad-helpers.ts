@@ -378,10 +378,7 @@ export function estadoSocioPorParcela(
 ): Map<string, EstadoSocio> {
   const map = new Map<string, EstadoSocio>();
   for (const p of parcelas) {
-    map.set(
-      p.parcela.id,
-      estadoCriticoDe(p.membresias.map((m) => m.estadoSocio)),
-    );
+    map.set(p.parcela.id, estadoCriticoDe(p.membresias.map((m) => m.estadoSocio)));
   }
   return map;
 }

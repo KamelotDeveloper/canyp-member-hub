@@ -123,7 +123,9 @@ export function SocioCombobox({
                     setOpen(false);
                   }}
                 >
-                  <Check className={cn("size-4", value === "todos" ? "opacity-100" : "opacity-0")} />
+                  <Check
+                    className={cn("size-4", value === "todos" ? "opacity-100" : "opacity-0")}
+                  />
                   <span className="flex-1 truncate">{emptyLabel}</span>
                 </CommandItem>
               )}

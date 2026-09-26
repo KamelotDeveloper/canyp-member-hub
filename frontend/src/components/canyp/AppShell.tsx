@@ -28,13 +28,7 @@ const nav: { to: string; label: string; icon: typeof Users; exact?: boolean }[] 
   { to: "/ajustes", label: "Ajustes", icon: Settings },
 ];
 
-export function AppShell({
-  children,
-  onLogout,
-}: {
-  children: ReactNode;
-  onLogout?: () => void;
-}) {
+export function AppShell({ children, onLogout }: { children: ReactNode; onLogout?: () => void }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   // El badge de Notificaciones cuenta las alertas SERVIDAS por el backend
   // (membresías vencidas/suspendidas), no un estado derivado en el cliente.

@@ -18,7 +18,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useSocios, useSetBatchVencimiento, useUpdateMembresiaVencimiento } from "@/lib/canyp/queries";
+import {
+  useSocios,
+  useSetBatchVencimiento,
+  useUpdateMembresiaVencimiento,
+} from "@/lib/canyp/queries";
 import type { ConceptoMembresia, Membresia, Parcela } from "@/lib/canyp/types";
 
 /**

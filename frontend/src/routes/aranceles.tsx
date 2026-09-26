@@ -317,8 +317,8 @@ function ArancelesPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>¿Eliminar este ítem de arancel?</AlertDialogTitle>
             <AlertDialogDescription>
-              Se va a eliminar “{arancelEliminar?.nombre}”. Esta acción no se puede deshacer.
-              Los pagos ya emitidos conservan el monto y nombre guardados en su comprobante.
+              Se va a eliminar “{arancelEliminar?.nombre}”. Esta acción no se puede deshacer. Los
+              pagos ya emitidos conservan el monto y nombre guardados en su comprobante.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

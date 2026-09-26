@@ -276,7 +276,12 @@ describe("unidades compartidas API (PR 3)", () => {
   it("setBatchVencimiento envía el concepto como query (area | cuota social)", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
-        JSON.stringify({ parcelaId: "p1", vencimiento: "2027-01-01", concepto: "area", actualizadas: 4 }),
+        JSON.stringify({
+          parcelaId: "p1",
+          vencimiento: "2027-01-01",
+          concepto: "area",
+          actualizadas: 4,
+        }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     );

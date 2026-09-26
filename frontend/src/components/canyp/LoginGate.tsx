@@ -2,13 +2,7 @@ import { Loader2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError, createFirstUser, login, setToken } from "@/lib/canyp/api";
@@ -66,10 +60,7 @@ export function LoginGate({ onAuthenticated }: { onAuthenticated: (token: string
   }
 
   return (
-    <AuthShell
-      title="Ingresar"
-      description="Ingresá con tu usuario para acceder al sistema."
-    >
+    <AuthShell title="Ingresar" description="Ingresá con tu usuario para acceder al sistema.">
       <LoginForm onAuthenticated={onAuthenticated} />
     </AuthShell>
   );

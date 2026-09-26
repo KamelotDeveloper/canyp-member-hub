@@ -375,9 +375,7 @@ function FichaSocio() {
               {fotoUrl ? (
                 <img src={fotoUrl} alt={socio.nombre} className="h-full w-full object-cover" />
               ) : (
-                <span className="text-xl font-bold text-slate-600">
-                  {iniciales(socio.nombre)}
-                </span>
+                <span className="text-xl font-bold text-slate-600">{iniciales(socio.nombre)}</span>
               )}
             </div>
             <div className="flex flex-col items-start gap-2">
@@ -405,7 +403,11 @@ function FichaSocio() {
                 disabled={subirFoto.isPending}
                 onClick={() => fileInputRef.current?.click()}
               >
-                {subirFoto.isPending ? "Subiendo..." : socio.tieneFoto ? "Cambiar foto" : "Subir foto"}
+                {subirFoto.isPending
+                  ? "Subiendo..."
+                  : socio.tieneFoto
+                    ? "Cambiar foto"
+                    : "Subir foto"}
               </Button>
               {socio.tieneFoto && (
                 <Button

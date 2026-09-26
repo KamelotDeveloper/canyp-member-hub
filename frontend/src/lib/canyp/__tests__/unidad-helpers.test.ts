@@ -25,7 +25,14 @@ import {
   predioDeTipo,
   totalEstimado,
 } from "../unidad-helpers";
-import type { Arancel, EstadoSocio, Membresia, ParcelaConMembresias, ParcelaMiembro, UnidadGroup } from "../types";
+import type {
+  Arancel,
+  EstadoSocio,
+  Membresia,
+  ParcelaConMembresias,
+  ParcelaMiembro,
+  UnidadGroup,
+} from "../types";
 
 describe("buildNuevaUnidadPayload", () => {
   it("builds a single-unit ImportPayload with first=Titular, rest=Integrantes", () => {
@@ -576,17 +583,14 @@ describe("filtrarUnidades (EST-01)", () => {
     return { parcelaId, nombre, predio: "Almafuerte", categoria: null, members: [] };
   }
 
-  const todas: UnidadGroup[] = [
-    g("pV", "Inactiva"),
-    g("pR", "A revisar"),
-    g("pA", "Activa"),
-  ];
+  const todas: UnidadGroup[] = [g("pV", "Inactiva"), g("pR", "A revisar"), g("pA", "Activa")];
   const estadoPorParcela: Record<string, EstadoSocio> = {
     pV: "Inactivo — revisar",
     pR: "Socio activo — revisar",
     pA: "Socio activo",
   };
-  const estadoDe = (gr: UnidadGroup): EstadoSocio => estadoPorParcela[gr.parcelaId ?? ""] ?? "Socio activo";
+  const estadoDe = (gr: UnidadGroup): EstadoSocio =>
+    estadoPorParcela[gr.parcelaId ?? ""] ?? "Socio activo";
 
   it("'todas' devuelve todas las unidades", () => {
     expect(filtrarUnidades(todas, "todas", estadoDe)).toHaveLength(3);
@@ -650,10 +654,7 @@ describe("estadoSocioPorParcela (D5)", () => {
 
   it("una cuota vencida manda sobre un área al día (🔴 gana a ⚠️)", () => {
     const mapa = estadoSocioPorParcela([
-      parcela("p1", [
-        miembro("m1", "Inactivo — revisar"),
-        miembro("m2", "Socio activo — revisar"),
-      ]),
+      parcela("p1", [miembro("m1", "Inactivo — revisar"), miembro("m2", "Socio activo — revisar")]),
     ]);
     expect(mapa.get("p1")).toBe("Inactivo — revisar");
   });

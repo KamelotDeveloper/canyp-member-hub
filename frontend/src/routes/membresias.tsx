@@ -109,11 +109,7 @@ export const Route = createFileRoute("/membresias")({
 function MembresiasPage() {
   const search = useSearch({ from: "/membresias" });
   const navigate = useNavigate();
-  const {
-    data: membresias = [],
-    isLoading,
-    refetch: refetchMembresias,
-  } = useMembresias();
+  const { data: membresias = [], isLoading, refetch: refetchMembresias } = useMembresias();
   const { data: socios = [] } = useSocios();
   const { data: parcelas = [] } = useParcelas();
   const updateMembresia = useUpdateMembresia();
@@ -161,8 +157,7 @@ function MembresiasPage() {
     .filter((m: Membresia) => {
       const e = estadoDe(m);
       if (filtro === "vencidas") return e === "Inactivo — revisar";
-      if (filtro === "alertas")
-        return e === "Inactivo — revisar" || e === "Socio activo — revisar";
+      if (filtro === "alertas") return e === "Inactivo — revisar" || e === "Socio activo — revisar";
       return true;
     });
 
@@ -265,114 +260,108 @@ function MembresiasPage() {
             </div>
           </div>
           <Card className="overflow-hidden p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Socio</TableHead>
-                <TableHead>Predio</TableHead>
-                {areaActiva === "Guardería" && <TableHead>Categoría</TableHead>}
-                <TableHead>Detalle</TableHead>
-                <TableHead>Vencimiento</TableHead>
-                <TableHead>Estado</TableHead>
-                <TableHead className="text-right">Acciones</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {lista.map((m) => (
-                <TableRow key={m.id}>
-                  <TableCell className="font-medium">
-                    <Link
-                      to="/socios/$socioId"
-                      params={{ socioId: m.socioId }}
-                      className="hover:underline"
-                    >
-                      {socioMap.get(m.socioId)?.nombre}
-                    </Link>
-                  </TableCell>
-                  <TableCell className="text-xs">{m.predio}</TableCell>
-                  {areaActiva === "Guardería" && (
-                    <TableCell>
-                      <GuarderiaCategoriaCell
-                        m={m}
-                        nombreSocio={socioMap.get(m.socioId)?.nombre}
-                        parcelas={parcelas}
-                        updateParcela={updateParcela}
-                        createParcela={createParcela}
-                        updateMembresia={updateMembresia}
-                      />
-                    </TableCell>
-                  )}
-                  <TableCell className="text-xs text-muted-foreground">{m.detalle}</TableCell>
-                  <TableCell className="text-xs tabular-nums">
-                    {formatFecha(m.vencimiento)}
-                  </TableCell>
-                  <TableCell>
-                    {estadoBadgeDe(m)}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex justify-end gap-2">
-                      <Select
-                        value={m.estado}
-                        onValueChange={(v) => {
-                          updateMembresia.mutate(
-                            { id: m.id, data: { estado: v as Membresia["estado"] } },
-                            { onSuccess: () => toast.success("Estado actualizado") },
-                          );
-                        }}
-                      >
-                        <SelectTrigger className="w-[140px]">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="activa">Activar</SelectItem>
-                          <SelectItem value="suspendida">Suspender</SelectItem>
-                          <SelectItem value="vencida">Marcar vencida</SelectItem>
-                          <SelectItem value="baja">Dar de baja</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setEditando(m)}
-                      >
-                        Vencimiento
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={() => setEditandoFull(m)}>
-                        <Pencil className="mr-1.5 size-3.5" /> Editar
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="text-destructive hover:text-destructive"
-                        onClick={() => setEliminando(m)}
-                      >
-                        <Trash2 className="mr-1.5 size-3.5" /> Eliminar
-                      </Button>
-                      <Button
-                        size="sm"
-                        onClick={() =>
-                          navigate({ to: "/pagos", search: { nuevo: "1", socioId: m.socioId } })
-                        }
-                      >
-                        Cobrar
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {lista.length === 0 && (
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell
-                    colSpan={areaActiva === "Guardería" ? 7 : 6}
-                    className="py-10 text-center text-sm text-muted-foreground"
-                  >
-                    No hay membresías con este filtro.
-                  </TableCell>
+                  <TableHead>Socio</TableHead>
+                  <TableHead>Predio</TableHead>
+                  {areaActiva === "Guardería" && <TableHead>Categoría</TableHead>}
+                  <TableHead>Detalle</TableHead>
+                  <TableHead>Vencimiento</TableHead>
+                  <TableHead>Estado</TableHead>
+                  <TableHead className="text-right">Acciones</TableHead>
                 </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </Card>
+              </TableHeader>
+              <TableBody>
+                {lista.map((m) => (
+                  <TableRow key={m.id}>
+                    <TableCell className="font-medium">
+                      <Link
+                        to="/socios/$socioId"
+                        params={{ socioId: m.socioId }}
+                        className="hover:underline"
+                      >
+                        {socioMap.get(m.socioId)?.nombre}
+                      </Link>
+                    </TableCell>
+                    <TableCell className="text-xs">{m.predio}</TableCell>
+                    {areaActiva === "Guardería" && (
+                      <TableCell>
+                        <GuarderiaCategoriaCell
+                          m={m}
+                          nombreSocio={socioMap.get(m.socioId)?.nombre}
+                          parcelas={parcelas}
+                          updateParcela={updateParcela}
+                          createParcela={createParcela}
+                          updateMembresia={updateMembresia}
+                        />
+                      </TableCell>
+                    )}
+                    <TableCell className="text-xs text-muted-foreground">{m.detalle}</TableCell>
+                    <TableCell className="text-xs tabular-nums">
+                      {formatFecha(m.vencimiento)}
+                    </TableCell>
+                    <TableCell>{estadoBadgeDe(m)}</TableCell>
+                    <TableCell>
+                      <div className="flex justify-end gap-2">
+                        <Select
+                          value={m.estado}
+                          onValueChange={(v) => {
+                            updateMembresia.mutate(
+                              { id: m.id, data: { estado: v as Membresia["estado"] } },
+                              { onSuccess: () => toast.success("Estado actualizado") },
+                            );
+                          }}
+                        >
+                          <SelectTrigger className="w-[140px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="activa">Activar</SelectItem>
+                            <SelectItem value="suspendida">Suspender</SelectItem>
+                            <SelectItem value="vencida">Marcar vencida</SelectItem>
+                            <SelectItem value="baja">Dar de baja</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Button size="sm" variant="outline" onClick={() => setEditando(m)}>
+                          Vencimiento
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => setEditandoFull(m)}>
+                          <Pencil className="mr-1.5 size-3.5" /> Editar
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => setEliminando(m)}
+                        >
+                          <Trash2 className="mr-1.5 size-3.5" /> Eliminar
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={() =>
+                            navigate({ to: "/pagos", search: { nuevo: "1", socioId: m.socioId } })
+                          }
+                        >
+                          Cobrar
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {lista.length === 0 && (
+                  <TableRow>
+                    <TableCell
+                      colSpan={areaActiva === "Guardería" ? 7 : 6}
+                      className="py-10 text-center text-sm text-muted-foreground"
+                    >
+                      No hay membresías con este filtro.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </Card>
         </>
       )}
 
@@ -496,9 +485,7 @@ function MembresiasPage() {
             <AlertDialogDescription>
               Se va a eliminar la membresía de{" "}
               <span className="font-medium text-foreground">
-                {eliminando
-                  ? (socioMap.get(eliminando.socioId)?.nombre ?? "este socio")
-                  : ""}
+                {eliminando ? (socioMap.get(eliminando.socioId)?.nombre ?? "este socio") : ""}
               </span>{" "}
               ({eliminando?.area} · {eliminando?.predio}). Esta acción no se puede deshacer.
             </AlertDialogDescription>
