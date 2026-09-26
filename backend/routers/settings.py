@@ -9,7 +9,11 @@ list — because the router-level guard would hard-block the bootstrap flow.
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+from sqlalchemy.engine.url import make_url
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import Session
+
+import os
 
 from backend.database import get_db
 from backend.models.usuario import Usuario
@@ -55,6 +59,15 @@ def _mask_database_url(url: str) -> str:
     if not url:
         return ""
     return "***" + url[-8:]
+
+
+def _is_client_build() -> bool:
+    """Whether this process runs as a packaged client (Tauri sidecar).
+
+    The sidecar receives ``CANYP_CLIENT_BUILD=1`` in release builds; dev and
+    web runs never set it.
+    """
+    return os.environ.get("CANYP_CLIENT_BUILD") == "1"
 
 
 class SettingsUpdate(BaseModel):
@@ -104,9 +117,19 @@ def update_settings(data: SettingsUpdate) -> SettingsResponse:
             status_code=422, detail=f"dataMode debe ser {_DATA_MODE_LABEL}"
         )
 
+    if _is_client_build() and data.dataMode == "local":
+        raise HTTPException(
+            status_code=403, detail="Este build de cliente requiere modo remoto"
+        )
+
     url = (data.databaseUrl or "").strip()
     if data.dataMode == "remoto" and not url:
         raise HTTPException(status_code=422, detail=_REMOTO_REQUIRED_URL)
+    if data.dataMode == "remoto":
+        try:
+            make_url(url)
+        except ArgumentError:
+            raise HTTPException(status_code=422, detail="La URL de conexión no es válida") from None
 
     settings = AppSettings(
         dataMode=data.dataMode,

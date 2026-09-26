@@ -6,6 +6,7 @@ default" invariant is covered explicitly.
 """
 
 import json
+import os
 
 import pytest
 
@@ -93,6 +94,25 @@ class TestSettingsApi:
         assert json.loads(target.read_text(encoding="utf-8"))["dataMode"] == "remoto"
         assert test_client.get("/api/settings").json()["configured"] is True
 
+    def test_put_remoto_with_invalid_url_rejected_422(self, test_client, monkeypatch, tmp_path):
+        _patch_settings_path(monkeypatch, tmp_path)
+        resp = test_client.put(
+            "/api/settings",
+            json={"dataMode": "remoto", "databaseUrl": "canyp2026temp"},
+        )
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == "La URL de conexión no es válida"
+        assert test_client.get("/api/settings").json()["configured"] is False
+
+    def test_put_remoto_with_encoded_password_url_accepted(self, test_client, monkeypatch, tmp_path):
+        _patch_settings_path(monkeypatch, tmp_path)
+        resp = test_client.put(
+            "/api/settings",
+            json={"dataMode": "remoto", "databaseUrl": "postgresql://u:C%40nyp@host/db"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["configured"] is True
+
     def test_put_remoto_without_url_rejected_422(self, test_client, monkeypatch, tmp_path):
         _patch_settings_path(monkeypatch, tmp_path)
         resp = test_client.put("/api/settings", json={"dataMode": "remoto", "databaseUrl": ""})
@@ -116,6 +136,24 @@ class TestSettingsApi:
         assert resp.json()["databaseUrl"] == ""
         assert json.loads(target.read_text(encoding="utf-8"))["databaseUrl"] == ""
         assert resp.json()["configured"] is True
+
+    def test_put_local_rejected_403_on_client_build(self, test_client, monkeypatch, tmp_path):
+        _patch_settings_path(monkeypatch, tmp_path)
+        monkeypatch.setenv("CANYP_CLIENT_BUILD", "1")
+        resp = test_client.put("/api/settings", json={"dataMode": "local"})
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Este build de cliente requiere modo remoto"
+
+    def test_put_remoto_allowed_on_client_build(self, test_client, monkeypatch, tmp_path):
+        target = _patch_settings_path(monkeypatch, tmp_path)
+        monkeypatch.setenv("CANYP_CLIENT_BUILD", "1")
+        resp = test_client.put(
+            "/api/settings",
+            json={"dataMode": "remoto", "databaseUrl": "postgresql://u:p@host/db"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["configured"] is True
+        assert json.loads(target.read_text(encoding="utf-8"))["dataMode"] == "remoto"
 
 
 class TestSettingsConditionalAuth:
@@ -217,3 +255,57 @@ class TestDesktopRunGlue:
         from backend import desktop_run
 
         assert desktop_run._remote_database_url_from_settings() is None
+
+    def test_client_build_local_settings_exits(self, monkeypatch, tmp_path, capsys):
+        self._write_settings(
+            monkeypatch,
+            tmp_path,
+            {"dataMode": "local", "databaseUrl": "", "configured": True},
+        )
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.setenv("CANYP_CLIENT_BUILD", "1")
+        from backend import desktop_run
+
+        with pytest.raises(SystemExit) as exc:
+            desktop_run._configure_database_url()
+        assert exc.value.code == 1
+        assert "modo remoto" in capsys.readouterr().err
+        assert "DATABASE_URL" not in os.environ
+
+    def test_client_build_unconfigured_allows_sqlite(self, monkeypatch, tmp_path):
+        # A brand-new install has no settings file: the first-run wizard needs
+        # a live backend to provision remoto, so local (SQLite) is allowed
+        # ONLY while unconfigured. Once configured, resolution to local exits.
+        _patch_settings_path(monkeypatch, tmp_path)
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.setenv("CANYP_CLIENT_BUILD", "1")
+        from backend import desktop_run
+
+        desktop_run._configure_database_url()
+        assert os.environ["DATABASE_URL"].startswith("sqlite:///")
+
+    def test_client_build_remoto_settings_uses_remote(self, monkeypatch, tmp_path):
+        self._write_settings(
+            monkeypatch,
+            tmp_path,
+            {"dataMode": "remoto", "databaseUrl": "postgresql://u:p@h/db", "configured": True},
+        )
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.setenv("CANYP_CLIENT_BUILD", "1")
+        from backend import desktop_run
+
+        desktop_run._configure_database_url()
+        assert os.environ["DATABASE_URL"] == "postgresql://u:p@h/db"
+
+    def test_client_build_explicit_env_override_wins(self, monkeypatch, tmp_path):
+        self._write_settings(
+            monkeypatch,
+            tmp_path,
+            {"dataMode": "local", "databaseUrl": "", "configured": True},
+        )
+        monkeypatch.setenv("DATABASE_URL", "postgresql://explicit:override@db")
+        monkeypatch.setenv("CANYP_CLIENT_BUILD", "1")
+        from backend import desktop_run
+
+        desktop_run._configure_database_url()
+        assert os.environ["DATABASE_URL"] == "postgresql://explicit:override@db"

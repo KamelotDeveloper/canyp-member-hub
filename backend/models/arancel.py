@@ -6,7 +6,7 @@ from sqlalchemy import Date, Enum, Float, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.database import Base
-from backend.models.enums import Area, CategoriaParcela, Predio
+from backend.models.enums import Area, CategoriaParcela, ConceptoCobro, Predio
 
 
 class Arancel(Base):
@@ -22,6 +22,12 @@ class Arancel(Base):
     )
     vigenteDesde: Mapped[date] = mapped_column(Date, nullable=False)
     historico: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # Charge concept this arancel prices. A RECARGO-tagged arancel is a carrier
+    # only: the per-charge amount is operator-entered and never overwrites
+    # `monto` (ARA-01).
+    concepto: Mapped[ConceptoCobro] = mapped_column(
+        Enum(ConceptoCobro), nullable=False, default=ConceptoCobro.AREA
+    )
     # Audit columns (D7): plain nullable string ids, NO DB FK.
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
     updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)

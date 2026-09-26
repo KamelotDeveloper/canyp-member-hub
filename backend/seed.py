@@ -6,6 +6,7 @@ Idempotent: skips if socios already exist.
 
 from datetime import date, timedelta
 
+from dateutil.relativedelta import relativedelta
 from sqlalchemy.orm import sessionmaker
 
 from backend.database import Base, SessionLocal, engine as default_engine
@@ -13,6 +14,8 @@ from backend.models import (
     Area,
     CanalNotificacion,
     CategoriaParcela,
+    ConceptoCobro,
+    ConceptoMembresia,
     EstadoMembresia,
     Predio,
     RolMembresia,
@@ -25,24 +28,26 @@ from backend.models import (
     PagoItem,
     Socio,
 )
+from backend.services.cuota_social import crear_cuota_social
+from backend.services.renovacion import dia10
 
 # ── Parcelas ──────────────────────────────────────────────
 
 PARCELAS = [
     # ── Almafuerte: cabañas (Cabañeros) ──
-    {"id": "pa1", "nombre": "Cabaña A", "tipo": TipoParcela.CABANA, "tamano": "40m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA},
-    {"id": "pa2", "nombre": "Cabaña B", "tipo": TipoParcela.CABANA, "tamano": "55m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.MEDIANA},
-    {"id": "pa3", "nombre": "Cabaña C", "tipo": TipoParcela.CABANA, "tamano": "35m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA},
-    {"id": "pa4", "nombre": "Cabaña D", "tipo": TipoParcela.CABANA, "tamano": "45m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.MEDIANA},
-    {"id": "pa7", "nombre": "Cabaña E", "tipo": TipoParcela.CABANA, "tamano": "60m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.ESPECIAL},
-    {"id": "pa8", "nombre": "Cabaña F", "tipo": TipoParcela.CABANA, "tamano": "70m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.GRANDE},
-    # ── Almafuerte: guardería ──
-    {"id": "pa10", "nombre": "Guardería Chica", "tipo": TipoParcela.GUARDERIA, "tamano": None, "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA},
-    {"id": "pa11", "nombre": "Guardería Grande", "tipo": TipoParcela.GUARDERIA, "tamano": None, "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.GRANDE},
+    {"id": "pa1", "nombre": "Cabaña A", "tipo": TipoParcela.CABANA, "tamano": "40m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA, "cuotaSocialIncluida": False},
+    {"id": "pa2", "nombre": "Cabaña B", "tipo": TipoParcela.CABANA, "tamano": "55m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.MEDIANA, "cuotaSocialIncluida": False},
+    {"id": "pa3", "nombre": "Cabaña C", "tipo": TipoParcela.CABANA, "tamano": "35m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA, "cuotaSocialIncluida": False},
+    {"id": "pa4", "nombre": "Cabaña D", "tipo": TipoParcela.CABANA, "tamano": "45m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.MEDIANA, "cuotaSocialIncluida": False},
+    {"id": "pa7", "nombre": "Cabaña E", "tipo": TipoParcela.CABANA, "tamano": "60m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.ESPECIAL, "cuotaSocialIncluida": False},
+    {"id": "pa8", "nombre": "Cabaña F", "tipo": TipoParcela.CABANA, "tamano": "70m²", "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.GRANDE, "cuotaSocialIncluida": False},
+    # ── Almafuerte: guardería (cuota social opt-in, OFF — CS-04) ──
+    {"id": "pa10", "nombre": "Guardería Chica", "tipo": TipoParcela.GUARDERIA, "tamano": None, "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA, "cuotaSocialIncluida": False},
+    {"id": "pa11", "nombre": "Guardería Grande", "tipo": TipoParcela.GUARDERIA, "tamano": None, "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.GRANDE, "cuotaSocialIncluida": False},
     # ── Embalse: balsas (Balseros) ──
-    {"id": "pa5", "nombre": "Balsa Principal", "tipo": TipoParcela.BALSA, "tamano": "12m", "predio": Predio.EMBALSE},
-    {"id": "pa6", "nombre": "Balsa Norte", "tipo": TipoParcela.BALSA, "tamano": "10m", "predio": Predio.EMBALSE},
-    {"id": "pa9", "nombre": "Balsa Sur", "tipo": TipoParcela.BALSA, "tamano": "11m", "predio": Predio.EMBALSE},
+    {"id": "pa5", "nombre": "Balsa Principal", "tipo": TipoParcela.BALSA, "tamano": "12m", "predio": Predio.EMBALSE, "cuotaSocialIncluida": False},
+    {"id": "pa6", "nombre": "Balsa Norte", "tipo": TipoParcela.BALSA, "tamano": "10m", "predio": Predio.EMBALSE, "cuotaSocialIncluida": False},
+    {"id": "pa9", "nombre": "Balsa Sur", "tipo": TipoParcela.BALSA, "tamano": "11m", "predio": Predio.EMBALSE, "cuotaSocialIncluida": False},
 ]
 
 # ── Socios ────────────────────────────────────────────────
@@ -68,44 +73,73 @@ def _today():
 
 
 def _build_membresias():
-    """Build membresias with dates relative to today for realistic dashboard."""
+    """Build area membresias on the 10->10 cycle for a realistic dashboard.
+
+    Every ``vencimiento`` is a day-10, so the seeded padron already lives on
+    the monthly cycle instead of on legacy annual dates. ``v(n)`` = the day-10
+    ``n`` months away from today, which yields the same three-way mix the
+    dashboard needs under the 4-state model (AGENT.md §1):
+
+    * ``v(0)``      -> the 10th of this or the next month, i.e. always al día,
+    * ``v(>=2)``    -> far from expiry: al día,
+    * ``v(<0)``     -> already past: the socio lands on ⚠️ (área vencida, cuota
+      al día) or 🔴 (cuota vencida, because a cuota social inherits the socio's
+      most recent área `vencimiento`).
+    """
     t = _today()
+
+    def v(meses: int) -> date:
+        return dia10(t + relativedelta(months=meses))
+
+    def area(socio, mid, a, p, meses, parcela=None, rol=None, estado=EstadoMembresia.ACTIVA):
+        return {
+            "id": mid,
+            "socioId": socio,
+            "area": a,
+            "predio": p,
+            "estado": estado,
+            "concepto": ConceptoMembresia.AREA,
+            "vencimiento": v(meses),
+            "parcelaId": parcela,
+            "rol": rol,
+        }
+
     return [
-        # ── Active: far from expiry ──
-        {"id": "m1",  "socioId": "s1",  "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=180), "parcelaId": "pa5", "rol": RolMembresia.TITULAR},
-        {"id": "m2",  "socioId": "s2",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=365), "parcelaId": "pa1", "rol": RolMembresia.TITULAR},
-        {"id": "m3",  "socioId": "s3",  "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=240), "parcelaId": "pa10"},
-        # ── Active: por vencer (≤30 days) ──
-        {"id": "m4",  "socioId": "s4",  "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=15),  "parcelaId": "pa5", "rol": RolMembresia.INTEGRANTE},
-        {"id": "m5",  "socioId": "s5",  "area": Area.WINDSURF,    "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=7),   "parcelaId": None},
-        # ── Expired (vencida via date logic) ──
-        {"id": "m6",  "socioId": "s6",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t - timedelta(days=30),  "parcelaId": "pa2", "rol": RolMembresia.TITULAR},
-        {"id": "m7",  "socioId": "s7",  "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t - timedelta(days=90),  "parcelaId": "pa6", "rol": RolMembresia.INTEGRANTE},
-        # ── Expiring tomorrow (edge case) ──
-        {"id": "m8",  "socioId": "s8",  "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=1),   "parcelaId": None},
-        # ── Suspended ──
-        {"id": "m9",  "socioId": "s9",  "area": Area.WINDSURF,    "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.SUSPENDIDA,   "vencimiento": t + timedelta(days=60),  "parcelaId": None},
-        {"id": "m10", "socioId": "s10", "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.SUSPENDIDA,   "vencimiento": t - timedelta(days=15),  "parcelaId": "pa3", "rol": RolMembresia.INTEGRANTE},
+        # ── Activa: lejos del vencimiento ──
+        area("s1",  "m1",  Area.BALSEROS,  Predio.EMBALSE,    6,  "pa5", RolMembresia.TITULAR),
+        area("s2",  "m2",  Area.CABANEROS, Predio.ALMAFUERTE, 12, "pa1", RolMembresia.TITULAR),
+        area("s3",  "m3",  Area.GUARDERIA, Predio.ALMAFUERTE, 8,  "pa10"),
+        # ── Activa: por vencer (dentro de los 30 días) ──
+        area("s4",  "m4",  Area.BALSEROS,  Predio.EMBALSE,    0,  "pa5", RolMembresia.INTEGRANTE),
+        area("s5",  "m5",  Area.WINDSURF,  Predio.ALMAFUERTE, 0),
+        # ── Vencida (por fecha) ──
+        area("s6",  "m6",  Area.CABANEROS, Predio.ALMAFUERTE, -1, "pa2", RolMembresia.TITULAR),
+        area("s7",  "m7",  Area.BALSEROS,  Predio.EMBALSE,    -3, "pa6", RolMembresia.INTEGRANTE),
+        # ── Vence mañana / este mes (borde) ──
+        area("s8",  "m8",  Area.GUARDERIA, Predio.ALMAFUERTE, 0),
+        # ── Suspendida ──
+        area("s9",  "m9",  Area.WINDSURF,  Predio.ALMAFUERTE, 2,  estado=EstadoMembresia.SUSPENDIDA),
+        area("s10", "m10", Area.CABANEROS, Predio.ALMAFUERTE, -1, "pa3", RolMembresia.INTEGRANTE, EstadoMembresia.SUSPENDIDA),
         # ── Baja ──
-        {"id": "m11", "socioId": "s11", "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.BAJA,         "vencimiento": t - timedelta(days=180), "parcelaId": None},
-        # ── More active (different areas) ──
-        {"id": "m12", "socioId": "s12", "area": Area.WINDSURF,    "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=200), "parcelaId": None},
-        {"id": "m13", "socioId": "s1",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=120), "parcelaId": "pa4", "rol": RolMembresia.TITULAR},
-        {"id": "m14", "socioId": "s2",  "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=90),  "parcelaId": None},
-        {"id": "m15", "socioId": "s3",  "area": Area.WINDSURF,    "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=5),   "parcelaId": None},
-        {"id": "m16", "socioId": "s4",  "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=400), "parcelaId": "pa6", "rol": RolMembresia.TITULAR},
-        # ── Almafuerte shared units (RQ16): Titular + Integrantes, mixed vencimientos ──
-        {"id": "m17", "socioId": "s5",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=25),  "parcelaId": "pa3", "rol": RolMembresia.TITULAR},
-        {"id": "m18", "socioId": "s12", "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t - timedelta(days=35),  "parcelaId": "pa4", "rol": RolMembresia.INTEGRANTE},
-        {"id": "m19", "socioId": "s6",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t - timedelta(days=45),  "parcelaId": "pa7", "rol": RolMembresia.TITULAR},
-        {"id": "m20", "socioId": "s8",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=210), "parcelaId": "pa7", "rol": RolMembresia.INTEGRANTE},
-        {"id": "m21", "socioId": "s9",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=150), "parcelaId": "pa8", "rol": RolMembresia.TITULAR},
-        {"id": "m22", "socioId": "s11", "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=6),   "parcelaId": "pa8", "rol": RolMembresia.INTEGRANTE},
-        {"id": "m23", "socioId": "s2",  "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=20),  "parcelaId": "pa9", "rol": RolMembresia.TITULAR},
-        {"id": "m24", "socioId": "s3",  "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "estado": EstadoMembresia.ACTIVA,       "vencimiento": t - timedelta(days=10),  "parcelaId": "pa9", "rol": RolMembresia.INTEGRANTE},
-        {"id": "m25", "socioId": "s8",  "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=180), "parcelaId": "pa11"},
-        {"id": "m26", "socioId": "s7",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=90),  "parcelaId": "pa1", "rol": RolMembresia.INTEGRANTE},
-        {"id": "m27", "socioId": "s4",  "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "estado": EstadoMembresia.ACTIVA,       "vencimiento": t + timedelta(days=45),  "parcelaId": "pa2", "rol": RolMembresia.INTEGRANTE},
+        area("s11", "m11", Area.BALSEROS,  Predio.EMBALSE,    -6, estado=EstadoMembresia.BAJA),
+        # ── Más activas (distintas áreas) ──
+        area("s12", "m12", Area.WINDSURF,  Predio.ALMAFUERTE, 7),
+        area("s1",  "m13", Area.CABANEROS, Predio.ALMAFUERTE, 4,  "pa4", RolMembresia.TITULAR),
+        area("s2",  "m14", Area.GUARDERIA, Predio.ALMAFUERTE, 3),
+        area("s3",  "m15", Area.WINDSURF,  Predio.ALMAFUERTE, 0),
+        area("s4",  "m16", Area.BALSEROS,  Predio.EMBALSE,    13, "pa6", RolMembresia.TITULAR),
+        # ── Unidades compartidas Almafuerte (RQ16): Titular + Integrantes, vencimientos mezclados ──
+        area("s5",  "m17", Area.CABANEROS, Predio.ALMAFUERTE, 0,  "pa3", RolMembresia.TITULAR),
+        area("s12", "m18", Area.CABANEROS, Predio.ALMAFUERTE, -2, "pa4", RolMembresia.INTEGRANTE),
+        area("s6",  "m19", Area.CABANEROS, Predio.ALMAFUERTE, -2, "pa7", RolMembresia.TITULAR),
+        area("s8",  "m20", Area.CABANEROS, Predio.ALMAFUERTE, 7,  "pa7", RolMembresia.INTEGRANTE),
+        area("s9",  "m21", Area.CABANEROS, Predio.ALMAFUERTE, 5,  "pa8", RolMembresia.TITULAR),
+        area("s11", "m22", Area.CABANEROS, Predio.ALMAFUERTE, 0,  "pa8", RolMembresia.INTEGRANTE),
+        area("s2",  "m23", Area.BALSEROS,  Predio.EMBALSE,    0,  "pa9", RolMembresia.TITULAR),
+        area("s3",  "m24", Area.BALSEROS,  Predio.EMBALSE,    -1, "pa9", RolMembresia.INTEGRANTE),
+        area("s8",  "m25", Area.GUARDERIA, Predio.ALMAFUERTE, 6,  "pa11"),
+        area("s7",  "m26", Area.CABANEROS, Predio.ALMAFUERTE, 3,  "pa1", RolMembresia.INTEGRANTE),
+        area("s4",  "m27", Area.CABANEROS, Predio.ALMAFUERTE, 0,  "pa2", RolMembresia.INTEGRANTE),
     ]
 
 
@@ -114,6 +148,15 @@ def _build_aranceles():
 
     Concepto (nombre) describes what the cuota covers — it is a descriptor,
     not a separate amount. The total is a single item per unit/membresía.
+
+    `a14` is the RECARGO **carrier** (ARA-01, CBM-03): its `monto` stays 0 and
+    the per-charge amount is entered by the operator, so it never overwrites the
+    catalog. Its area/predio are placeholders only — PR 5 resolves the recargo
+    by `concepto`, never by area+predio, and no charge logic lives here.
+
+    `a16` is the opposite case: a SERVICIO price that IS in the catalog, so an
+    admin edits it like any other arancel and the charge only reads it
+    (decision #646).
     """
     t = _today()
     return [
@@ -126,6 +169,20 @@ def _build_aranceles():
         {"id": "a11", "nombre": "Parcela",                     "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.GRANDE,   "monto": 25000.0, "vigenteDesde": t - timedelta(days=60), "historico": []},
         {"id": "a12", "nombre": "Cuota",                       "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA,    "monto": 10000.0, "vigenteDesde": t - timedelta(days=30), "historico": []},
         {"id": "a13", "nombre": "Cuota",                       "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.GRANDE,   "monto": 14000.0, "vigenteDesde": t - timedelta(days=30), "historico": []},
+        # ── Recargo carrier: monto 0 by design, the operator types the amount ──
+        {"id": "a14", "nombre": "Recargo",                     "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "monto": 0.0,      "vigenteDesde": t - timedelta(days=30), "historico": [], "concepto": ConceptoCobro.RECARGO},
+        # ── Cuota social UNIT PRICE: `monto` is ONE member; the charge
+        #    multiplies it by the managed unit's member count (CS-03). Like the
+        #    recargo carrier its area/predio are placeholders — the resolver
+        #    finds it by `concepto` only, never by area+predio.
+        {"id": "a15", "nombre": "Cuota social",                "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "monto": 10000.0,  "vigenteDesde": t - timedelta(days=30), "historico": [], "concepto": ConceptoCobro.CUOTA_SOCIAL},
+        # ── Servicio/luz: a REAL catalog price, per unit and admin-editable
+        #    (decision #646). Unlike the recargo carrier this row carries an
+        #    amount, so a charge takes the catalog `monto` (which the operator
+        #    may adjust for one charge) and never multiplies it by the member
+        #    count. Placeholder area/predio, like the other concept rows: the
+        #    resolver finds it by `concepto` only.
+        {"id": "a16", "nombre": "Servicio (luz, agua)",        "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "monto": 5000.0,   "vigenteDesde": t - timedelta(days=30), "historico": [], "concepto": ConceptoCobro.SERVICIO},
     ]
 
 
@@ -195,12 +252,19 @@ def seed(engine=None):
         db.flush()
         print(f"  [OK] {len(SOCIOS)} socios")
 
-        # Membresías
+        # Membresías de área
         membresias = _build_membresias()
         for m in membresias:
             db.add(Membresia(**m))
         db.flush()
         print(f"  [OK] {len(membresias)} membresías")
+
+        # Cuota social: one per socio, created through the real service so the
+        # seeded padron is produced by the same code path as production (CS-02).
+        # `s["id"]` because the socios are plain dicts, already flushed above.
+        cuotas = [crear_cuota_social(db, s["id"])[0] for s in SOCIOS]
+        db.flush()
+        print(f"  [OK] {len(cuotas)} cuotas sociales")
 
         # Aranceles
         aranceles = _build_aranceles()

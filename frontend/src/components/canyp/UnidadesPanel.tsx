@@ -21,17 +21,20 @@ import {
   NuevaUnidadDialog,
 } from "@/components/canyp/unidad-dialogs";
 import { formatFecha } from "@/lib/canyp/utils";
-import { estadoCriticoDe, filtrarUnidades } from "@/lib/canyp/unidad-helpers";
+import { estadoCriticoDe, estadoSocioPorParcela, filtrarUnidades } from "@/lib/canyp/unidad-helpers";
 import {
   useMembresias,
+  useMembresiasParcelas,
   useParcelas,
   useSocios,
   useImportParcelas,
   useDeleteParcela,
+  useDeleteMembresia,
 } from "@/lib/canyp/queries";
 import type {
   Area,
   CategoriaParcela,
+  EstadoSocio,
   ImportPayload,
   Membresia,
   Predio,
@@ -98,12 +101,36 @@ function iniciales(nombre: string): string {
   return (first + last).toUpperCase();
 }
 
+/**
+ * Estado de una unidad = el `estadoSocio` unit-scoped que sirve el backend
+ * (D5): el peor estado entre los miembros de la unidad, tal como lo calculó
+ * `/api/membresias/parcelas`. No deriva nada: lee el estado SERVIDO por unidad
+ * y lo muestra tal cual. Para el grupo "Sin asignar" (sin unidad real) cae al
+ * estado propio de cada socio (`/api/socios`), donde no hay scope que preservar.
+ */
+function estadoDeGrupo(
+  g: UnidadGroup,
+  estadoPorParcela: Map<string, EstadoSocio>,
+  socioMap: Map<string, Socio>,
+): EstadoSocio {
+  if (g.parcelaId != null) {
+    const unit = estadoPorParcela.get(g.parcelaId);
+    if (unit != null) return unit;
+  }
+  const estados = g.members
+    .map((m) => socioMap.get(m.socioId)?.estado)
+    .filter((e): e is EstadoSocio => e != null);
+  return estadoCriticoDe(estados);
+}
+
 export function UnidadesPanel({ area, filtro }: { area: Area; filtro: UnidadFiltro }) {
   const { data: membresias = [] } = useMembresias();
   const { data: parcelas = [] } = useParcelas();
   const { data: socios = [] } = useSocios();
+  const { data: parcelasEstado = [] } = useMembresiasParcelas();
   const importParcelas = useImportParcelas();
   const deleteParcela = useDeleteParcela();
+  const deleteMembresia = useDeleteMembresia();
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [gestionando, setGestionando] = useState<UnidadGroup | null>(null);
@@ -112,6 +139,7 @@ export function UnidadesPanel({ area, filtro }: { area: Area; filtro: UnidadFilt
   const [deleteTarget, setDeleteTarget] = useState<UnidadGroup | null>(null);
 
   const socioMap = useMemo(() => new Map(socios.map((s: Socio) => [s.id, s])), [socios]);
+  const estadoPorParcela = useMemo(() => estadoSocioPorParcela(parcelasEstado), [parcelasEstado]);
 
   function onImportFile(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -140,12 +168,14 @@ export function UnidadesPanel({ area, filtro }: { area: Area; filtro: UnidadFilt
 
   const grupos = useMemo(() => {
     const all = groupByParcelaId({ membresias, parcelas, area });
-    return filtrarUnidades(all, filtro).sort((a, b) => {
-      if (a.parcelaId === null) return 1;
-      if (b.parcelaId === null) return -1;
-      return a.nombre.localeCompare(b.nombre, "es");
-    });
-  }, [membresias, parcelas, area, filtro]);
+    return filtrarUnidades(all, filtro, (g) => estadoDeGrupo(g, estadoPorParcela, socioMap)).sort(
+      (a, b) => {
+        if (a.parcelaId === null) return 1;
+        if (b.parcelaId === null) return -1;
+        return a.nombre.localeCompare(b.nombre, "es");
+      },
+    );
+  }, [membresias, parcelas, area, filtro, socioMap, estadoPorParcela]);
 
   const totalSocios = grupos.reduce((s, g) => s + g.members.length, 0);
 
@@ -178,10 +208,11 @@ export function UnidadesPanel({ area, filtro }: { area: Area; filtro: UnidadFilt
             grupo: g,
             area,
             socioMap,
+            estadoPorParcela,
             onGestionar: () => setGestionando(g),
             onCobrar: () => setCobrando(g),
           };
-          if (g.parcelaId) cardProps.onEliminar = () => setDeleteTarget(g);
+          cardProps.onEliminar = () => setDeleteTarget(g);
           return <UnidadCard key={g.parcelaId ?? "__sin_asignar__"} {...cardProps} />;
         })}
         {grupos.length === 0 && (
@@ -214,9 +245,22 @@ export function UnidadesPanel({ area, filtro }: { area: Area; filtro: UnidadFilt
           <AlertDialogHeader>
             <AlertDialogTitle>Eliminar unidad</AlertDialogTitle>
             <AlertDialogDescription>
-              ¿Seguro que querés eliminar la unidad <strong>{deleteTarget?.nombre}</strong>? Se
-              borrarán la parcela y todas las membresías asociadas. Los socios se mantienen en el
-              padrón sin unidad asignada.
+              {deleteTarget?.parcelaId ? (
+                <>
+                  ¿Seguro que querés eliminar la unidad <strong>{deleteTarget.nombre}</strong>? Se
+                  borrarán la parcela y todas las membresías asociadas. Los socios se mantienen en
+                  el padrón sin unidad asignada.
+                </>
+              ) : (
+                <>
+                  ¿Seguro que querés eliminar el grupo <strong>{deleteTarget?.nombre}</strong>? Se
+                  van a eliminar las {deleteTarget?.members.length ?? 0} membresías de este grupo.
+                  Los socios se mantienen en el padrón sin unidad asignada.
+                  {deleteTarget?.members.some((m) => m.rol === "Titular")
+                    ? " Una de las membresías tiene rol Titular."
+                    : ""}
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -224,14 +268,28 @@ export function UnidadesPanel({ area, filtro }: { area: Area; filtro: UnidadFilt
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => {
-                if (!deleteTarget?.parcelaId) return;
-                deleteParcela.mutate(deleteTarget.parcelaId, {
-                  onSuccess: () => {
+                if (!deleteTarget) return;
+                if (deleteTarget.parcelaId) {
+                  deleteParcela.mutate(deleteTarget.parcelaId, {
+                    onSuccess: () => {
+                      setDeleteTarget(null);
+                      toast.success(`Unidad ${deleteTarget.nombre} eliminada`);
+                    },
+                    onError: () => toast.error("Error al eliminar la unidad"),
+                  });
+                  return;
+                }
+                const memberships = deleteTarget.members;
+                if (memberships.length === 0) {
+                  setDeleteTarget(null);
+                  return;
+                }
+                Promise.all(memberships.map((m) => deleteMembresia.mutateAsync(m.id)))
+                  .then(() => {
                     setDeleteTarget(null);
-                    toast.success(`Unidad ${deleteTarget.nombre} eliminada`);
-                  },
-                  onError: () => toast.error("Error al eliminar la unidad"),
-                });
+                    toast.success(`Grupo ${deleteTarget.nombre} eliminado`);
+                  })
+                  .catch(() => toast.error("Error al eliminar el grupo"));
               }}
             >
               Eliminar
@@ -247,6 +305,7 @@ function UnidadCard({
   grupo,
   area,
   socioMap,
+  estadoPorParcela,
   onGestionar,
   onCobrar,
   onEliminar,
@@ -254,11 +313,12 @@ function UnidadCard({
   grupo: UnidadGroup;
   area: Area;
   socioMap: Map<string, Socio>;
+  estadoPorParcela: Map<string, EstadoSocio>;
   onGestionar: () => void;
   onCobrar: () => void;
   onEliminar?: () => void;
 }) {
-  const estado = estadoCriticoDe(grupo);
+  const estado = estadoDeGrupo(grupo, estadoPorParcela, socioMap);
   const vencimientoComun = grupo.members.reduce<string | null>(
     (min, m) => (min === null || m.vencimiento < min ? m.vencimiento : min),
     null,

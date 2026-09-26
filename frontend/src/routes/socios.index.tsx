@@ -1,9 +1,10 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { FileUp, Plus, Search, Trash2 } from "lucide-react";
+import { FileUp, Plus, Printer, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ImportModal, type ImportColumnSpec } from "@/components/import";
@@ -43,10 +44,10 @@ import {
 } from "@/components/ui/table";
 import { EstadoBadge } from "@/components/canyp/EstadoBadge";
 import { AreaBadge } from "@/components/canyp/AreaBadge";
+import { CarnetPrint } from "@/components/canyp/CarnetPrint";
 import { PageHeader } from "@/components/canyp/AppShell";
-import { estadoVisual, type EstadoVisual } from "@/lib/canyp/utils";
 import { useSocios, useMembresias, useCreateSocio, useDeleteSocio } from "@/lib/canyp/queries";
-import type { Socio, Membresia } from "@/lib/canyp/types";
+import type { EstadoSocio, Socio, Membresia } from "@/lib/canyp/types";
 
 export const Route = createFileRoute("/socios/")({
   head: () => ({
@@ -62,8 +63,6 @@ export const Route = createFileRoute("/socios/")({
   }),
   component: SociosPage,
 });
-
-const prioridad: EstadoVisual[] = ["vencida", "por_vencer", "suspendida", "activa", "baja"];
 
 /** Editable columns shown in the import preview (Spanish label + canonical field). */
 const importColumns: ImportColumnSpec[] = [
@@ -84,10 +83,13 @@ function SociosPage() {
   const [q, setQ] = useState("");
   const [predio, setPredio] = useState("todos");
   const [area, setArea] = useState("todas");
-  const [estado, setEstado] = useState("todos");
+  const [estado, setEstado] = useState<"todos" | EstadoSocio>("todos");
   const [open, setOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Socio | null>(null);
+  const [printOpen, setPrintOpen] = useState(false);
+  /** Carnets seleccionados: ids de socio sobre las filas filtradas actuales. */
+  const [sel, setSel] = useState<Set<string>>(new Set());
   const [form, setForm] = useState({
     nombre: "",
     dni: "",
@@ -100,10 +102,8 @@ function SociosPage() {
     return socios
       .map((s: Socio) => {
         const ms = membresias.filter((m: Membresia) => m.socioId === s.id);
-        const estados = ms.map(estadoVisual);
-        const general =
-          prioridad.find((p) => estados.includes(p)) ?? (s.activo ? "activa" : "baja");
-        return { socio: s, membresias: ms, estados, general };
+        // El estado es el que SIRVIÓ el backend en `Socio.estado`: no se deriva.
+        return { socio: s, membresias: ms, estado: s.estado };
       })
       .filter((f) => {
         const term = q.trim().toLowerCase();
@@ -116,10 +116,31 @@ function SociosPage() {
           return false;
         if (predio !== "todos" && !f.membresias.some((m) => m.predio === predio)) return false;
         if (area !== "todas" && !f.membresias.some((m) => m.area === area)) return false;
-        if (estado !== "todos" && !f.estados.includes(estado as EstadoVisual)) return false;
+        if (estado !== "todos" && f.estado !== estado) return false;
         return true;
       });
   }, [socios, membresias, q, predio, area, estado]);
+
+  const selTodos = filas.length > 0 && sel.size === filas.length;
+
+  /** Select-all toggles over the CURRENT filtered rows (mirrors notificaciones). */
+  function toggleSelectarTodos() {
+    setSel(selTodos ? new Set() : new Set(filas.map((f) => f.socio.id)));
+  }
+
+  function toggleSocio(id: string, on: boolean) {
+    setSel((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  const sociosSeleccionados = useMemo(
+    () => filas.filter((f) => sel.has(f.socio.id)).map((f) => f.socio),
+    [filas, sel],
+  );
 
   function crearSocio() {
     if (!form.nombre || !form.telefono) {
@@ -127,7 +148,7 @@ function SociosPage() {
       return;
     }
     createSocio.mutate(
-      { ...form, activo: true },
+      { ...form, activo: true, numeroSocio: null, tieneFoto: false },
       {
         onSuccess: (nuevo) => {
           setOpen(false);
@@ -152,9 +173,16 @@ function SociosPage() {
     <>
       <PageHeader
         title="Socios"
-        subtitle="Padrón general del club. Ingresá a la ficha para ver membresías y pagos."
+        subtitle={`${socios.length} socios en el padrón`}
         actions={
           <>
+            <Button
+              variant="outline"
+              disabled={sociosSeleccionados.length === 0}
+              onClick={() => setPrintOpen(true)}
+            >
+              <Printer className="mr-2 size-4" /> Imprimir carnets
+            </Button>
             <ExportButton resource="socios" label="socios" />
             <Button variant="outline" onClick={() => setImportOpen(true)}>
               <FileUp className="mr-2 size-4" /> Importar socios
@@ -176,6 +204,7 @@ function SociosPage() {
             className="pl-9"
           />
         </div>
+        <span className="text-sm font-medium text-muted-foreground">Total: {socios.length}</span>
         <Select value={predio} onValueChange={setPredio}>
           <SelectTrigger className="w-[160px]">
             <SelectValue placeholder="Predio" />
@@ -198,25 +227,47 @@ function SociosPage() {
             <SelectItem value="Windsurf">Windsurf</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={estado} onValueChange={setEstado}>
-          <SelectTrigger className="w-[160px]">
+        <Select value={estado} onValueChange={(v) => setEstado(v as "todos" | EstadoSocio)}>
+          <SelectTrigger className="w-[170px]">
             <SelectValue placeholder="Estado" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="todos">Todos los estados</SelectItem>
-            <SelectItem value="activa">Activa</SelectItem>
-            <SelectItem value="por_vencer">Por vencer</SelectItem>
-            <SelectItem value="vencida">Vencida</SelectItem>
-            <SelectItem value="suspendida">Suspendida</SelectItem>
-            <SelectItem value="baja">Dada de baja</SelectItem>
+            <SelectItem value="Inactivo — revisar">Inactivo — revisar</SelectItem>
+            <SelectItem value="Socio activo — revisar">Socio activo — revisar</SelectItem>
+            <SelectItem value="Socio activo">Socio activo</SelectItem>
+            <SelectItem value="Solo cuota social">Solo cuota social</SelectItem>
           </SelectContent>
         </Select>
       </Card>
 
       <Card className="overflow-hidden p-0">
+        <div className="flex items-center justify-between border-b border-border px-5 py-3">
+          <h2 className="text-sm font-semibold">Padrón</h2>
+          <div className="flex items-center gap-3">
+            {sel.size > 0 && (
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {sel.size} seleccionado{sel.size === 1 ? "" : "s"}
+              </span>
+            )}
+            <button
+              className="text-xs font-medium text-primary hover:underline"
+              onClick={toggleSelectarTodos}
+            >
+              {selTodos ? "Quitar selección" : "Seleccionar todos"}
+            </button>
+          </div>
+        </div>
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-10">
+                <Checkbox
+                  aria-label={selTodos ? "Quitar selección" : "Seleccionar todos"}
+                  checked={selTodos}
+                  onCheckedChange={toggleSelectarTodos}
+                />
+              </TableHead>
               <TableHead>Socio</TableHead>
               <TableHead>DNI</TableHead>
               <TableHead>Contacto</TableHead>
@@ -228,6 +279,13 @@ function SociosPage() {
           <TableBody>
             {filas.map((f) => (
               <TableRow key={f.socio.id}>
+                <TableCell>
+                  <Checkbox
+                    aria-label={`Seleccionar ${f.socio.nombre}`}
+                    checked={sel.has(f.socio.id)}
+                    onCheckedChange={(c) => toggleSocio(f.socio.id, !!c)}
+                  />
+                </TableCell>
                 <TableCell className="font-medium">
                   <div className="flex items-center gap-2">
                     <Link
@@ -256,17 +314,17 @@ function SociosPage() {
                     {f.membresias.length === 0 && (
                       <span className="text-xs text-muted-foreground">Sin membresías</span>
                     )}
-                    {f.membresias.map((m) => (
-                      <span key={m.id} className="inline-flex items-center gap-1">
-                        <AreaBadge area={m.area} />
-                        <span className="text-[11px] text-muted-foreground">{m.predio}</span>
-                      </span>
-                    ))}
+                    {f.membresias.map((m) =>
+                      m.area ? (
+                        <span key={m.id} className="inline-flex items-center gap-1">
+                          <AreaBadge area={m.area} />
+                          <span className="text-[11px] text-muted-foreground">{m.predio}</span>
+                        </span>
+                      ) : null,
+                    )}
                   </div>
                 </TableCell>
-                <TableCell>
-                  <EstadoBadge estado={f.general} />
-                </TableCell>
+                <TableCell>{f.estado ? <EstadoBadge estado={f.estado} /> : null}</TableCell>
                 <TableCell className="text-right">
                   <div className="flex items-center justify-end gap-2">
                     <Button asChild size="sm" variant="outline">
@@ -288,7 +346,7 @@ function SociosPage() {
             ))}
             {filas.length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
                   No hay socios que coincidan con la búsqueda.
                 </TableCell>
               </TableRow>
@@ -402,6 +460,10 @@ function SociosPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {printOpen && (
+        <CarnetPrint socios={sociosSeleccionados} onClose={() => setPrintOpen(false)} />
+      )}
     </>
   );
 }

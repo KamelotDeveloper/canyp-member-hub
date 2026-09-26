@@ -1,8 +1,10 @@
 /**
  * CANYP API client — typed fetch wrapper for backend endpoints.
  *
- * All backend routers live under /api/. The Vite dev server proxies
- * /api → http://localhost:8000 so this works in dev without CORS issues.
+ * All backend routers live under /api/. In dev the Vite server proxies
+ * /api to the locally running backend (default dev port); in the packaged
+ * desktop shell the sidecar listens on a dynamic port chosen at startup
+ * (CANYP_PORT, fetched via the get_backend_port command).
  */
 
 import type {
@@ -10,6 +12,9 @@ import type {
   Arancel,
   Area,
   CategoriaParcela,
+  ConceptoMembresia,
+  DashboardAlerta,
+  DashboardStats,
   EstadoMembresia,
   ExecuteResult,
   ImportPayload,
@@ -17,6 +22,7 @@ import type {
   Membresia,
   Notificacion,
   Parcela,
+  ParcelaConMembresias,
   Pago,
   PagoItemInput,
   Predio,
@@ -30,19 +36,35 @@ import type {
 // Base client
 // ---------------------------------------------------------------------------
 
+let baseUrlPromise: Promise<string> | null = null;
+
+/** Base URL resuelta una sola vez por sesión (caché). */
+async function getBaseUrl(): Promise<string> {
+  if (!baseUrlPromise) baseUrlPromise = resolveBaseUrl();
+  return baseUrlPromise;
+}
+
 /**
  * Resolve the API base for the current runtime.
  * - Browser dev (Vite proxy): `/api`
- * - Tauri desktop shell: the sidecar FastAPI listens on 127.0.0.1:8000.
- *   Tauri v2 exposes `window.__TAURI_INTERNALS__`; detect it at module load
- *   so the same bundle works in devUrl and in the packaged app.
+ * - Tauri desktop shell: the sidecar FastAPI listens on a dynamic port chosen
+ *   at startup. Tauri v2 exposes window.__TAURI_INTERNALS__; call the
+ *   `get_backend_port` command so the same bundle works in dev and packaged.
  */
-function resolveBaseUrl(): string {
+async function resolveBaseUrl(): Promise<string> {
   const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-  return inTauri ? "http://127.0.0.1:8000/api" : "/api";
+  if (!inTauri) return "/api";
+  try {
+    const internals = (
+      window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string) => Promise<number> } }
+    ).__TAURI_INTERNALS__;
+    const port = await internals.invoke("get_backend_port");
+    return `http://127.0.0.1:${port}/api`;
+  } catch {
+    // Comando no disponible (dev sin sidecar): fallback coherente con uvicorn manual.
+    return "http://127.0.0.1:8000/api";
+  }
 }
-
-const BASE_URL = resolveBaseUrl();
 
 /**
  * localStorage key where the JWT is persisted after login / first-user.
@@ -84,7 +106,7 @@ export function clearToken(): void {
  */
 export async function logout(): Promise<void> {
   try {
-    await fetch(`${BASE_URL}/auth/logout`, { method: "POST" });
+    await fetch(`${await getBaseUrl()}/auth/logout`, { method: "POST" });
   } catch {
     // network failure — still clear the local token below
   }
@@ -128,11 +150,14 @@ export class ApiError extends Error {
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const url = `${BASE_URL}${path}`;
-  const res = await fetch(url, attachAuthHeaders({
-    headers: { "Content-Type": "application/json", ...init?.headers },
-    ...init,
-  }));
+  const url = `${await getBaseUrl()}${path}`;
+  const res = await fetch(
+    url,
+    attachAuthHeaders({
+      headers: { "Content-Type": "application/json", ...init?.headers },
+      ...init,
+    }),
+  );
   if (!res.ok) {
     if (res.status === 401) handleUnauthorized(path);
     const body = await res.json().catch(() => ({ detail: res.statusText }));
@@ -150,7 +175,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
  * with the backend `detail`), but it does not auto-parse JSON.
  */
 export async function apiFetchRaw(path: string, init?: RequestInit): Promise<Response> {
-  const url = `${BASE_URL}${path}`;
+  const url = `${await getBaseUrl()}${path}`;
   const res = await fetch(url, attachAuthHeaders(init));
   if (!res.ok) {
     if (res.status === 401) handleUnauthorized(path);
@@ -200,6 +225,33 @@ export function deleteSocio(id: string): Promise<void> {
   return apiFetch<void>(`/socios/${id}`, { method: "DELETE" });
 }
 
+/**
+ * POST /api/socios/{id}/foto — multipart field `foto` (image/*, max 5 MB).
+ * 200 `{tieneFoto: true}`; 415 non-image; 413 too big; 404 missing socio.
+ */
+export function subirFoto(id: string, foto: File): Promise<{ tieneFoto: boolean }> {
+  const formData = new FormData();
+  formData.append("foto", foto);
+  return apiFetchMultipart<{ tieneFoto: boolean }>(`/socios/${id}/foto`, formData);
+}
+
+/**
+ * GET /api/socios/{id}/foto — raw JPEG bytes (`Content-Type: image/jpeg`).
+ * Throws ApiError 404 if the socio is missing or has no photo. Used by the
+ * carnet print flow (blob -> object URL), never JSON.
+ */
+export function getSocioFoto(id: string): Promise<Blob> {
+  return apiFetchRaw(`/socios/${id}/foto`).then((res) => res.blob());
+}
+
+/**
+ * DELETE /api/socios/{id}/foto — removes the carnet photo.
+ * 204 on success (photo cleared); 404 if the socio is missing.
+ */
+export function quitarFoto(id: string): Promise<void> {
+  return apiFetch<void>(`/socios/${id}/foto`, { method: "DELETE" });
+}
+
 // ---------------------------------------------------------------------------
 // Membresias
 // ---------------------------------------------------------------------------
@@ -236,6 +288,16 @@ export function updateMembresia(id: string, data: Partial<Membresia>): Promise<M
 
 export function deleteMembresia(id: string): Promise<void> {
   return apiFetch<void>(`/membresias/${id}`, { method: "DELETE" });
+}
+
+/**
+ * GET /api/membresias/parcelas — unidades (cabañas/balsas) con sus miembros y
+ * el estado de socio SCOPED a la unidad (`estadoSocio`, D5). El servidor ya
+ * marca ⚠️ a TODO el grupo cuando cualquier área de la unidad está vencida, así
+ * que el panel solo agrega lo servido por unidad.
+ */
+export function getMembresiasParcelas(): Promise<ParcelaConMembresias[]> {
+  return apiFetch<ParcelaConMembresias[]>("/membresias/parcelas");
 }
 
 // ---------------------------------------------------------------------------
@@ -293,18 +355,49 @@ export function setBatchEstado(parcelaId: string, estado: EstadoMembresia): Prom
   });
 }
 
-/** Cambia el vencimiento de TODAS las membresías de una parcela (batch, RQ 5). */
-export function setBatchVencimiento(parcelaId: string, vencimiento: string): Promise<unknown> {
-  return apiFetch(`/parcelas/${parcelaId}/vencimiento`, {
+/**
+ * Cambia el vencimiento de TODAS las membresías de una parcela (batch, CBM-06).
+ *
+ * `concepto` es el valor del enum (`"area"` | `"cuota social"`); la UI lo envía
+ * SIEMPRE: omitirlo mezcla área + cuota social en el mismo lote. La fecha se
+ * guarda VERBATIM (sin proyección a día 10): esa regla es del cobro, no del
+ * editor manual.
+ */
+export function setBatchVencimiento(
+  parcelaId: string,
+  vencimiento: string,
+  concepto?: ConceptoMembresia,
+): Promise<unknown> {
+  const qs = concepto ? `?concepto=${encodeURIComponent(concepto)}` : "";
+  return apiFetch(`/parcelas/${parcelaId}/vencimiento${qs}`, {
     method: "PUT",
     body: JSON.stringify({ vencimiento }),
   });
 }
 
 /**
- * Arma el payload de cobro por unidad (RQ 14): un Pago a nombre del Titular,
- * con UN único ítem (el arancel de la categoría de la unidad) y `membresiaIds`
+ * Edita el `vencimiento` ABSOLUTO de UNA membresía (área o cuota social, CBM-06).
+ *
+ * El id decide cuál; no hay endpoint separado de cuota. La fecha se guarda
+ * VERBATIM y se acepta una fecha pasada (las filas legacy a corregir están
+ * justamente vencidas). No crea ni toca ningún `Pago`.
+ */
+export function updateMembresiaVencimiento(id: string, vencimiento: string): Promise<Membresia> {
+  return apiFetch<Membresia>(`/membresias/${id}/vencimiento`, {
+    method: "PUT",
+    body: JSON.stringify({ vencimiento }),
+  });
+}
+
+/**
+ * Arma el payload de cobro por unidad (RQ 14): un Pago a nombre del Titular con
+ * `items` = un ítem por cada concepto marcado por el operador, y `membresiaIds`
  * con TODOS los miembros para que el backend renueve a titulares e integrantes.
+ *
+ * `items` ya viene compuesto por `itemsPorConcepto` (7.2): el cliente propone
+ * el desglose y el `montoAplicado` es una PISTA — el servidor re-resuelve cada
+ * línea contra el catálogo y es la única autoridad del total (PAG-01).
+ *
  * Retorna `null` si no hay titular o no hay ítems por cobrar.
  */
 export function buildUnitPago(params: {
@@ -315,24 +408,21 @@ export function buildUnitPago(params: {
   medio: string;
   /** Nota opcional que se muestra en el comprobante. */
   nota?: string;
-  /** Ítem único del cobro (el arancel de la unidad). */
-  items: { arancelId: string; arancelNombre: string; montoAplicado: number; membresiaId: string }[];
+  /** Fecha del cobro; por defecto hoy (PAG-02). */
+  fecha?: string;
+  /** Un ítem por concepto marcado, ya compuesto por `itemsPorConcepto`. */
+  items: PagoItemInput[];
 }): CreatePagoInput | null {
-  const items: PagoItemInput[] = params.items.map((it) => ({
-    arancelId: it.arancelId,
-    membresiaId: it.membresiaId,
-    montoAplicado: it.montoAplicado,
-    arancelNombre: it.arancelNombre,
-  }));
-  if (!params.titular.socioId) return null;
+  const { titular, integrantes, medio, nota, fecha, items } = params;
+  if (!titular.socioId) return null;
   if (items.length === 0) return null;
   return {
-    socioId: params.titular.socioId,
-    medio: params.medio,
-    ...(params.nota ? { nota: params.nota } : {}),
+    socioId: titular.socioId,
+    medio,
+    ...(fecha ? { fecha } : {}),
+    ...(nota ? { nota } : {}),
     items,
-    membresiaIds: [params.titular.membresiaId, ...params.integrantes.map((i) => i.membresiaId)],
-    total: items.reduce((s, i) => s + i.montoAplicado, 0),
+    membresiaIds: [titular.membresiaId, ...integrantes.map((i) => i.membresiaId)],
   };
 }
 
@@ -402,10 +492,17 @@ export function getPagos(params?: { socioId?: string }): Promise<Pago[]> {
 export interface CreatePagoInput {
   socioId: string;
   medio: string;
+  /** Fecha del cobro; el operador la elige y por defecto es hoy (PAG-02). */
+  fecha?: string;
   /** Nota opcional que se muestra en el comprobante. */
   nota?: string;
   items: PagoItemInput[];
-  total: number;
+  /**
+   * Opcional a propósito (PAG-01): el servidor es la única autoridad del
+   * total. El cliente manda su estimación como pista en `montoAplicado`, pero
+   * el campo `total` viaja solo si el llamador lo define explícitamente.
+   */
+  total?: number;
   /** Membresías a renovar (puede diferir de los ítems: cobro por unidad). */
   membresiaIds?: string[];
 }
@@ -417,7 +514,7 @@ export function createPago(data: CreatePagoInput): Promise<Pago> {
     body: JSON.stringify({
       // El id lo genera el backend (uuid4, seguro para modo remoto/Postgres).
       socioId: data.socioId,
-      fecha: hoy,
+      fecha: data.fecha ?? hoy,
       medio: data.medio,
       total: data.total,
       nota: data.nota,
@@ -518,12 +615,12 @@ export function createUsuario(username: string, password: string): Promise<Usuar
 // Dashboard
 // ---------------------------------------------------------------------------
 
-export function getDashboardStats(): Promise<Record<string, unknown>> {
-  return apiFetch<Record<string, unknown>>("/dashboard/stats");
+export function getDashboardStats(): Promise<DashboardStats> {
+  return apiFetch<DashboardStats>("/dashboard/stats");
 }
 
-export function getDashboardAlertas(): Promise<Record<string, unknown>> {
-  return apiFetch<Record<string, unknown>>("/dashboard/alertas");
+export function getDashboardAlertas(): Promise<DashboardAlerta[]> {
+  return apiFetch<DashboardAlerta[]>("/dashboard/alertas");
 }
 
 // ---------------------------------------------------------------------------

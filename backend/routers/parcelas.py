@@ -7,13 +7,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
-from backend.models.enums import Area, EstadoMembresia
+from backend.models.enums import Area, ConceptoMembresia, EstadoMembresia
 from backend.models.membresia import Membresia
 from backend.models.parcela import Parcela
 from backend.models.socio import Socio
+from backend.models.usuario import Usuario
 from backend.schemas.import_ import ImportPayload, ImportResponse
-from backend.schemas.membresia import MembresiaUpdate
+from backend.schemas.membresia import MembresiaUpdate, MembresiaVencimientoUpdate
 from backend.schemas.parcela import ParcelaCreate, ParcelaResponse, ParcelaUpdate
+from backend.security import get_current_user
+from backend.services.cuota_social import crear_cuota_social
+from backend.services.vencimiento import editar_vencimiento, membresias_de_unidad
 
 router = APIRouter(prefix="/api/parcelas", tags=["parcelas"])
 
@@ -97,6 +101,12 @@ def import_parcelas(data: ImportPayload, db: Session = Depends(get_db)):
                 created_socios.append(socio.id)
                 db.flush()
 
+            # Every socio owes the cuota social (CS-02), whether they are new to
+            # the padron or already a member of this unit. Runs BEFORE the
+            # idempotency `continue` below, otherwise a socio that already had
+            # an area row for the unit would never get one.
+            crear_cuota_social(db, socio)
+
             # Idempotency: skip if this socio already has a membresia for the unit.
             existing_membresia = (
                 db.query(Membresia)
@@ -153,16 +163,47 @@ def set_batch_estado_parcela(parcela_id: str, data: MembresiaUpdate, db: Session
 
 
 @router.put("/{parcela_id}/vencimiento")
-def set_batch_vencimiento_parcela(parcela_id: str, data: MembresiaUpdate, db: Session = Depends(get_db)):
-    """Set vencimiento on all membresias of a parcela (batch, RQ 5)."""
+def set_batch_vencimiento_parcela(
+    parcela_id: str,
+    data: MembresiaVencimientoUpdate,
+    concepto: ConceptoMembresia | None = Query(
+        None, description="Limit the batch to one concept (default: every membership of the parcel)"
+    ),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
+):
+    """Set an ABSOLUTE `vencimiento` on a whole unit (batch, RQ 5 / CBM-06).
+
+    `concepto` narrows the batch, and this is the whole point of the endpoint:
+    correcting the área dates of a balsa MUST leave its members' cuota social
+    dates alone, and the other way round.
+
+      * omitted  -> every membership of the parcel (its `parcelaId` rows). A
+                    cuota social row carries no `parcelaId` (CS-01), so this can
+                    never move one.
+      * `area`   -> the same rows narrowed to the área concept.
+      * `cuota social` -> the cuota social membership of each member of the
+                    unit, reached through them rather than through the parcel.
+
+    The date is stored VERBATIM (see `services.vencimiento`) and a malformed one
+    is a 422 that changes nothing. No `Pago` is created: this is a data
+    correction, not a charge. `actualizadas` reports how many rows were written,
+    so an empty unit is a 200 with 0 rather than a silent no-op.
+    """
     parcela = db.query(Parcela).filter(Parcela.id == parcela_id).first()
     if parcela is None:
         raise HTTPException(status_code=404, detail=f"Parcela {parcela_id} not found")
-    if data.vencimiento is not None:
-        for m in db.query(Membresia).filter(Membresia.parcelaId == parcela_id).all():
-            m.vencimiento = data.vencimiento
-        db.commit()
-    return {"parcelaId": parcela_id, "vencimiento": data.vencimiento}
+    objetivos = membresias_de_unidad(db, parcela_id, concepto)
+    editar_vencimiento(db, objetivos, data.vencimiento)
+    for m in objetivos:
+        m.updated_by = current_user.id
+    db.commit()
+    return {
+        "parcelaId": parcela_id,
+        "vencimiento": data.vencimiento,
+        "concepto": concepto.value if concepto is not None else None,
+        "actualizadas": len(objetivos),
+    }
 
 
 @router.get("/{parcela_id}", response_model=ParcelaResponse)

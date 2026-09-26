@@ -84,29 +84,55 @@ Notificacion: id, socioId, canal, fecha, motivo, mensaje
 Predio = "Embalse" | "Almafuerte"
 Area = "Balseros" | "Cabañeros" | "Guardería" | "Windsurf"
 EstadoMembresia = "activa" | "suspendida" | "vencida" | "baja"
+EstadoSocio = "Socio activo" | "Socio activo — revisar"
+              | "Inactivo — revisar" | "Solo cuota social"  (calculado, ver regla 1)
 ```
 
 ## Reglas de negocio (definidas, no reinterpretar)
 
-1. **Estado visual de membresía** (calculado, no persistido salvo
-   suspendida/baja):
-   - vencimiento < hoy → `vencida`
-   - vencimiento <= 30 días → `por_vencer`
-   - vencimiento > 30 días → `activa`
-   - Si el estado almacenado es `suspendida` o `baja`, prevalece sobre el
-     cálculo de fecha.
-   - Este cálculo vive en el backend como función pura, reutilizada en
-     dashboard, ficha de socio y listado de membresías. Nunca duplicar la
-     lógica en el frontend.
+1. **Estado de socio** (4 estados, calculados en el backend desde los
+   `vencimiento`; nunca persistidos):
+   - El backend es la única autoridad y el frontend consume el valor que le
+     llega por la API, sin recalcularlo.
+   - 🟢 `Socio activo`: cuota social al día y (sin membresía de área o área al
+     día).
+   - ⚠️ `Socio activo — revisar`: cuota social al día pero área vencida. Aplica
+     a **toda la unidad** (titular e integrantes), no solo al titular: la
+     unidad se paga una vez y su estado es el `vencimiento` más vencido de sus
+     miembros.
+   - 🔴 `Inactivo — revisar`: cuota social vencida, o su membresía de cuota
+     social en `suspendida`/`baja`. Sigue visible, exportable y cobrable: no
+     se borra ni se oculta nada.
+   - `Solo cuota social`: sin membresía de área y cuota al día.
+   - `vencimiento == hoy` cuenta como al día. El `suspendida`/`baja` de una
+     membresía de **área** no afecta el estado.
+   - No hay ventana de anticipación ni estado intermedio: sólo deuda real.
+   - Son SOLO control visual: no borran datos ni impiden cobrar. Al pagar, el
+     estado se restaura solo en la siguiente lectura (es un recálculo, no un
+     flag guardado).
+   - Implementación: `backend/services/estado_socio.py` —
+     `calcular_estado_socio(cuota, area, hoy)` puro + `estados_socio`, que
+     resuelve un listado entero en UNA consulta agrupada. Lo usan el padrón, la
+     ficha de socio, el listado de membresías/unidad y el dashboard. Nunca
+     duplicar la lógica en el frontend.
 
 2. **Comprobantes de pago**: numeración secuencial única y global
    (`0001`, `0002`, ...), no separada por predio. Debe generarse de forma
    atómica en el backend (no calcular "max+1" desde el cliente) para evitar
    colisiones si hay dos cobros simultáneos.
 
-3. **Al registrar un pago**: cada membresía incluida se renueva
-   automáticamente por 12 meses desde su vencimiento actual y pasa a
-   `activa`.
+3. **Al registrar un pago**: cada membresía incluida se renueva al
+   ciclo mensual 10 → 10 y pasa a `activa`.
+   - `vencimiento = max(vencimiento, dia10(fecha_pago))`, donde
+     `dia10(f)` es el primer día 10 **en o después** de `f`: el día 10 de ese
+     mes si `f.día <= 10`, o el día 10 del mes siguiente si `f.día > 10`.
+   - Un pago posterior al día 10 cubre el período en curso (15/09 → 10/10,
+     20/11 → 10/12). El atraso se penaliza con recargo manual, nunca
+     acortando el período cubierto.
+   - Un segundo cobro dentro del mismo período no adelanta la cobertura, y
+     una membresía ya pagada por adelantado nunca se acorta.
+   - Implementación: `backend/services/renovacion.py` (`dia10` +
+     `renovar_membresias`).
 
 4. **Aranceles**: al actualizar un monto, el valor anterior se guarda en
    `historico[]` con su fecha de vigencia. El monto aplicado a un pago

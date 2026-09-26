@@ -171,6 +171,47 @@
  * of body (app, dialog overlay/content) is display:none so the printed page
  * contains exactly the comprobante, full-size at the top-left.
  */
+
+/* Carnet CR80 (85.6 x 54 mm) — fixed physical size. mm aquí es CRÍTICO:
+   el carnet impreso tiene que entrar en una tarjeta CR80 real. */
+.carnet {
+  width: 85.6mm;
+  height: 54mm;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.carnet * {
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+/* Club logo watermark: keep it subtle on screen AND in print (low opacity,
+   top-right). opacity is applied by the print engine only with
+   print-color-adjust: exact, which .carnet * already guarantees. */
+.carnet-logo {
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+/* Small tiled CANYP-blue pattern behind the card content (on top of the
+   white card, below the big watermark and the text). The logo is originally
+   gold (#CB9833); hue-rotate shifts it towards the app's blue primary and
+   saturate keeps it vivid; keep the tile small so it reads as a texture.
+
+   ON SCREEN the pattern is DISABLED: rendering a repeated SVG tile + filter
+   per carnet makes the on-screen preview of hundreds of carnets freeze the
+   main thread (it stays "loading" and shows nothing). The pattern is only
+   needed in the printed output, so it lives inside @media print below. */
+.carnet::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+@page {
+  size: A4;
+  margin: 0;
+}
+
 .print-root {
   display: none;
 }
@@ -187,10 +228,51 @@
     padding: 0 !important;
   }
 
+  /* Print-only: the tiled CANYP-blue pattern behind each carnet. Enabled
+     exclusively in print so the on-screen preview stays cheap. */
+  .carnet::before {
+    background-image: url("/CANYP_Almafuerte_logo.svg?v=3");
+    background-size: 11mm 12.54mm; /* matches the 500x570 viewBox ratio */
+    background-repeat: repeat;
+    opacity: 0.07;
+    filter: hue-rotate(200deg) saturate(3) brightness(0.95);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
   .print-area {
     margin: 0 !important;
     border: 0 !important;
     box-shadow: none !important;
     border-radius: 0 !important;
+  }
+
+  /*
+   * Carnet pages: ONE A4 sheet per .print-page, 8 carnets (2 x 4) centered.
+   * Pagination is CSS-only (break-after: page), so any number of selected
+   * socios works — the last page can be partial.
+   * Gaps chosen so margins == gutters horizontally (12.93mm) and vertically
+   * (16.2mm) over an exact 210 x 297mm page.
+   */
+  .print-page {
+    display: grid;
+    grid-template-columns: repeat(2, 85.6mm);
+    grid-template-rows: repeat(4, 54mm);
+    column-gap: 12.93mm;
+    row-gap: 16.2mm;
+    justify-content: center;
+    align-content: center;
+    width: 210mm;
+    height: 297mm;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    break-after: page;
+  }
+
+  .print-page:last-child {
+    break-after: auto;
   }
 }

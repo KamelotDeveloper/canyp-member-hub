@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-import { Mail, MessageCircle, SkipForward } from "lucide-react";
+import { Mail, MessageCircle, Send, SkipForward } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Table,
   TableBody,
@@ -25,12 +26,12 @@ import {
 import { EstadoBadge } from "@/components/canyp/EstadoBadge";
 import { PageHeader } from "@/components/canyp/AppShell";
 import { ExportButton } from "@/components/export";
-import { diasRestantes, estadoVisual, formatFecha } from "@/lib/canyp/utils";
+import { formatFecha } from "@/lib/canyp/utils";
 import {
-  useMembresias,
   useSocios,
   useNotificaciones,
   useCreateNotificacion,
+  useDashboardAlertas,
 } from "@/lib/canyp/queries";
 import type { Socio } from "@/lib/canyp/types";
 
@@ -40,7 +41,7 @@ export const Route = createFileRoute("/notificaciones")({
       { title: "Notificaciones — CANYP Gestión" },
       {
         name: "description",
-        content: "Avisos de vencimiento por email o WhatsApp e historial de envíos a los socios.",
+        content: "Avisos de vencimiento por WhatsApp e historial de envíos a los socios.",
       },
       { property: "og:title", content: "Notificaciones — CANYP Gestión" },
       {
@@ -63,10 +64,18 @@ interface EnvioWhatsApp {
   mensaje: string;
 }
 
-function armarMensaje(nombre: string, area: string, predio: string, vencimiento: string): string {
+function armarMensaje(
+  nombre: string,
+  area: string | null,
+  predio: string | null,
+  vencimiento: string,
+): string {
+  const detalle = area
+    ? `Tu membresía de ${area} en el predio ${predio} vence el ${formatFecha(vencimiento)}`
+    : `Tu cuota social vence el ${formatFecha(vencimiento)}`;
   return (
     `Hola ${nombre}, te escribimos del Club Náutico CANYP. ` +
-    `Tu membresía de ${area} en el predio ${predio} vence el ${formatFecha(vencimiento)}. ` +
+    `${detalle}. ` +
     `Podés regularizarla en administración. ¡Gracias!`
   );
 }
@@ -74,15 +83,33 @@ function armarMensaje(nombre: string, area: string, predio: string, vencimiento:
 async function abrirWhatsApp(telefono: string, mensaje: string) {
   const tel = `549${telefono.replace(/\D/g, "")}`;
   const msg = encodeURIComponent(mensaje);
-  const url = `whatsapp://send?phone=${tel}&text=${msg}`;
+  const webUrl = `https://wa.me/${tel}?text=${msg}`;
   const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   if (isTauri) {
     // Dynamic import so the SSR/Nitro build never tries to resolve the Tauri-only module.
     const { open } = await import("@tauri-apps/plugin-shell");
-    await open(url);
+    try {
+      const internals = (
+        window as unknown as {
+          __TAURI_INTERNALS__: { invoke: (cmd: string) => Promise<boolean> };
+        }
+      ).__TAURI_INTERNALS__;
+      // `open()` on Windows shells out to `cmd start`, which shows the native
+      // "no app associated" dialog WITHOUT rejecting, so probe the registry
+      // handler up front and fall back to WhatsApp Web when it is missing.
+      const hasDesktopApp = await internals.invoke("whatsapp_desktop_available");
+      if (hasDesktopApp) {
+        await open(`whatsapp://send?phone=${tel}&text=${msg}`);
+      } else {
+        await open(webUrl);
+      }
+    } catch {
+      // Any IPC/open failure falls back to WhatsApp Web.
+      await open(webUrl);
+    }
   } else {
     // Browser fallback: wa.me opens WhatsApp Web or the desktop app.
-    window.open(`https://wa.me/${tel}?text=${msg}`, "_blank");
+    window.open(webUrl, "_blank");
   }
 }
 
@@ -91,7 +118,9 @@ async function abrirWhatsApp(telefono: string, mensaje: string) {
 // ---------------------------------------------------------------------------
 
 function NotificacionesPage() {
-  const { data: membresias = [], isLoading: loadingMembresias } = useMembresias();
+  // Las alertas las sirve el backend (membresías vencidas/suspendidas + su estado
+  // de socio). No hay ventana de "por vencer" (EST-04): solo la deuda real.
+  const { data: alertas = [], isLoading: loadingAlertas } = useDashboardAlertas();
   const { data: socios = [] } = useSocios();
   const { data: notificaciones = [] } = useNotificaciones();
   const createNotificacion = useCreateNotificacion();
@@ -105,38 +134,16 @@ function NotificacionesPage() {
   const socioMap = useMemo(() => new Map(socios.map((s: Socio) => [s.id, s])), [socios]);
 
   const pendientes = useMemo(
-    () =>
-      membresias
-        .map((m) => ({ m, e: estadoVisual(m) }))
-        .filter((x) => x.e === "vencida" || x.e === "por_vencer")
-        .sort((a, b) => diasRestantes(a.m.vencimiento) - diasRestantes(b.m.vencimiento)),
-    [membresias],
+    () => [...alertas].sort((a, b) => (a.vencimiento < b.vencimiento ? -1 : 1)),
+    [alertas],
   );
 
   const toggle = (id: string, on: boolean) =>
     setSel((prev) => (on ? [...prev, id] : prev.filter((x) => x !== id)));
 
   const socioIdsSeleccionados = [
-    ...new Set(pendientes.filter((p) => sel.includes(p.m.id)).map((p) => p.m.socioId)),
+    ...new Set(pendientes.filter((p) => sel.includes(p.id)).map((p) => p.socioId)),
   ];
-
-  // --- Email ---
-  function enviarEmail() {
-    if (socioIdsSeleccionados.length === 0) {
-      toast.error("Seleccioná al menos un socio");
-      return;
-    }
-    createNotificacion.mutate(
-      { socioIds: socioIdsSeleccionados, canal: "email", motivo: "Recordatorio de vencimiento" },
-      {
-        onSuccess: () => {
-          setSel([]);
-          toast.success(`Recordatorio enviado a ${socioIdsSeleccionados.length} socio(s)`);
-        },
-        onError: () => toast.error("Error al enviar notificaciones"),
-      },
-    );
-  }
 
   // --- WhatsApp sequential send ---
   function iniciarWhatsApp() {
@@ -145,24 +152,32 @@ function NotificacionesPage() {
       return;
     }
     const lista: EnvioWhatsApp[] = [];
-    for (const p of pendientes.filter((p) => sel.includes(p.m.id))) {
-      const socio = socioMap.get(p.m.socioId);
+    for (const p of pendientes.filter((p) => sel.includes(p.id))) {
+      const socio = socioMap.get(p.socioId);
       if (!socio || !socio.telefono) continue;
       lista.push({
-        socioId: p.m.socioId,
+        socioId: p.socioId,
         nombre: socio.nombre,
         telefono: socio.telefono,
-        mensaje: armarMensaje(socio.nombre, p.m.area, p.m.predio, p.m.vencimiento),
+        mensaje: armarMensaje(socio.nombre, p.area, p.predio, p.vencimiento),
       });
     }
     if (lista.length === 0) {
       toast.error("Ninguno de los socios seleccionados tiene teléfono cargado");
       return;
     }
+    const primero = lista[0];
+    if (!primero) return;
+
     setEnvios(lista);
     setIdxActual(0);
-    setWa(lista[0].mensaje);
-    abrirWhatsApp(lista[0].telefono, lista[0].mensaje);
+    setWa(primero.mensaje);
+  }
+
+  function abrirWhatsAppActual() {
+    const socio = envios[idxActual];
+    if (!socio || !wa) return;
+    abrirWhatsApp(socio.telefono, wa);
   }
 
   function siguienteSocio() {
@@ -171,9 +186,11 @@ function NotificacionesPage() {
       finalizarWhatsApp();
       return;
     }
+    const sig = envios[next];
+    if (!sig) return;
+
     setIdxActual(next);
-    setWa(envios[next].mensaje);
-    abrirWhatsApp(envios[next].telefono, envios[next].mensaje);
+    setWa(sig.mensaje);
   }
 
   function finalizarWhatsApp() {
@@ -198,7 +215,7 @@ function NotificacionesPage() {
     setWa(null);
   }
 
-  if (loadingMembresias) {
+  if (loadingAlertas) {
     return (
       <>
         <PageHeader title="Centro de notificaciones" subtitle="Cargando..." />
@@ -213,15 +230,12 @@ function NotificacionesPage() {
     <>
       <PageHeader
         title="Centro de notificaciones"
-        subtitle={`${pendientes.length} membresías vencidas o por vencer en los próximos 30 días`}
+        subtitle={`${pendientes.length} membresías con vencimiento vencido o suspendidas`}
         actions={
           <>
             <ExportButton resource="notificaciones" label="notificaciones" />
             <Button variant="outline" onClick={iniciarWhatsApp}>
               <MessageCircle className="mr-2 size-4" /> Enviar por WhatsApp
-            </Button>
-            <Button onClick={enviarEmail} disabled={createNotificacion.isPending}>
-              <Mail className="mr-2 size-4" /> Enviar recordatorio por email
             </Button>
           </>
         }
@@ -233,7 +247,7 @@ function NotificacionesPage() {
           <button
             className="text-xs font-medium text-primary hover:underline"
             onClick={() =>
-              setSel(sel.length === pendientes.length ? [] : pendientes.map((p) => p.m.id))
+              setSel(sel.length === pendientes.length ? [] : pendientes.map((p) => p.id))
             }
           >
             {sel.length === pendientes.length ? "Quitar selección" : "Seleccionar todos"}
@@ -251,14 +265,14 @@ function NotificacionesPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {pendientes.map(({ m, e }) => {
-              const socio = socioMap.get(m.socioId);
+            {pendientes.map((a) => {
+              const socio = socioMap.get(a.socioId);
               return (
-                <TableRow key={m.id}>
+                <TableRow key={a.id}>
                   <TableCell>
                     <Checkbox
-                      checked={sel.includes(m.id)}
-                      onCheckedChange={(c) => toggle(m.id, !!c)}
+                      checked={sel.includes(a.id)}
+                      onCheckedChange={(c) => toggle(a.id, !!c)}
                     />
                   </TableCell>
                   <TableCell className="font-medium">{socio?.nombre}</TableCell>
@@ -267,13 +281,13 @@ function NotificacionesPage() {
                     <p className="text-muted-foreground">{socio?.email}</p>
                   </TableCell>
                   <TableCell className="text-xs">
-                    {m.area} · {m.predio}
+                    {a.area ? `${a.area} · ${a.predio}` : "Cuota social"}
                   </TableCell>
                   <TableCell className="text-xs tabular-nums">
-                    {formatFecha(m.vencimiento)}
+                    {formatFecha(a.vencimiento)}
                   </TableCell>
                   <TableCell>
-                    <EstadoBadge estado={e} />
+                    <EstadoBadge estado={a.estadoSocio} />
                   </TableCell>
                 </TableRow>
               );
@@ -315,18 +329,26 @@ function NotificacionesPage() {
 
       {/* WhatsApp sequential send dialog */}
       <Dialog open={!!wa} onOpenChange={(o) => !o && cancelarWhatsApp()}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Enviar WhatsApp — socio {idxActual + 1} de {envios.length}</DialogTitle>
             <DialogDescription>
-              Se abrió WhatsApp Desktop con el mensaje para <strong>{envios[idxActual]?.nombre}</strong>.
-              Revisalo y mandalo. Luego hacé clic en "Siguiente socio".
+              Podés editar el mensaje para <strong>{envios[idxActual]?.nombre}</strong> y luego tocá
+              "Abrir WhatsApp".
             </DialogDescription>
           </DialogHeader>
-          <p className="rounded-lg bg-success/10 p-4 text-sm leading-relaxed whitespace-pre-wrap">{wa}</p>
+          <Textarea
+            value={wa ?? ""}
+            onChange={(e) => setWa(e.target.value)}
+            rows={4}
+            className="min-w-0 resize-none whitespace-pre-wrap rounded-lg bg-success/10 p-4 text-sm leading-relaxed focus-visible:ring-0 focus-visible:ring-offset-0"
+          />
           <DialogFooter className="gap-2 sm:gap-0">
             <Button variant="outline" onClick={cancelarWhatsApp}>
               Cancelar
+            </Button>
+            <Button variant="outline" onClick={abrirWhatsAppActual}>
+              <Send className="mr-2 size-4" /> Abrir WhatsApp
             </Button>
             {idxActual + 1 < envios.length ? (
               <Button onClick={siguienteSocio}>

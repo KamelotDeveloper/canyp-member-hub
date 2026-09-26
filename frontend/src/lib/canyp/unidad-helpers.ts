@@ -8,26 +8,34 @@
  *   `ImportPayload` so the backend creates Parcela + socios + membresías
  *   transactionally (RQ 6 / RQ 12). First socio row is the Titular; the rest
  *   are Integrantes.
- * - `itemsParaMembresias` builds one PagoItem per (membresía, arancel) so each
- *   item renews ITS own membership (RQ 14 multi-membresía), reusing the same
- *   matching rule the /pagos page already applies.
+ * - `itemsPorConcepto` composes ONE payment line per ticked concept (área,
+ *   cuota social, servicio, recargo). It replaced the single-item resolvers
+ *   `itemsParaMembresias`/`itemsParaMembresiasConParcelas`, which could only
+ *   ever bill one arancel for the whole charge (PR 7).
+ *
+ * Every amount this module produces is a client ESTIMATE: the server re-resolves
+ * each line against the catalog and is the only authority over the total.
  */
 
 import type {
   Arancel,
   Area,
   CategoriaParcela,
+  ConceptoCobro,
+  ConceptoMembresia,
+  EstadoSocio,
   ImportMembresia,
   ImportPayload,
   ImportSocio,
   Membresia,
-  Parcela,
+  PagoItemInput,
+  ParcelaConMembresias,
   Predio,
   Rol,
   UnidadFiltro,
   UnidadGroup,
 } from "./types";
-import { estadoVisual, type EstadoVisual } from "./utils";
+import { ORDEN_ESTADOS } from "./utils";
 
 /** Fila de socio del diálogo "Nueva unidad" (primera = Titular). */
 export interface NuevaUnidadSocio {
@@ -107,135 +115,295 @@ export function buildNuevaUnidadPayload(form: NuevaUnidadForm): ImportPayload | 
   return { unidades: [unidad] };
 }
 
-/** Un ítem de cobro ya resuelto contra un arancel (para buildUnitPago). */
-export interface PagoItemResuelto {
+/**
+ * Anclas de las líneas de cobro. `PagoItem.membresiaId` es NOT NULL, así que
+ * cada concepto necesita una membresía a la que imputarse (CBM-03).
+ *
+ * Son PISTAS de contabilidad, nunca instrucciones: el servidor vuelve a elegir
+ * su propio ancla (`_anchor_cuota` / `_anchor_area` / `_anchor_nea`) y una
+ * línea de recargo o servicio no renueva nada aunque lleve un id (REN-01).
+ */
+export interface AnclasCobro {
+  /** Ancla de área; también la de servicio y recargo cuando hay unidad. */
+  area?: string | undefined;
+  /** Membresía de cuota social del socio; ancla la línea de cuota social. */
+  cuota?: string | undefined;
+}
+
+/** Una línea de cobro compuesta en el cliente (PAG-01: estimación, NO autoridad). */
+export interface LineaCobro {
+  concepto: ConceptoCobro;
   arancelId: string;
   arancelNombre: string;
-  montoAplicado: number;
   membresiaId: string;
+  /** Estimación del cliente para mostrar mientras se arma el cobro. */
   monto: number;
+  /** Multiplicador estimado: 1, o la cantidad de miembros (cuota social). */
+  factor: number;
+  /** Sólo recargo/servicio: importe a cobrar en ESTE cobro. */
+  montoAplicado?: number;
+}
+
+export interface OpcionesItemsPorConcepto {
+  anclas: AnclasCobro;
+  /** Miembros de la unidad gestionada → multiplicador de la cuota social. */
+  miembros: number;
+  /** Catálogo completo, tal como lo sirve `GET /api/aranceles`. */
+  aranceles: Arancel[];
+  /** Área+predio+categoría que priced la línea de área; sin unidad no hay línea de área. */
+  lugar?: { area: Area; predio: Predio; categoria: CategoriaParcela | null };
+  /** Importe tipeado por el operador para el recargo (CBM-03). */
+  recargo?: number;
+  /** Ajuste del importe de servicio para ESTE cobro (PAG-03). */
+  servicio?: number;
 }
 
 /**
- * Resuelve el arancel aplicable por area + predio + categoría (regla RQ 13,
- * igual que `resolver_monto` del backend): primero el arancel de la categoría
- * exacta; si no hay, el catch-all (categoría null) del área+predio.
+ * Concepto de un arancel. Una fila sin `concepto` es una fila de área: ese es
+ * el default de la columna en la base (`ConceptoCobro.AREA`) y todas las filas
+ * anteriores a la migración por concepto lo eran.
  */
-export function arancelPara(
-  area: Area,
-  predio: Predio,
-  categoria: CategoriaParcela | null,
+function conceptoDeArancel(a: Arancel): ConceptoCobro {
+  return a.concepto ?? "area";
+}
+
+/**
+ * Devuelve la fila de catálogo que priced un concepto, replicando la
+ * resolución del servidor (`resolucion.py`):
+ *
+ * - `area` → arancel de la categoría exacta de la unidad y, si no hay, el
+ *   catch-all (`categoria` null) del mismo área+predio.
+ * - cualquier otro concepto → la fila etiquetada con ese concepto, ignorando
+ *   área y predio (esas filas guardan valores placeholder porque las columnas
+ *   son NOT NULL). Ante varias, gana la de menor id, igual que en el servidor.
+ *
+ * Nunca devuelve nada por coincidencia de texto: el concepto es la clave.
+ */
+export function arancelPorConcepto(
   aranceles: Arancel[],
+  concepto: ConceptoCobro,
+  lugar?: { area: Area; predio: Predio; categoria: CategoriaParcela | null },
 ): Arancel | undefined {
-  if (categoria) {
-    const exact = aranceles.find(
-      (a) => a.area === area && a.predio === predio && a.categoria === categoria,
+  if (concepto !== "area") {
+    return primeraPorId((a) => conceptoDeArancel(a) === concepto && a.categoria == null, aranceles);
+  }
+  if (!lugar) return undefined;
+  if (lugar.categoria) {
+    const exacta = aranceles.find(
+      (a) =>
+        conceptoDeArancel(a) === "area" &&
+        a.area === lugar.area &&
+        a.predio === lugar.predio &&
+        a.categoria === lugar.categoria,
     );
-    if (exact) return exact;
+    if (exacta) return exacta;
   }
-  return aranceles.find((a) => a.area === area && a.predio === predio && a.categoria == null);
+  return primeraPorId(
+    (a) =>
+      conceptoDeArancel(a) === "area" &&
+      a.area === lugar.area &&
+      a.predio === lugar.predio &&
+      a.categoria == null,
+    aranceles,
+  );
+}
+
+/** Primera fila que cumple el predicado, por id ascendente (determinismo). */
+function primeraPorId(match: (a: Arancel) => boolean, aranceles: Arancel[]): Arancel | undefined {
+  return [...aranceles].filter(match).sort((x, y) => (x.id < y.id ? -1 : 1))[0];
 }
 
 /**
- * Genera UN único ítem de cobro para la unidad: el arancel de su categoría.
- * El costo es por unidad/categoría, NO por integrante — una Cabaña Chica cuesta
- * lo mismo con 3 o 10 integrantes. El ítem se liga a la membresía del titular;
- * el pago renueva a TODOS los miembros vía `membresiaIds` (RQ 14).
+ * Compone UN ítem por cada concepto marcado por el operador (CBM-02).
+ *
+ * El cliente propone el desglose y el `montoAplicado` viaja como PISTA: el
+ * servidor re-resuelve cada línea contra el catálogo y es la única autoridad
+ * del total (PAG-01). Lo que se replica acá es la FORMA de la línea, para que
+ * el total que ve el operador sea el mismo que va a cobrar el servidor:
+ *
+ * - `area` → monto de catálogo, factor 1 (una balsa no se multiplica por
+ *   integrantes). Sin arancel de área la línea se cae, igual que el servidor.
+ * - `cuota social` → precio de UN miembro × cantidad de miembros de la unidad.
+ * - `servicio` → precio de catálogo (o el ajuste del operador para este cobro),
+ *   factor 1: los servicios se cobran por unidad, no por integrante.
+ * - `recargo` → el importe tipeado. Sin importe mayor a 0 la línea se cae, en
+ *   lugar de dejar que el servidor la rechace con un 422.
+ *
+ * Una línea sin ancla o sin fila de catálogo no se emite; devolver un array
+ * vacío es justamente lo que deja el botón de confirmar deshabilitado.
  */
-export function itemsParaMembresias(
-  members: Membresia[],
-  aranceles: Arancel[],
-  categoria: CategoriaParcela | null = null,
-): PagoItemResuelto[] {
-  const titular = members.find((m) => m.rol === "Titular") ?? members[0];
-  if (!titular) return [];
-  const directo = titular.arancelId
-    ? aranceles.find((a) => a.id === titular.arancelId)
-    : undefined;
-  const a = directo ?? arancelPara(titular.area, titular.predio, categoria, aranceles);
-  if (!a) return [];
-  return [
-    {
-      arancelId: a.id,
-      arancelNombre: a.nombre,
-      montoAplicado: a.monto,
-      monto: a.monto,
-      membresiaId: titular.id,
-    },
-  ];
-}
+export function itemsPorConcepto(
+  conceptos: readonly ConceptoCobro[],
+  o: OpcionesItemsPorConcepto,
+): LineaCobro[] {
+  const lineas: LineaCobro[] = [];
+  for (const concepto of conceptos) {
+    const membresiaId = concepto === "cuota social" ? o.anclas.cuota : o.anclas.area;
+    if (!membresiaId) continue;
+    const arancel = arancelPorConcepto(o.aranceles, concepto, o.lugar);
+    if (!arancel) continue;
 
-/**
- * Resuelve un PagoItem por membresía usando la categoría de SU parcela (para
- * el flujo general de /pagos, donde se pueden elegir membresías de distintas
- * unidades). Igual que `itemsParaMembresias` pero derivando la categoría de
- * cada membresía a partir de `parcelaId` en vez de una categoría única.
- */
-export function itemsParaMembresiasConParcelas(
-  members: Membresia[],
-  aranceles: Arancel[],
-  parcelas: Parcela[],
-): PagoItemResuelto[] {
-  const out: PagoItemResuelto[] = [];
-  for (const m of members) {
-    const parcela = m.parcelaId ? parcelas.find((p) => p.id === m.parcelaId) : undefined;
-    const categoria = parcela?.categoria ?? null;
-    const directo = m.arancelId
-      ? aranceles.find((a) => a.id === m.arancelId)
-      : undefined;
-    const a = directo ?? arancelPara(m.area, m.predio, categoria, aranceles);
-    if (a) {
-      out.push({
-        arancelId: a.id,
-        arancelNombre: a.nombre,
-        montoAplicado: a.monto,
-        monto: a.monto,
-        membresiaId: m.id,
+    if (concepto === "recargo") {
+      const monto = o.recargo ?? 0;
+      if (monto <= 0) continue;
+      lineas.push({
+        concepto,
+        arancelId: arancel.id,
+        arancelNombre: arancel.nombre,
+        membresiaId,
+        monto,
+        factor: 1,
+        montoAplicado: monto,
       });
+      continue;
     }
+
+    if (concepto === "servicio") {
+      const monto = o.servicio ?? arancel.monto;
+      if (monto <= 0) continue;
+      lineas.push({
+        concepto,
+        arancelId: arancel.id,
+        arancelNombre: arancel.nombre,
+        membresiaId,
+        monto,
+        factor: 1,
+        // El importe de catálogo no necesita viajar: el servidor ya lo usa
+        // cuando el ítem no trae montoAplicado. Sólo se manda si se ajustó.
+        ...(monto !== arancel.monto ? { montoAplicado: monto } : {}),
+      });
+      continue;
+    }
+
+    const factor = concepto === "cuota social" ? Math.max(1, o.miembros) : 1;
+    lineas.push({
+      concepto,
+      arancelId: arancel.id,
+      arancelNombre: arancel.nombre,
+      membresiaId,
+      monto: arancel.monto * factor,
+      factor,
+    });
   }
-  return out;
+  return lineas;
 }
 
-// ---------------------------------------------------------------------------
-// Estado crítico de una unidad + filtros (RQ 3 / RQ 4)
-// ---------------------------------------------------------------------------
-
-/**
- * Orden de severidad de los estados visuales — el más crítico primero (RQ 3).
- * `vencida` es lo más crítico (membresía vencida), seguida de `por_vencer`,
- * `suspendida`, `baja` y `activa`.
- */
-export const ORDEN_ESTADOS: EstadoVisual[] = [
-  "vencida",
-  "por_vencer",
-  "suspendida",
-  "baja",
-  "activa",
-];
-
-/**
- * Estado visual más crítico presente en una unidad (RQ 3). Devuelve el primer
- * estado de `ORDEN_ESTADOS` que tenga al menos un miembro; si ninguno matchea
- * (grupo vacío o estados desconocidos) cae a `activa` por defecto.
- */
-export function estadoCriticoDe(g: UnidadGroup): EstadoVisual {
-  return ORDEN_ESTADOS.find((e) => g.members.some((m) => estadoVisual(m) === e)) ?? "activa";
+/** Total estimado de las líneas compuestas; el servidor recalcula el suyo. */
+export function totalEstimado(lineas: LineaCobro[]): number {
+  return lineas.reduce((s, l) => s + l.monto, 0);
 }
 
 /**
- * Filtra una lista de unidades según el filtro seleccionado (RQ 4).
+ * Convierte una línea compuesta en el ítem que viaja al backend (PAG-01 / 5a).
+ *
+ * `montoAplicado` solo se envía cuando el operador fijó un importe para ESTE
+ * cobro: el recargo (siempre) y el servicio (solo si se ajustó el catálogo).
+ * Para área y cuota social el servidor ignora el valor y usa el catálogo; para
+ * un servicio sin ajuste prefiere su propio catálogo vigente, así que omitirlo
+ * evita congelar un precio de catálogo ya desactualizado (decision #646).
+ */
+export function lineaAPagoItem(l: LineaCobro): PagoItemInput {
+  return {
+    arancelId: l.arancelId,
+    membresiaId: l.membresiaId,
+    ...(l.montoAplicado != null ? { montoAplicado: l.montoAplicado } : {}),
+    arancelNombre: l.arancelNombre,
+    concepto: l.concepto,
+  };
+}
+
+/**
+ * Conceptos que se pueden ofrecer para un socio (PAG-01 / CS-05).
+ *
+ * - `cuota social` solo si el socio tiene la membresía: sin ella el servidor
+ *   rechaza el cobro con un 422, así que no se ofrece.
+ * - `area` solo si hay una membresía de área que no sea Windsurf.
+ * - `servicio` y `recargo` solo si el catálogo tiene la fila que los priced,
+ *   para no ofrecer un tick que no puede cobrarse.
+ * - Un socio de Windsurf (sin otra área) cobra CUOTA SOCIAL y nada más.
+ */
+export function conceptosDisponibles(
+  membresias: Membresia[],
+  aranceles: Arancel[],
+): ConceptoCobro[] {
+  const hayCuota = membresias.some((m) => conceptoDeMembresia(m) === "cuota social");
+  const hayArea = membresias.some(
+    (m) => conceptoDeMembresia(m) === "area" && m.area !== "Windsurf",
+  );
+  // El área identifica a Windsurf, no el concepto: una membresía de Windsurf ES
+  // una cuota social (CS-05), así que buscar sólo por concepto no la distingue
+  // de un socio que sólo tiene cuota social (CS-06).
+  const soloWindsurf = !hayArea && membresias.some((m) => m.area === "Windsurf");
+
+  const disponibles: ConceptoCobro[] = [];
+  if (hayCuota) disponibles.push("cuota social");
+  if (hayArea) disponibles.push("area");
+  if (soloWindsurf) return disponibles;
+  if (arancelPorConcepto(aranceles, "servicio")) disponibles.push("servicio");
+  if (arancelPorConcepto(aranceles, "recargo")) disponibles.push("recargo");
+  return disponibles;
+}
+
+/** Concepto de una membresía; sin `concepto` servido, un área es un área. */
+export function conceptoDeMembresia(m: Membresia): ConceptoMembresia {
+  return m.concepto ?? "area";
+}
+
+// ---------------------------------------------------------------------------
+// Estado crítico de una unidad + filtros (EST-01)
+// ---------------------------------------------------------------------------
+
+/**
+ * Estado más urgente de una lista de estados SERVIDOS por el backend (EST-01).
+ *
+ * No deriva nada: recibe los `EstadoSocio` que ya calculó el servidor y devuelve
+ * el más severo según `ORDEN_ESTADOS`. Un grupo sin miembros (o sin estados
+ * cargados) cae a "Socio activo", el estado menos alarmante.
+ */
+export function estadoCriticoDe(estados: readonly EstadoSocio[]): EstadoSocio {
+  for (const e of ORDEN_ESTADOS) {
+    if (estados.includes(e)) return e;
+  }
+  return "Socio activo";
+}
+
+/**
+ * Estado de cada unidad (`parcelaId → EstadoSocio`) tal como lo sirve el panel
+ * (D5): el peor `estadoSocio` entre los miembros de la unidad. El servidor ya
+ * scopó cada `estadoSocio` a la unidad (`areas_por_unidad`), así que acá solo se
+ * agrega lo servido — nunca se re-deriva la regla de vencimiento (EST-04).
+ */
+export function estadoSocioPorParcela(
+  parcelas: readonly ParcelaConMembresias[],
+): Map<string, EstadoSocio> {
+  const map = new Map<string, EstadoSocio>();
+  for (const p of parcelas) {
+    map.set(
+      p.parcela.id,
+      estadoCriticoDe(p.membresias.map((m) => m.estadoSocio)),
+    );
+  }
+  return map;
+}
+
+/**
+ * Filtra una lista de unidades según el estado crítico de cada una (servido, no
+ * recalculado). `estadoDe` extrae el estado crítico de un grupo — el llamador lo
+ * construye a partir de los estados que sirvió el backend.
+ *
  * - `todas`: no filtra.
- * - `vencidas`: solo unidades cuyo estado crítico es `vencida`.
- * - `por_vencer`: solo unidades cuyo estado crítico es `por_vencer`.
- * - `alertas`: unidades `vencida` o `por_vencer`.
+ * - `vencidas`: estado 🔴 "Inactivo — revisar".
+ * - `alertas`: estado 🔴 "Inactivo — revisar" o ⚠️ "Socio activo — revisar".
  */
-export function filtrarUnidades(grupos: UnidadGroup[], filtro: UnidadFiltro): UnidadGroup[] {
+export function filtrarUnidades(
+  grupos: UnidadGroup[],
+  filtro: UnidadFiltro,
+  estadoDe: (g: UnidadGroup) => EstadoSocio,
+): UnidadGroup[] {
   return grupos.filter((g) => {
-    const e = estadoCriticoDe(g);
-    if (filtro === "vencidas") return e === "vencida";
-    if (filtro === "por_vencer") return e === "por_vencer";
-    if (filtro === "alertas") return e === "vencida" || e === "por_vencer";
+    const e = estadoDe(g);
+    if (filtro === "vencidas") return e === "Inactivo — revisar";
+    if (filtro === "alertas") return e === "Inactivo — revisar" || e === "Socio activo — revisar";
     return true;
   });
 }

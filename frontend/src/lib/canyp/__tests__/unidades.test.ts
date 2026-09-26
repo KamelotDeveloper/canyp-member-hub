@@ -8,16 +8,17 @@
 
 import { describe, expect, it } from "vitest";
 import { groupByParcelaId } from "../../../components/canyp/UnidadesPanel";
+import { conceptoDeMembresia } from "../unidad-helpers";
 import type { Membresia, Area, CategoriaParcela, Predio } from "../types";
 
-function memb(overrides: Partial<Membresia> & { id: string; area: Area }): Membresia {
+function memb(overrides: Partial<Membresia> & { id: string; area?: Area | null }): Membresia {
   return {
     socioId: "s-x",
     predio: "Almafuerte",
     estado: "activa",
     vencimiento: "2099-01-01",
     ...overrides,
-  };
+  } as Membresia;
 }
 
 type PlainParcela = {
@@ -75,5 +76,26 @@ describe("groupByParcelaId", () => {
     const groups = groupByParcelaId({ membresias, parcelas: [], area: "Balseros" });
     expect(groups).toHaveLength(1);
     expect(groups[0]?.members.map((m) => m.id)).toEqual(["m2"]);
+  });
+
+  it("never lets a cuota social row into a unit group (CBM-02)", () => {
+    // La cuota social es una membresía SIN área física ni parcela. Si entrara al
+    // grupo, el multiplicador "cuota × miembros" contaría filas que no son
+    // integrantes de la unidad (PAG-01 / CS-03).
+    const membresias: Membresia[] = [
+      memb({ id: "m1", area: "Cabañeros", parcelaId: "p1" }),
+      memb({ id: "m2", area: "Balseros", parcelaId: "p1" }),
+      memb({ id: "mc1", concepto: "cuota social" }),
+    ];
+    const parcelas: PlainParcela[] = [
+      { id: "p1", nombre: "Cabaña 1", tipo: "cabaña", predio: "Almafuerte" },
+    ];
+
+    const grupos = groupByParcelaId({ membresias, parcelas, area: "Cabañeros" });
+    expect(grupos).toHaveLength(1);
+    expect(grupos[0]?.members.map((m) => m.id)).toEqual(["m1"]);
+
+    const grupo = grupos[0]!;
+    expect(grupo.members.some((m) => conceptoDeMembresia(m) === "cuota social")).toBe(false);
   });
 });

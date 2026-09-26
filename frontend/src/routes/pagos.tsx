@@ -34,8 +34,15 @@ import {
 import { PageHeader } from "@/components/canyp/AppShell";
 import { ExportButton } from "@/components/export";
 import { SocioCombobox } from "@/components/canyp/SocioCombobox";
-import { estadoVisual, formatARS, formatFecha } from "@/lib/canyp/utils";
-import { itemsParaMembresiasConParcelas, esMembresiaCobrable } from "@/lib/canyp/unidad-helpers";
+import { formatARS, formatFecha } from "@/lib/canyp/utils";
+import {
+  conceptosDisponibles,
+  conceptoDeMembresia,
+  esMembresiaCobrable,
+  itemsPorConcepto,
+  lineaAPagoItem,
+  totalEstimado,
+} from "@/lib/canyp/unidad-helpers";
 import {
   useSocios,
   useMembresias,
@@ -45,8 +52,20 @@ import {
   useParcelas,
   useUsuarios,
 } from "@/lib/canyp/queries";
-import { EstadoBadge } from "@/components/canyp/EstadoBadge";
-import type { Membresia, Pago, Socio, Usuario } from "@/lib/canyp/types";
+import type { Membresia, Pago, Socio, Usuario, ConceptoCobro } from "@/lib/canyp/types";
+
+/** Fecha de hoy en ISO corto, el default del cobro (PAG-02). */
+function hoyIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** Etiqueta de un concepto de cobro, tal como la nombra el dominio. */
+function labelConcepto(c: ConceptoCobro): string {
+  if (c === "cuota social") return "Cuota social";
+  if (c === "recargo") return "Recargo";
+  if (c === "servicio") return "Servicio";
+  return "Cuota de área";
+}
 
 export const Route = createFileRoute("/pagos")({
   validateSearch: (s: Record<string, unknown>): { nuevo?: string; socioId?: string } => ({
@@ -94,7 +113,10 @@ function PagosPage() {
 
   const [open, setOpen] = useState(false);
   const [socioId, setSocioId] = useState<string>("");
-  const [seleccion, setSeleccion] = useState<string[]>([]);
+  const [marcas, setMarcas] = useState<ConceptoCobro[]>([]);
+  const [recargo, setRecargo] = useState("");
+  const [servicio, setServicio] = useState("");
+  const [fecha, setFecha] = useState(hoyIso);
   const [medio, setMedio] = useState("Transferencia");
   const [nota, setNota] = useState("");
   const [comprobante, setComprobante] = useState<Pago | null>(null);
@@ -106,23 +128,66 @@ function PagosPage() {
     if (search.nuevo === "1") {
       setOpen(true);
       setSocioId(search.socioId ?? "");
-      setSeleccion([]);
+      setMarcas([]);
       navigate({ to: "/pagos", search: {}, replace: true });
     }
   }, [search.nuevo, search.socioId, navigate]);
 
-  const membresiasSocio = membresias.filter(
-    (m: Membresia) => m.socioId === socioId && m.estado !== "baja" && esMembresiaCobrable(m),
+  const membresiasSocio = useMemo(
+    () =>
+      membresias.filter(
+        (m: Membresia) => m.socioId === socioId && m.estado !== "baja" && esMembresiaCobrable(m),
+      ),
+    [membresias, socioId],
   );
 
-  const items = useMemo(() => {
-    const elegidas = membresiasSocio.filter((m: Membresia) => seleccion.includes(m.id));
-    // Un ítem por membresía, resolviendo el arancel por area + predio + categoría
-    // de su parcela (nunca TODOS los aranceles del área — RQ 14).
-    return itemsParaMembresiasConParcelas(elegidas, aranceles, parcelas);
-  }, [membresiasSocio, seleccion, aranceles, parcelas]);
+  // Qué se puede cobrar a este socio (CS-05: Windsurf sólo cuota social).
+  const disponibles = useMemo(
+    () => conceptosDisponibles(membresiasSocio, aranceles),
+    [membresiasSocio, aranceles],
+  );
 
-  const total = items.reduce((s, i) => s + i.monto, 0);
+  // Los anclos: una membresía por concepto, elegidas por el concepto que
+  // SERVIRON, no por adivinar desde el área.
+  const anclas = useMemo(() => {
+    const cuota = membresiasSocio.find((m) => conceptoDeMembresia(m) === "cuota social");
+    const area = membresiasSocio.find(
+      (m) => conceptoDeMembresia(m) === "area" && m.area !== "Windsurf",
+    );
+    return { cuota: cuota?.id, area: (cuota?.id ?? area?.id) };
+  }, [membresiasSocio]);
+
+  // Una sola línea por concepto, compuesta contra el catálogo (PAG-01).
+  const lineas = useMemo(
+    () =>
+      itemsPorConcepto(marcas, {
+        anclas,
+        miembros: membresiasSocio.filter((m) => conceptoDeMembresia(m) === "area").length || 1,
+        aranceles,
+        ...(anclas.area
+          ? (() => {
+              const m = membresiasSocio.find((x) => x.id === anclas.area);
+              const parcela = m?.parcelaId
+                ? parcelas.find((p) => p.id === m.parcelaId)
+                : undefined;
+              return m?.area && m.predio
+                ? {
+                    lugar: {
+                      area: m.area,
+                      predio: m.predio,
+                      categoria: parcela?.categoria ?? null,
+                    },
+                  }
+                : {};
+            })()
+          : {}),
+        ...(recargo ? { recargo: Number(recargo) } : {}),
+        ...(servicio ? { servicio: Number(servicio) } : {}),
+      }),
+    [marcas, anclas, membresiasSocio, parcelas, aranceles, recargo, servicio],
+  );
+
+  const total = totalEstimado(lineas);
 
   const historico = pagos.filter((p: Pago) => {
     if (fSocio !== "todos" && p.socioId !== fSocio) return false;
@@ -137,31 +202,37 @@ function PagosPage() {
   });
 
   function registrar() {
-    if (!socioId || seleccion.length === 0) {
-      toast.error("Elegí un socio y al menos una membresía");
+    if (!socioId || lineas.length === 0) {
+      toast.error("Elegí un socio y al menos un concepto");
       return;
     }
     createPago.mutate(
       {
         socioId,
         medio,
+        fecha,
         ...(nota.trim() ? { nota: nota.trim() } : {}),
-        items: items.map((i) => ({
-          arancelId: i.arancelId,
-          membresiaId: i.membresiaId, // cada ítem renueva SU membresía (RQ 14)
-          montoAplicado: i.monto,
-          arancelNombre: i.arancelNombre,
-        })),
-        total,
+        items: lineas.map(lineaAPagoItem),
       },
       {
         onSuccess: (pago) => {
           setOpen(false);
           setComprobante(pago);
-          toast.success("Pago registrado. Membresías renovadas por 12 meses.");
+          // Total y desglose son los que resolvió el servidor. Nada de "renovadas
+          // por 12 meses": qué se renueva depende de los conceptos marcados y
+          // cuánto dura lo define el servidor (PAG-01, REN-01).
+          toast.success(
+            `Pago registrado: ${pago.items.map((i) => i.nombre).join(" + ")} · ${formatARS(pago.total)}`,
+          );
         },
         onError: () => toast.error("Error al registrar el pago"),
       },
+    );
+  }
+
+  function alternar(concepto: ConceptoCobro) {
+    setMarcas((prev) =>
+      prev.includes(concepto) ? prev.filter((c) => c !== concepto) : [...prev, concepto],
     );
   }
 
@@ -176,7 +247,9 @@ function PagosPage() {
             <Button
               onClick={() => {
                 setSocioId("");
-                setSeleccion([]);
+                setMarcas([]);
+                setRecargo("");
+                setServicio("");
                 setOpen(true);
               }}
             >
@@ -289,64 +362,104 @@ function PagosPage() {
                 value={socioId}
                 onChange={(v) => {
                   setSocioId(v);
-                  setSeleccion([]);
+                  setMarcas([]);
+                  setRecargo("");
+                  setServicio("");
                 }}
                 socios={socios}
               />
             </div>
 
-            {socioId && (
+            {socioId && disponibles.length > 0 && (
               <div>
-                <Label>Membresías a pagar</Label>
+                <Label>Conceptos a cobrar</Label>
                 <ul className="mt-1.5 space-y-2">
-                  {membresiasSocio.map((m: Membresia) => (
+                  {disponibles.map((c) => (
                     <li
-                      key={m.id}
+                      key={c}
                       className="flex items-center gap-3 rounded-md border border-border p-3"
                     >
-                      <Checkbox
-                        checked={seleccion.includes(m.id)}
-                        onCheckedChange={(c) =>
-                          setSeleccion((prev) =>
-                            c ? [...prev, m.id] : prev.filter((x) => x !== m.id),
-                          )
-                        }
-                      />
+                      <Checkbox checked={marcas.includes(c)} onCheckedChange={() => alternar(c)} />
                       <div className="flex-1">
-                        <p className="text-sm font-medium">
-                          {m.area} · {m.predio}
-                        </p>
+                        <p className="text-sm font-medium">{labelConcepto(c)}</p>
                         <p className="text-xs text-muted-foreground">
-                          Vence {formatFecha(m.vencimiento)}
+                          {c === "recargo"
+                            ? "Importe que defina el operador"
+                            : c === "servicio"
+                              ? "Precio de catálogo, ajustable por cobro"
+                              : c === "cuota social"
+                                ? "Precio de un socio, por socio"
+                                : "Cuota del área del socio"}
                         </p>
                       </div>
-                      <EstadoBadge estado={estadoVisual(m)} />
                     </li>
                   ))}
-                  {membresiasSocio.length === 0 && (
-                    <li className="text-xs text-muted-foreground">
-                      El socio no tiene membresías activas.
-                    </li>
-                  )}
                 </ul>
+                {marcas.includes("servicio") && (
+                  <div className="mt-2">
+                    <Label htmlFor="pago-servicio" className="text-xs">
+                      Importe del servicio
+                    </Label>
+                    <Input
+                      id="pago-servicio"
+                      type="number"
+                      min={0}
+                      step={100}
+                      className="mt-1.5"
+                      value={servicio}
+                      onChange={(e) => setServicio(e.target.value)}
+                    />
+                  </div>
+                )}
+                {marcas.includes("recargo") && (
+                  <div className="mt-2">
+                    <Label htmlFor="pago-recargo" className="text-xs">
+                      Importe del recargo
+                    </Label>
+                    <Input
+                      id="pago-recargo"
+                      type="number"
+                      min={0}
+                      step={100}
+                      className="mt-1.5"
+                      value={recargo}
+                      onChange={(e) => setRecargo(e.target.value)}
+                      placeholder="0"
+                    />
+                  </div>
+                )}
               </div>
             )}
 
-            {items.length > 0 && (
+            {socioId && disponibles.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                El socio no tiene membresías activas para cobrar.
+              </p>
+            )}
+
+            {lineas.length > 0 && (
               <div className="rounded-md bg-secondary p-3">
                 <p className="text-xs font-semibold tracking-wide uppercase">Ítems a cobrar</p>
                 <ul className="mt-2 space-y-1 text-sm">
-                  {items.map((i) => (
-                    <li key={`${i.membresiaId}-${i.arancelId}`} className="flex justify-between">
-                      <span>{i.arancelNombre}</span>
-                      <span className="tabular-nums">{formatARS(i.monto)}</span>
+                  {lineas.map((l) => (
+                    <li key={l.concepto} className="flex justify-between">
+                      <span>
+                        {l.arancelNombre}
+                        {l.factor > 1 && (
+                          <span className="text-muted-foreground"> ×{l.factor}</span>
+                        )}
+                      </span>
+                      <span className="tabular-nums">{formatARS(l.monto)}</span>
                     </li>
                   ))}
                 </ul>
                 <div className="mt-2 flex justify-between border-t border-border pt-2 text-sm font-bold">
-                  <span>Total</span>
+                  <span>Total estimado</span>
                   <span className="tabular-nums">{formatARS(total)}</span>
                 </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Estimación del cliente: el importe final lo calcula el servidor.
+                </p>
               </div>
             )}
 
@@ -366,6 +479,17 @@ function PagosPage() {
             </div>
 
             <div>
+              <Label htmlFor="pago-fecha">Fecha del cobro</Label>
+              <Input
+                id="pago-fecha"
+                type="date"
+                className="mt-1.5"
+                value={fecha}
+                onChange={(e) => setFecha(e.target.value)}
+              />
+            </div>
+
+            <div>
               <Label htmlFor="pago-nota">Nota (opcional)</Label>
               <Input
                 id="pago-nota"
@@ -381,7 +505,7 @@ function PagosPage() {
             <Button variant="outline" onClick={() => setOpen(false)}>
               Cancelar
             </Button>
-            <Button onClick={registrar} disabled={createPago.isPending}>
+            <Button onClick={registrar} disabled={createPago.isPending || lineas.length === 0}>
               Registrar y emitir comprobante
             </Button>
           </DialogFooter>

@@ -1,6 +1,7 @@
 """CANYP Gestión — FastAPI application."""
 
 from contextlib import asynccontextmanager
+import threading
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,24 +20,49 @@ from backend.routers import (
     parcelas,
     settings as settings_router,
     socios,
+    suscripcion,
     usuarios,
 )
 from backend.security import get_current_user
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Create tables on startup, then apply additive column migrations."""
-    Base.metadata.create_all(bind=engine)
-    from backend.migrations import run_column_migrations
-
-    run_column_migrations(engine)
+def _run_migrations_in_background() -> None:
     try:
-        from backend.services.backup import run_backup_if_needed
+        from backend.migrations import run_column_migrations
 
-        run_backup_if_needed(engine)
+        run_column_migrations(engine)
     except Exception:
         pass
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Create tables on startup, then apply additive column migrations.
+
+    Table creation stays synchronous (serving before tables exist makes every
+    request fail), but the additive column migrations now run in a background
+    thread: on a remote Postgres the migration chain (inspections + ALTERs +
+    numero-socio backfill) can take ~20s, which must not block first paint.
+    They are additive and idempotent, so a request that races them only reads
+    the pre-migration schema for a short window.
+    """
+    import threading
+
+    Base.metadata.create_all(bind=engine)
+    threading.Thread(target=_run_migrations_in_background, daemon=True).start()
+
+    # Run the backup in the background too so a first-run full dump (remote
+    # Postgres -> SQLite, all tables reflected and refilled) never blocks the
+    # server from serving. Startup stays fast even on a fresh client.
+    def _backup_in_background():
+        try:
+            from backend.services.backup import run_backup_if_needed
+
+            run_backup_if_needed(engine)
+        except Exception:
+            pass
+
+    threading.Thread(target=_backup_in_background, daemon=True).start()
     yield
 
 
@@ -61,6 +87,10 @@ app.add_middleware(
 # WITHOUT a router-level guard — its own router enforces conditional auth (D9):
 # open while unconfigured, guarded once configured. Everything else is guarded (D8).
 app.include_router(auth.router)
+
+# Suscripciones/licencias (Fase 1): OPEN a propósito — el pago y la verificación
+# de licencia ocurren ANTES del login (misma convicción pre-login que auth).
+app.include_router(suscripcion.router)
 
 _guarded = [Depends(get_current_user)]
 app.include_router(backup.router, dependencies=_guarded)

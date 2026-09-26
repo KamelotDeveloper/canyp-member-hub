@@ -12,8 +12,11 @@ import { useEffect, useState, type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { TOKEN_KEY, clearToken, logout } from "../lib/canyp/api";
+import { CLIENT_BUILD } from "../lib/canyp/build-flags";
+import { useSettings } from "../lib/canyp/queries";
 import { AppShell } from "../components/canyp/AppShell";
 import { DataModeWizard } from "../components/canyp/DataModeWizard";
+import { LicenseGate } from "../components/canyp/LicenseGate";
 import { LoginGate } from "../components/canyp/LoginGate";
 import { Toaster } from "../components/ui/sonner";
 
@@ -137,25 +140,77 @@ function RootComponent() {
   // longer exist, so lazy route imports fail with a blank screen. Reload once to
   // pick up the fresh asset manifest.
   useEffect(() => {
+    // Build de cliente (instalador): no hay hot deploys — un chunk que falte
+    // no se cura recargando; el handler solo produciría un loop de reload.
+    // En web (dev/host) sí recargar una vez tras un deploy es correcto.
+    if (CLIENT_BUILD) return;
     const onPreloadError = (event: Event) => {
       event.preventDefault();
+      // Guard con timestamp: permite recargar una vez tras un deploy (el primer
+      // intento ya carga el manifest fresco), pero si el fallo persiste NO entra
+      // en un loop de reload infinito: espera al menos 10 s entre reintentos.
       const key = "canyp:chunk-reload";
-      if (sessionStorage.getItem(key)) return;
-      sessionStorage.setItem(key, "1");
+      const lastAttempt = Number(sessionStorage.getItem(key) ?? 0);
+      if (Date.now() - lastAttempt < 10_000) return;
+      sessionStorage.setItem(key, String(Date.now()));
       window.location.reload();
     };
     window.addEventListener("vite:preloadError", onPreloadError);
-    sessionStorage.removeItem("canyp:chunk-reload");
     return () => window.removeEventListener("vite:preloadError", onPreloadError);
   }, []);
 
   return (
     <QueryClientProvider client={queryClient}>
-      {/* Wizard de primer uso: aparece solo mientras no haya modo configurado. */}
-      <DataModeWizard />
-      <AuthGate />
+      {/* Bloqueo de seguridad: un build de cliente JAMÁS corre en modo local. */}
+      <ClientBuildGuard>
+        {/* Wizard de primer uso: aparece solo mientras no haya modo configurado. */}
+        <DataModeWizard />
+        {/* Licencia (Fase 1): bloquea mientras no haya suscripción/trial activo. */}
+        <LicenseGate>
+          <AuthGate />
+        </LicenseGate>
+        {/* Toaster global: LicenseGate/LoginGate disparan toasts pre-login. */}
+        <Toaster position="top-right" richColors />
+      </ClientBuildGuard>
     </QueryClientProvider>
   );
+}
+
+/**
+ * Guard de build de cliente: si un instalador (client build) queda con
+ * settings en modo local, se bloquea la app por completo. Fuera de builds de
+ * cliente (dev / web) no hace nada. No bloquea el estado sin configurar
+ * (configured: false) — ahí el DataModeWizard sigue a cargo.
+ */
+function ClientBuildGuard({ children }: { children: ReactNode }) {
+  const { data, isLoading, isError, refetch } = useSettings();
+
+  if (!CLIENT_BUILD) return <>{children}</>;
+
+  const blocked = !isLoading && !isError && data?.configured === true && data.dataMode === "local";
+
+  if (blocked) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background px-4">
+        <div className="max-w-md text-center">
+          <h1 className="text-xl font-semibold tracking-tight text-foreground">
+            Configuración de cliente inválida
+          </h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Este equipo debe conectarse al servicio remoto. Comuníquese con el administrador.
+          </p>
+          <button
+            onClick={() => void refetch()}
+            className="mt-6 inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          >
+            Reintentar
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return <>{children}</>;
 }
 
 /**
@@ -187,7 +242,6 @@ function AuthGate() {
           {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
           <Outlet />
         </AppShell>
-        <Toaster position="top-right" richColors />
       </>
     );
   }

@@ -1,14 +1,13 @@
 /**
- * Runtime + compile-time tests for CANYP utility functions (PR 3 cleanup).
+ * Runtime + compile-time tests for CANYP utility functions.
  *
  * Imports use RELATIVE paths (not the `@/` alias) so the file is executable by
  * both `tsc` (compile-time convention in this repo) and `vitest` (runtime proof).
  */
 
 import { describe, expect, it } from "vitest";
-import { diasRestantes, estadoLabel, estadoVisual, formatARS, formatFecha } from "../utils";
-import type { EstadoVisual } from "../utils";
-import type { Membresia } from "../types";
+import { diasRestantes, formatARS, formatFecha, ORDEN_ESTADOS } from "../utils";
+import type { EstadoSocio } from "../types";
 
 // ---------------------------------------------------------------------------
 // Compile-time: exports exist with the expected shapes
@@ -22,21 +21,6 @@ const _formatFechaCheck: FormatFechaIsFn = true;
 
 type DiasRestantesIsFn = typeof diasRestantes extends (v: string) => number ? true : false;
 const _diasRestantesCheck: DiasRestantesIsFn = true;
-
-type EstadoVisualIsFn = typeof estadoVisual extends (m: Membresia) => EstadoVisual ? true : false;
-const _estadoVisualCheck: EstadoVisualIsFn = true;
-
-type EstadoLabelIsRecord = typeof estadoLabel extends Record<EstadoVisual, string> ? true : false;
-const _estadoLabelCheck: EstadoLabelIsRecord = true;
-
-// EstadoVisual must be the union used across the app.
-const _estadoVisualUnion: EstadoVisual[] = [
-  "activa",
-  "por_vencer",
-  "vencida",
-  "suspendida",
-  "baja",
-];
 
 describe("utils", () => {
   it("formatARS formats with Argentine peso grouping", () => {
@@ -66,42 +50,39 @@ describe("utils", () => {
     const gap = diasRestantes(isoPlusDays(10)) - diasRestantes(isoPlusDays(5));
     expect(gap).toBe(5);
   });
+});
 
-  it("estadoVisual derives the visual status from estado + vencimiento", () => {
-    const future = "2099-01-01";
-    const past = "2000-01-01";
+// ---------------------------------------------------------------------------
+// ORDEN_ESTADOS — los 4 estados que SERVE el backend (EST-01)
+// ---------------------------------------------------------------------------
 
-    function isoPlusDays(days: number): string {
-      const d = new Date();
-      d.setHours(12, 0, 0, 0);
-      d.setDate(d.getDate() + days);
-      return d.toISOString().slice(0, 10);
-    }
-
-    function m(overrides: Partial<Membresia>): Membresia {
-      return {
-        id: "m-test",
-        socioId: "s-test",
-        area: "Balseros",
-        predio: "Embalse",
-        estado: "activa",
-        vencimiento: future,
-        ...overrides,
-      };
-    }
-
-    expect(estadoVisual(m({ estado: "baja" }))).toBe("baja");
-    expect(estadoVisual(m({ estado: "suspendida" }))).toBe("suspendida");
-    expect(estadoVisual(m({ vencimiento: future }))).toBe("activa");
-    expect(estadoVisual(m({ vencimiento: isoPlusDays(10) }))).toBe("por_vencer");
-    expect(estadoVisual(m({ vencimiento: past }))).toBe("vencida");
+describe("ORDEN_ESTADOS (EST-01)", () => {
+  it("orders the 4 server-served states from most urgent to least", () => {
+    expect(ORDEN_ESTADOS).toEqual([
+      "Inactivo — revisar",
+      "Socio activo — revisar",
+      "Socio activo",
+      "Solo cuota social",
+    ]);
   });
 
-  it("estadoLabel provides human-readable Spanish labels", () => {
-    expect(estadoLabel["activa"]).toBe("Activa");
-    expect(estadoLabel["por_vencer"]).toBe("Por vencer");
-    expect(estadoLabel["vencida"]).toBe("Vencida");
-    expect(estadoLabel["suspendida"]).toBe("Suspendida");
-    expect(estadoLabel["baja"]).toBe("Dada de baja");
+  it("uses the exact backend nominaciones, em dash included (UI-04)", () => {
+    // El string ES la nominación de UI: no se parafrasea ni se arma en el
+    // cliente. Si el backend cambiara uno, esta lista debe cambiar con él.
+    for (const estado of ORDEN_ESTADOS) {
+      expect(typeof estado).toBe("string");
+      expect(estado).not.toBe("");
+    }
+    expect(ORDEN_ESTADOS.filter((e) => e.includes("—"))).toHaveLength(2);
+  });
+
+  it("covers every value of the EstadoSocio vocabulary, without duplicates", () => {
+    const vocabulary: EstadoSocio[] = [
+      "Socio activo",
+      "Socio activo — revisar",
+      "Inactivo — revisar",
+      "Solo cuota social",
+    ];
+    expect([...ORDEN_ESTADOS].sort()).toEqual([...vocabulary].sort());
   });
 });

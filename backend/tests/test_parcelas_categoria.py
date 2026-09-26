@@ -5,6 +5,7 @@ from datetime import date
 from backend.models.enums import (
     Area,
     CategoriaParcela,
+    ConceptoMembresia,
     EstadoMembresia,
     Predio,
     RolMembresia,
@@ -110,6 +111,31 @@ IMPORT_PAYLOAD = {
 }
 
 
+def _area_rows(db):
+    """Unit/area memberships only — excludes the cuota social rows."""
+    return db.query(Membresia).filter(
+        Membresia.concepto == ConceptoMembresia.AREA
+    ).count()
+
+
+def _cuota_rows(db):
+    return db.query(Membresia).filter(
+        Membresia.concepto == ConceptoMembresia.CUOTA_SOCIAL
+    ).count()
+
+
+def _area_row(db, socio_id):
+    """The socio's area membership, ignoring their cuota social row."""
+    return (
+        db.query(Membresia)
+        .filter(
+            Membresia.socioId == socio_id,
+            Membresia.concepto == ConceptoMembresia.AREA,
+        )
+        .first()
+    )
+
+
 class TestImportUnidades:
     """POST /api/parcelas/import — spec Import 3 units scenario."""
 
@@ -129,8 +155,11 @@ class TestImportUnidades:
         assert cabana_a.tipo == TipoParcela.CABANA
         assert cabana_a.predio == Predio.ALMAFUERTE
 
+        # 4 unit memberships (2+1+1) + 1 cuota social per imported socio.
         membresias = test_db.query(Membresia).all()
-        assert len(membresias) == 4
+        assert len(membresias) == 8
+        assert _area_rows(test_db) == 4
+        assert _cuota_rows(test_db) == 4
 
     def test_import_is_idempotent(self, test_client, test_db):
         """Re-calling with same payload creates 0 additional records."""
@@ -145,20 +174,22 @@ class TestImportUnidades:
 
         # No duplicates in DB
         assert test_db.query(Parcela).count() == 3
-        assert test_db.query(Membresia).count() == 4
+        assert test_db.query(Membresia).count() == 8
+        # Still 4 unit rows + 4 cuota social rows: the second import duplicated
+        # neither, and the cuota social creation stayed idempotent.
+        assert _area_rows(test_db) == 4
+        assert _cuota_rows(test_db) == 4
         assert test_db.query(Socio).count() == 4
 
     def test_import_sets_rol_on_membresias(self, test_client, test_db):
         test_client.post("/api/parcelas/import", json=IMPORT_PAYLOAD)
+        # Filter by concept: each socio also owns a cuota social row (rol=None),
+        # so an unfiltered lookup would not be about the unit membership.
         ana = test_db.query(Socio).filter(Socio.dni == "11111111").first()
-        m_ana = (
-            test_db.query(Membresia).filter(Membresia.socioId == ana.id).first()
-        )
+        m_ana = _area_row(test_db, ana.id)
         assert m_ana.rol == RolMembresia.TITULAR
         luis = test_db.query(Socio).filter(Socio.dni == "22222222").first()
-        m_luis = (
-            test_db.query(Membresia).filter(Membresia.socioId == luis.id).first()
-        )
+        m_luis = _area_row(test_db, luis.id)
         assert m_luis.rol == RolMembresia.INTEGRANTE
 
     def test_import_propagates_arancel_id_to_membresias(self, test_client, test_db):
@@ -191,15 +222,11 @@ class TestImportUnidades:
         assert len(resp.json()["membresias"]) == 2
 
         rita = test_db.query(Socio).filter(Socio.dni == "88888888").first()
-        m_rita = (
-            test_db.query(Membresia).filter(Membresia.socioId == rita.id).first()
-        )
+        m_rita = _area_row(test_db, rita.id)
         assert m_rita.arancelId == "a_fijo"
 
         jorge = test_db.query(Socio).filter(Socio.dni == "99999999").first()
-        m_jorge = (
-            test_db.query(Membresia).filter(Membresia.socioId == jorge.id).first()
-        )
+        m_jorge = _area_row(test_db, jorge.id)
         assert m_jorge.arancelId == "a_fijo"
 
     def test_import_without_arancel_id_defaults_null(self, test_client, test_db):

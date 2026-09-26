@@ -3,11 +3,13 @@ uvicorn[standard]
 sqlalchemy
 pydantic
 pydantic-settings
+requests
 pytest
 httpx
 python-dateutil
 openpyxl
 python-multipart
+Pillow
 psycopg[binary]
 bcrypt
 pyjwt

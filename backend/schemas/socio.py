@@ -4,6 +4,7 @@ from datetime import date
 
 from pydantic import BaseModel, field_validator
 
+from backend.models.enums import EstadoSocioVisual
 from backend.schemas.common import OrmConfig
 from backend.services.telefonos import normalizar_telefono
 
@@ -18,6 +19,8 @@ class SocioBase(OrmConfig, BaseModel):
     activo: bool = True
     # Free lowercase string ("activo" | "vitalicio"), optional.
     categoria: str | None = None
+    # Carnet: sequential member number, auto-assigned by the server when omitted.
+    numero_socio: str | None = None
 
     @field_validator("telefono")
     @classmethod
@@ -44,6 +47,7 @@ class SocioUpdate(BaseModel):
     fechaAlta: date | None = None
     activo: bool | None = None
     categoria: str | None = None
+    numero_socio: str | None = None
 
     @field_validator("telefono")
     @classmethod
@@ -64,3 +68,14 @@ class SocioResponse(SocioBase):
     # Audit columns (D7): null for rows imported/created before multi-user auth.
     created_by: str | None = None
     updated_by: str | None = None
+    # Carnet: numero_socio nullable (legacy rows backfilled by migration);
+    # tieneFoto is a light bool derived from `foto is not None` — raw bytes are
+    # NEVER serialized into socio responses (performance).
+    numero_socio: str | None = None
+    tieneFoto: bool = False
+    # Server-authoritative state (EST-01), SERVED and never re-derived by the
+    # frontend. `estado` is the typed 4-state vocabulary and `nominacion` its
+    # exact label (em dash included, UI-04): both carry the same value today,
+    # `nominacion` exists so the UI never has to build the string itself.
+    estado: EstadoSocioVisual
+    nominacion: str

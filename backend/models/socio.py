@@ -2,7 +2,7 @@
 
 from datetime import date
 
-from sqlalchemy import Boolean, Date, String
+from sqlalchemy import Boolean, Date, LargeBinary, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.database import Base
@@ -24,3 +24,13 @@ class Socio(Base):
     # Audit columns (D7): plain nullable string ids, NO DB FK.
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
     updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
+    # Carnet: sequential member number (zero-padded, unique) + photo (bytea).
+    numero_socio: Mapped[str | None] = mapped_column(
+        String, nullable=True, unique=True, default=None
+    )
+    foto: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, default=None)
+
+    @property
+    def tieneFoto(self) -> bool:
+        """Whether a carnet photo is stored (light field for SocioResponse)."""
+        return self.foto is not None

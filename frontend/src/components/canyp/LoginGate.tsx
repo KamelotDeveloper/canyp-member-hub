@@ -36,19 +36,20 @@ export function LoginGate({ onAuthenticated }: { onAuthenticated: (token: string
   const configured = settings?.configured === true || settingsUnauthorized;
   const usersExist = status?.users_exist ?? false;
 
+  if (settingsLoading || statusLoading) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-background">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">Iniciando servidor…</p>
+      </div>
+    );
+  }
+
   if (!configured) {
     // El wizard de primer uso maneja la pre-configuración; no mostramos nada.
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
         <span className="sr-only">Configurando CANYP…</span>
-      </div>
-    );
-  }
-
-  if (settingsLoading || statusLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-background">
-        <Loader2 className="size-6 animate-spin text-muted-foreground" />
       </div>
     );
   }

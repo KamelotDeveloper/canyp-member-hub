@@ -45,7 +45,11 @@ import { ExportButton } from "@/components/export";
 import { UnidadesPanel } from "@/components/canyp/UnidadesPanel";
 import { SocioCombobox } from "@/components/canyp/SocioCombobox";
 import { ImportModal, type ImportColumnSpec } from "@/components/import";
-import { estadoVisual, formatFecha } from "@/lib/canyp/utils";
+import {
+  EditarVencimientoMembresia,
+  EditarVencimientoLote,
+} from "@/components/canyp/VencimientoEditor";
+import { formatFecha } from "@/lib/canyp/utils";
 import {
   useMembresias,
   useSocios,
@@ -118,11 +122,12 @@ function MembresiasPage() {
   const createParcela = useCreateParcela();
   const createMembresia = useCreateMembresia();
   const { data: aranceles = [] } = useAranceles();
-  const [editando, setEditando] = useState<{ id: string; fecha: string } | null>(null);
+  const [editando, setEditando] = useState<Membresia | null>(null);
   const [editandoFull, setEditandoFull] = useState<Membresia | null>(null);
   const [eliminando, setEliminando] = useState<Membresia | null>(null);
   const [nuevaOpen, setNuevaOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [loteOpen, setLoteOpen] = useState(false);
   const [nueva, setNueva] = useState<{
     socioId: string;
     vencimiento: string;
@@ -137,6 +142,13 @@ function MembresiasPage() {
 
   const socioMap = new Map(socios.map((s: Socio) => [s.id, s]));
 
+  /** Estado SERVIDO del socio dueño de una membresía (EST-01): no se deriva. */
+  const estadoDe = (m: Membresia) => socioMap.get(m.socioId)?.estado;
+  const estadoBadgeDe = (m: Membresia) => {
+    const e = estadoDe(m);
+    return e ? <EstadoBadge estado={e} /> : null;
+  };
+
   const areaActiva = search.area ?? "Balseros";
   const filtro = search.filtro ?? "todas";
 
@@ -147,10 +159,10 @@ function MembresiasPage() {
   const lista = membresias
     .filter((m: Membresia) => m.area === areaActiva)
     .filter((m: Membresia) => {
-      const e = estadoVisual(m);
-      if (filtro === "vencidas") return e === "vencida";
-      if (filtro === "por_vencer") return e === "por_vencer";
-      if (filtro === "alertas") return e === "vencida" || e === "por_vencer";
+      const e = estadoDe(m);
+      if (filtro === "vencidas") return e === "Inactivo — revisar";
+      if (filtro === "alertas")
+        return e === "Inactivo — revisar" || e === "Socio activo — revisar";
       return true;
     });
 
@@ -173,10 +185,12 @@ function MembresiasPage() {
         actions={
           <>
             <ExportButton resource="membresias" label="membresías" />
+            <Button size="sm" variant="outline" onClick={() => setLoteOpen(true)}>
+              Vencimiento por lote
+            </Button>
             <div className="flex gap-1 rounded-md border border-border bg-card p-1">
               {[
                 { k: "todas", l: "Todas" },
-                { k: "por_vencer", l: "Por vencer" },
                 { k: "vencidas", l: "Vencidas" },
                 { k: "alertas", l: "Alertas" },
               ].map((f) => (
@@ -203,9 +217,11 @@ function MembresiasPage() {
       <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {AREAS.map((a) => {
           const total = membresias.filter((m: Membresia) => m.area === a).length;
-          const alertas = membresias.filter(
-            (m: Membresia) => m.area === a && ["vencida", "por_vencer"].includes(estadoVisual(m)),
-          ).length;
+          const alertas = membresias.filter((m: Membresia) => {
+            if (m.area !== a) return false;
+            const e = estadoDe(m);
+            return e === "Inactivo — revisar" || e === "Socio activo — revisar";
+          }).length;
           return (
             <button
               key={a}
@@ -291,7 +307,7 @@ function MembresiasPage() {
                     {formatFecha(m.vencimiento)}
                   </TableCell>
                   <TableCell>
-                    <EstadoBadge estado={estadoVisual(m)} />
+                    {estadoBadgeDe(m)}
                   </TableCell>
                   <TableCell>
                     <div className="flex justify-end gap-2">
@@ -317,7 +333,7 @@ function MembresiasPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => setEditando({ id: m.id, fecha: m.vencimiento })}
+                        onClick={() => setEditando(m)}
                       >
                         Vencimiento
                       </Button>
@@ -459,45 +475,11 @@ function MembresiasPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!editando} onOpenChange={(o) => !o && setEditando(null)}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Editar vencimiento</DialogTitle>
-          </DialogHeader>
-          <div>
-            <Label>Nueva fecha</Label>
-            <Input
-              type="date"
-              className="mt-1.5"
-              value={editando?.fecha ?? ""}
-              onChange={(e) =>
-                setEditando((prev) => (prev ? { ...prev, fecha: e.target.value } : prev))
-              }
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditando(null)}>
-              Cancelar
-            </Button>
-            <Button
-              onClick={() => {
-                if (editando)
-                  updateMembresia.mutate(
-                    { id: editando.id, data: { vencimiento: editando.fecha } },
-                    {
-                      onSuccess: () => {
-                        setEditando(null);
-                        toast.success("Vencimiento actualizado");
-                      },
-                    },
-                  );
-              }}
-            >
-              Guardar
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {editando && (
+        <EditarVencimientoMembresia membresia={editando} onClose={() => setEditando(null)} />
+      )}
+
+      {loteOpen && <EditarVencimientoLote parcelas={parcelas} onClose={() => setLoteOpen(false)} />}
 
       {editandoFull && (
         <EditarMembresiaDialog
@@ -600,7 +582,7 @@ function GuarderiaCategoriaCell({
         nombre: `Guardería ${nombreSocio ?? m.socioId}`,
         tipo: "guardería",
         categoria: cat,
-        predio: m.predio,
+        predio: m.predio ?? "Almafuerte",
       },
       {
         onSuccess: (p) => {
