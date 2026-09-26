@@ -139,79 +139,78 @@ export function ImportModal({
 
         {/* Tooltips in StepPreviewEdit/EditableCell need a provider in scope. */}
         <TooltipProvider delayDuration={200}>
-
-        {/* Lightweight step indicator */}
-        <div className="flex items-center gap-2">
-          {STEPS.map((label, i) => (
-            <div key={label} className="flex items-center gap-2">
-              <div
-                className={cn(
-                  "flex items-center gap-1.5",
-                  i === step && "text-primary",
-                  i < step && "text-muted-foreground",
-                  i > step && "text-muted-foreground/50",
-                )}
-              >
-                <span
+          {/* Lightweight step indicator */}
+          <div className="flex items-center gap-2">
+            {STEPS.map((label, i) => (
+              <div key={label} className="flex items-center gap-2">
+                <div
                   className={cn(
-                    "flex size-5 items-center justify-center rounded-full text-xs font-semibold",
-                    i === step && "bg-primary text-primary-foreground",
-                    i < step && "bg-accent",
-                    i > step && "bg-muted",
+                    "flex items-center gap-1.5",
+                    i === step && "text-primary",
+                    i < step && "text-muted-foreground",
+                    i > step && "text-muted-foreground/50",
                   )}
                 >
-                  {i + 1}
-                </span>
-                <span className="text-xs font-medium">{label}</span>
+                  <span
+                    className={cn(
+                      "flex size-5 items-center justify-center rounded-full text-xs font-semibold",
+                      i === step && "bg-primary text-primary-foreground",
+                      i < step && "bg-accent",
+                      i > step && "bg-muted",
+                    )}
+                  >
+                    {i + 1}
+                  </span>
+                  <span className="text-xs font-medium">{label}</span>
+                </div>
+                {i < STEPS.length - 1 && <Separator className="w-6" />}
               </div>
-              {i < STEPS.length - 1 && <Separator className="w-6" />}
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
 
-        <Separator />
+          <Separator />
 
-        {step === 0 && (
-          <StepFileSelect
-            resource={resource}
-            resourceLabel={resourceLabel}
-            loading={previewMutation.isPending}
-            onFile={handleFile}
-            onBack={() => onOpenChange(false)}
-          />
-        )}
+          {step === 0 && (
+            <StepFileSelect
+              resource={resource}
+              resourceLabel={resourceLabel}
+              loading={previewMutation.isPending}
+              onFile={handleFile}
+              onBack={() => onOpenChange(false)}
+            />
+          )}
 
-        {step === 1 && preview && (
-          <StepPreviewEdit
-            resourceLabel={resourceLabel}
-            columnSpec={columnSpec}
-            columns={preview.columns}
-            ignoredColumns={preview.ignoredColumns}
-            stats={preview.stats}
-            rows={rows}
-            errorsByRow={errorsByRow}
-            onToggleSkip={handleToggleSkip}
-            onChange={handleChangeIndex}
-            onBack={() => setStep(0)}
-            onContinue={goToConfirm}
-          />
-        )}
+          {step === 1 && preview && (
+            <StepPreviewEdit
+              resourceLabel={resourceLabel}
+              columnSpec={columnSpec}
+              columns={preview.columns}
+              ignoredColumns={preview.ignoredColumns}
+              stats={preview.stats}
+              rows={rows}
+              errorsByRow={errorsByRow}
+              onToggleSkip={handleToggleSkip}
+              onChange={handleChangeIndex}
+              onBack={() => setStep(0)}
+              onContinue={goToConfirm}
+            />
+          )}
 
-        {step === 2 && (
-          <StepConfirmResult
-            resourceLabel={resourceLabel}
-            isExecuting={executeMutation.isPending}
-            result={executeResult}
-            error={executeError}
-            onExecute={handleExecute}
-            onFinalize={handleFinalize}
-            onBack={() => {
-              setExecuteResult(null);
-              setExecuteError(null);
-              setStep(1);
-            }}
-          />
-        )}
+          {step === 2 && (
+            <StepConfirmResult
+              resourceLabel={resourceLabel}
+              isExecuting={executeMutation.isPending}
+              result={executeResult}
+              error={executeError}
+              onExecute={handleExecute}
+              onFinalize={handleFinalize}
+              onBack={() => {
+                setExecuteResult(null);
+                setExecuteError(null);
+                setStep(1);
+              }}
+            />
+          )}
         </TooltipProvider>
       </DialogContent>
     </Dialog>

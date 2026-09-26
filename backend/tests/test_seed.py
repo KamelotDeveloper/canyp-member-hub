@@ -9,16 +9,21 @@ idempotency (run twice = same state).
 """
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import backend.models  # noqa: F401  (register models on Base.metadata)
-from backend.database import Base
+from backend.database import Base, get_db
+from backend.main import app
 from backend.models.arancel import Arancel
 from backend.models.enums import (
     Area,
     CategoriaParcela,
+    ConceptoCobro,
+    ConceptoMembresia,
+    EstadoSocioVisual,
     Predio,
     RolMembresia,
     TipoParcela,
@@ -26,8 +31,10 @@ from backend.models.enums import (
 from backend.models.membresia import Membresia
 from backend.models.parcela import Parcela
 from backend.models.socio import Socio
+from backend.models.usuario import Usuario
+from backend.security import create_access_token, hash_password
 from backend.seed import seed
-from backend.services.estado_visual import calcular_estado_visual
+from backend.services.estado_socio import estados_socio
 
 
 @pytest.fixture()
@@ -58,6 +65,36 @@ def seeded(seed_engine):
         yield db
     finally:
         db.close()
+
+
+@pytest.fixture()
+def seeded_client(seed_engine, seeded):
+    """Authenticated TestClient bound to the SEEDED engine.
+
+    Needed because the read paths under test are authenticated and must run
+    against the seeded padron (not the throwaway ``test_db``).
+    """
+    usuario = Usuario(username="seeduser", password_hash=hash_password("testpass123"))
+    seeded.add(usuario)
+    seeded.commit()
+
+    Session = sessionmaker(bind=seed_engine)
+    token = create_access_token(usuario.id, usuario.username)
+
+    def _override():
+        session = Session()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app.dependency_overrides[get_db] = _override
+    client = TestClient(app)
+    client.headers.update({"Authorization": f"Bearer {token}"})
+    try:
+        yield client
+    finally:
+        app.dependency_overrides.clear()
 
 
 def _almafuerte_cabanas(db):
@@ -130,17 +167,23 @@ class TestAlmafuerteDataset:
         cabanas = _almafuerte_cabanas(seeded)
         balsas = _embalse_balsas(seeded)
         unit_ids = [p.id for p in cabanas + balsas]
-        memberships = (
-            seeded.query(Membresia).filter(Membresia.parcelaId.in_(unit_ids)).all()
-        )
-        assert len(memberships) >= 10
+        members = [
+            m.socioId
+            for m in seeded.query(Membresia)
+            .filter(Membresia.parcelaId.in_(unit_ids))
+            .all()
+        ]
+        assert len(members) >= 10
         estados = {
-            calcular_estado_visual(m.estado.value, m.vencimiento)
-            for m in memberships
+            e.value for e in estados_socio(seeded, sorted(set(members))).values()
         }
-        assert {"vencida", "por_vencer", "activa"} <= estados, (
-            f"expected mixed vencimientos, got: {estados}"
-        )
+        # The padron must show a realistic mix under the 4-state model: some
+        # are current, some need reviewing and some owe cuota social.
+        assert {
+            EstadoSocioVisual.ACTIVO,
+            EstadoSocioVisual.ACTIVO_REVISAR,
+            EstadoSocioVisual.INACTIVO_REVISAR,
+        } <= estados, f"expected a mixed padron, got: {estados}"
 
     def test_guarderia_appears_in_chica_and_grande(self, seeded):
         for cat in (CategoriaParcela.CHICA, CategoriaParcela.GRANDE):
@@ -209,7 +252,7 @@ class TestExistingSeedPreserved:
             assert seeded.query(Membresia).filter(Membresia.id == mid).count() == 1
 
     def test_original_aranceles_still_present(self, seeded):
-        assert seeded.query(Arancel).count() == 8
+        assert seeded.query(Arancel).count() == 11
         for aid in ("a1", "a7"):
             assert seeded.query(Arancel).filter(Arancel.id == aid).count() == 1
 
@@ -237,12 +280,14 @@ def _snapshot(engine):
                 (
                     m.id,
                     m.socioId,
-                    m.area.value,
-                    m.predio.value,
+                    # Null-safe: a cuota social row has no area/predio (CS-01).
+                    m.area.value if m.area else None,
+                    m.predio.value if m.predio else None,
                     m.estado.value,
                     m.vencimiento.isoformat(),
                     m.parcelaId,
                     m.rol.value if m.rol else None,
+                    m.concepto.value,
                 )
                 for m in membresias
             ),
@@ -253,6 +298,7 @@ def _snapshot(engine):
                     a.predio.value,
                     a.categoria.value if a.categoria else None,
                     a.monto,
+                    a.concepto.value,
                 )
                 for a in db.query(Arancel).all()
             ),
@@ -277,5 +323,85 @@ class TestIdempotency:
     def test_seed_populates_all_tables(self, seeded):
         assert seeded.query(Parcela).count() == 11
         assert seeded.query(Socio).count() == 12
-        assert seeded.query(Membresia).count() == 27
-        assert seeded.query(Arancel).count() == 8
+        # 27 area memberships + 12 cuota social rows (one per socio).
+        assert seeded.query(Membresia).count() == 39
+        # 7 area/price rows + the RECARGO carrier + the cuota social unit price
+        # + the SERVICIO price.
+        assert seeded.query(Arancel).count() == 11
+
+
+class TestCuotaSocialEnElSeed:
+    """Task 3.3: the seeded padron already lives on the cuota social model."""
+
+    def _cuotas(self, seeded):
+        return (
+            seeded.query(Membresia)
+            .filter(Membresia.concepto == ConceptoMembresia.CUOTA_SOCIAL)
+            .all()
+        )
+
+    def test_exactly_one_cuota_social_per_socio(self, seeded):
+        cuotas = self._cuotas(seeded)
+        assert len(cuotas) == 12
+        assert sorted(c.socioId for c in cuotas) == sorted(
+            s.id for s in seeded.query(Socio).all()
+        )
+
+    def test_cuota_rows_carry_no_area_predio_nor_rol(self, seeded):
+        for cuota in self._cuotas(seeded):
+            assert cuota.area is None
+            assert cuota.predio is None
+            assert cuota.parcelaId is None
+            assert cuota.rol is None
+
+    def test_every_seeded_vencimiento_is_a_day_10(self, seeded):
+        """The padron must already be on the 10->10 cycle, in both concepts."""
+        for m in seeded.query(Membresia).all():
+            assert m.vencimiento.day == 10, m.id
+
+    def test_area_memberships_are_kept_as_AREA_concept(self, seeded):
+        areas = [
+            m
+            for m in seeded.query(Membresia).all()
+            if m.concepto == ConceptoMembresia.AREA
+        ]
+        assert len(areas) == 27
+        assert all(m.area is not None and m.predio is not None for m in areas)
+
+    def test_recargo_carrier_arancel_exists_with_zero_monto(self, seeded):
+        """ARA-01: the RECARGO row is a carrier; the amount is operator-entered."""
+        recargo = seeded.query(Arancel).filter(Arancel.concepto == ConceptoCobro.RECARGO).all()
+        assert len(recargo) == 1
+        assert recargo[0].monto == 0.0
+
+    def test_cuota_social_unit_price_exists(self, seeded):
+        """CS-03 needs ONE catalog price per member to multiply by unit size."""
+        precios = (
+            seeded.query(Arancel)
+            .filter(Arancel.concepto == ConceptoCobro.CUOTA_SOCIAL)
+            .all()
+        )
+        assert len(precios) == 1
+        assert precios[0].monto > 0
+
+    def test_servicio_price_exists_in_the_catalog(self, seeded):
+        """Decision #646: unlike the recargo carrier, SERVICIO carries a price."""
+        precios = (
+            seeded.query(Arancel)
+            .filter(Arancel.concepto == ConceptoCobro.SERVICIO)
+            .all()
+        )
+        assert len(precios) == 1
+        assert precios[0].monto > 0
+
+    def test_dashboard_reads_a_padron_with_cuota_rows(self, seeded_client):
+        """The seeded dataset must not 500 any read path (task 2.3 gate)."""
+        assert seeded_client.get("/api/dashboard/stats").status_code == 200
+        assert seeded_client.get("/api/dashboard/alertas").status_code == 200
+        assert seeded_client.get("/api/membresias").status_code == 200
+
+    def test_padron_appears_under_sin_area(self, seeded_client):
+        """The 12 cuota rows are exactly the null-area population."""
+        stats = seeded_client.get("/api/dashboard/stats").json()
+        assert stats["countsByArea"]["Sin área"] == 12
+        assert stats["totalMembresias"] == 39

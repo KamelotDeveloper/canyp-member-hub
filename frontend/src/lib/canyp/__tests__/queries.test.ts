@@ -31,6 +31,7 @@ import {
   useImportParcelas,
   useSetBatchEstado,
   useSetBatchVencimiento,
+  useSubirFoto,
 } from "../queries";
 
 import type {
@@ -43,6 +44,7 @@ import type {
   ImportPayload,
   ImportResponse,
   EstadoMembresia,
+  ConceptoMembresia,
 } from "../types";
 import type { UseQueryResult, UseMutationResult } from "@tanstack/react-query";
 
@@ -195,13 +197,27 @@ type IsSetBatchVencimientoMutation =
   UseSetBatchVencimientoReturns extends UseMutationResult<
     unknown,
     unknown,
-    { parcelaId: string; vencimiento: string }
+    { parcelaId: string; vencimiento: string; concepto?: ConceptoMembresia }
   >
     ? true
     : false;
 const _useSetBatchVencimientoCheck: IsSetBatchVencimientoMutation = true;
 
+// --- Carnet foto mutation (subirFoto) ---
+
+type UseSubirFotoReturns = ReturnType<typeof useSubirFoto>;
+type IsSubirFotoMutation =
+  UseSubirFotoReturns extends UseMutationResult<
+    { tieneFoto: boolean },
+    unknown,
+    { id: string; foto: File }
+  >
+    ? true
+    : false;
+const _useSubirFotoCheck: IsSubirFotoMutation = true;
+
 it("hook type-level checks compile (runtime smoke)", () => {
   expect(typeof useSetBatchEstado).toBe("function");
   expect(typeof useCreatePago).toBe("function");
+  expect(typeof useSubirFoto).toBe("function");
 });

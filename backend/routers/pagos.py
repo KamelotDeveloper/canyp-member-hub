@@ -11,6 +11,7 @@ from backend.models.pago import Pago, PagoItem
 from backend.models.usuario import Usuario
 from backend.schemas.pago import PagoCreate, PagoResponse, PagoUpdate
 from backend.security import get_current_user
+from backend.services.cobro import CobroVacioError, resolver_cobro
 from backend.services.numeracion import siguiente_numero_comprobante
 from backend.services.renovacion import renovar_membresias
 
@@ -18,7 +19,12 @@ router = APIRouter(prefix="/api/pagos", tags=["pagos"])
 
 
 def _pago_response(db: Session, pago: Pago) -> dict:
-    """Build Pago response with items and membresiaIds."""
+    """Build Pago response with items and membresiaIds.
+
+    Each item now carries its ``concepto`` and the resolved ``factor`` behind the
+    frozen amount (PAG-01), so a receipt explains *why* an amount is what it is
+    ("Cuota social x4") without re-deriving anything.
+    """
     items = db.query(PagoItem).filter(PagoItem.pagoId == pago.id).all()
     membresia_ids = list({item.membresiaId for item in items})
     return {
@@ -34,6 +40,8 @@ def _pago_response(db: Session, pago: Pago) -> dict:
                 "arancelId": item.arancelId,
                 "nombre": item.arancelNombre,
                 "monto": item.montoAplicado,
+                "concepto": item.concepto.value if item.concepto else None,
+                "factor": item.factor,
             }
             for item in items
         ],
@@ -83,8 +91,24 @@ def create_pago(
     """Create a payment (uses services for numbering + renewal).
 
     The pago id is always server-generated (uuid4 hex, collision-safe across
-    concurrent clients in remoto mode); any client-sent id is ignored.
+    concurrent clients in remoto mode); any client-sent id is ignored. PR 5 goes
+    further: the item set, every amount, the total AND the renewal set are
+    resolved by ``services.cobro``. The client sends which concepts apply; the
+    server owns the arithmetic (D3, D4).
     """
+    submitted_ids = list(data.membresiaIds or []) or [
+        item.membresiaId for item in (data.items or [])
+    ]
+    try:
+        cobro = resolver_cobro(
+            db,
+            socio_id=data.socioId,
+            items=data.items or [],
+            membresia_ids=submitted_ids,
+        )
+    except CobroVacioError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     pago_id = f"p{uuid.uuid4().hex}"
     numero = siguiente_numero_comprobante(db)
 
@@ -94,36 +118,32 @@ def create_pago(
         socioId=data.socioId,
         fecha=data.fecha,
         medio=data.medio,
-        total=data.total,
+        total=cobro.total,
         nota=data.nota,
         created_by=current_user.id,
     )
     db.add(pago)
     db.flush()  # get pago.id available for PagoItem FK
 
-    # Get the membresia IDs to renew (client-sent list, plus any from items)
-    membresia_ids = list(data.membresiaIds or [])
-
-    # Build PagoItems from the client's typed items
-    for item in data.items or []:
-        item_id = f"pi{uuid.uuid4().hex}"
-        pago_item = PagoItem(
-            id=item_id,
-            pagoId=pago_id,
-            arancelId=item.arancelId,
-            membresiaId=item.membresiaId,
-            montoAplicado=item.montoAplicado,
-            arancelNombre=item.arancelNombre,
+    for resuelto in cobro.items:
+        db.add(
+            PagoItem(
+                id=f"pi{uuid.uuid4().hex}",
+                pagoId=pago_id,
+                arancelId=resuelto.arancelId,
+                membresiaId=resuelto.membresiaId,
+                montoAplicado=resuelto.monto,
+                arancelNombre=resuelto.arancelNombre,
+                concepto=resuelto.concepto,
+                factor=resuelto.factor,
+            )
         )
-        db.add(pago_item)
-        if item.membresiaId not in membresia_ids:
-            membresia_ids.append(item.membresiaId)
 
     db.commit()
     db.refresh(pago)
 
-    # Renew memberships
-    if membresia_ids:
-        renovar_membresias(db, membresia_ids, pago.fecha)
+    # Renew only the memberships whose own concept was part of the charge.
+    if cobro.membresias_a_renovar:
+        renovar_membresias(db, list(cobro.membresias_a_renovar), pago.fecha)
 
     return _pago_response(db, pago)

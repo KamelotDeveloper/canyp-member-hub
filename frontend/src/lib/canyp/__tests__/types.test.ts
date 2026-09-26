@@ -76,8 +76,8 @@ const _pagoItemInput: PagoItemInput = {
   arancelNombre: "Mensualidad",
 };
 
-// --- UnidadFiltro must match the panel filters ---
-const _unidadFiltros: UnidadFiltro[] = ["todas", "por_vencer", "vencidas", "alertas"];
+// --- UnidadFiltro must match the panel filters (no 30-day `por_vencer`, EST-04) ---
+const _unidadFiltros: UnidadFiltro[] = ["todas", "vencidas", "alertas"];
 
 // --- UnidadGroup shape ---
 const _unidadGroup: UnidadGroup = {

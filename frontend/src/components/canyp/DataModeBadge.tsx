@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import type { DataMode } from "@/lib/canyp/types";
+import { CLIENT_BUILD } from "@/lib/canyp/build-flags";
 import { useSettings } from "@/lib/canyp/queries";
 
 const styles: Record<DataMode, string> = {
@@ -15,8 +16,8 @@ const labels: Record<DataMode, string> = {
 /** Badge persistente en la app: muestra el modo de datos actual. */
 export function DataModeBadge({ className }: { className?: string }) {
   const { data } = useSettings();
-  if (!data) return null;
-  const mode = data.dataMode;
+  const mode: DataMode | undefined = CLIENT_BUILD ? "remoto" : data?.dataMode;
+  if (!mode) return null;
   return (
     <span
       className={cn(

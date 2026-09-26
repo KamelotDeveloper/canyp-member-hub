@@ -2,9 +2,11 @@
 
 import uuid
 from datetime import date
+from io import BytesIO
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -24,11 +26,42 @@ from backend.schemas.import_bulk import (
 from backend.schemas.membresia import MembresiaResponse
 from backend.schemas.socio import SocioCreate, SocioResponse, SocioUpdate
 from backend.security import get_current_user
+from backend.services.cuota_social import crear_cuota_social
+from backend.services.estado_socio import estados_socio
 from backend.services.importer.exporter import build_template
 from backend.services.importer.parser import ParseError
 from backend.services.importer.pipeline import execute_rows, preview_file
+from backend.services.numeracion_socio import siguiente_numero_socio
 
 router = APIRouter(prefix="/api/socios", tags=["socios"])
+
+# Carnet foto: 5 MB cap, resized to at most 800px on the longest side, JPEG q85.
+MAX_FOTO_BYTES = 5 * 1024 * 1024
+MAX_FOTO_DIMENSION = 800
+FOTO_JPEG_QUALITY = 85
+
+# Serialized socio fields: every real column except the carnet `foto` bytes.
+COLUMNAS_SOCIO = [c for c in Socio.__table__.columns if c.name != "foto"]
+
+
+def _con_estado(socios: list[Socio], db: Session) -> list[dict]:
+    """Attach the server-authoritative state to each socio row (EST-01).
+
+    The state is never persisted, so it cannot be read off the ORM object: it is
+    resolved for the whole listing in ONE grouped query and injected here. Only
+    real columns are serialized (`foto` bytes never are), so the payload cannot
+    drift from the model nor leak the carnet image.
+    """
+    estados = estados_socio(db, [s.id for s in socios])
+    return [
+        {
+            **{c.name: getattr(socio, c.name) for c in COLUMNAS_SOCIO},
+            "tieneFoto": socio.tieneFoto,
+            "estado": estados[socio.id],
+            "nominacion": estados[socio.id].value,
+        }
+        for socio in socios
+    ]
 
 
 class ExecuteImportRequest(BaseModel):
@@ -47,7 +80,7 @@ def list_socios(
     if search:
         pattern = f"%{search}%"
         q = q.filter(Socio.nombre.ilike(pattern) | Socio.dni.ilike(pattern))
-    return q.order_by(Socio.nombre).all()
+    return _con_estado(q.order_by(Socio.nombre).all(), db)
 
 
 @router.get("/import/template")
@@ -125,7 +158,87 @@ def get_socio(socio_id: str, db: Session = Depends(get_db)):
     socio = db.query(Socio).filter(Socio.id == socio_id).first()
     if socio is None:
         raise HTTPException(status_code=404, detail=f"Socio {socio_id} not found")
-    return socio
+    return _con_estado([socio], db)[0]
+
+
+@router.post("/{socio_id}/foto")
+def upload_socio_foto(
+    socio_id: str,
+    foto: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Upload (or replace) the carnet photo for a social member.
+
+    Multipart field ``foto``; only image content types are accepted, the raw
+    size cap is 5 MB, and the stored photo is resized to at most 800px on the
+    longest side, saved as JPEG (quality 85) into ``socio.foto`` (bytea).
+    """
+    socio = db.query(Socio).filter(Socio.id == socio_id).first()
+    if socio is None:
+        raise HTTPException(status_code=404, detail=f"Socio {socio_id} not found")
+
+    content = foto.file.read()
+    if len(content) > MAX_FOTO_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="La foto supera el límite de 5 MB permitido.",
+        )
+
+    content_type = (foto.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=415,
+            detail="El archivo debe ser una imagen (image/*).",
+        )
+
+    try:
+        img = Image.open(BytesIO(content))
+        img.load()
+    except (UnidentifiedImageError, OSError, ValueError):
+        raise HTTPException(
+            status_code=415,
+            detail="El archivo no es una imagen válida.",
+        )
+
+    # Degrade to RGB (JPEG has no alpha/single-channel support) and resize.
+    img = img.convert("RGB")
+    longest_side = max(img.size)
+    if longest_side > MAX_FOTO_DIMENSION:
+        ratio = MAX_FOTO_DIMENSION / longest_side
+        new_size = (
+            max(1, round(img.width * ratio)),
+            max(1, round(img.height * ratio)),
+        )
+        img = img.resize(new_size, Image.LANCZOS)
+
+    buffer = BytesIO()
+    img.save(buffer, format="JPEG", quality=FOTO_JPEG_QUALITY)
+    socio.foto = buffer.getvalue()
+    db.commit()
+    return {"tieneFoto": True}
+
+
+@router.get("/{socio_id}/foto")
+def get_socio_foto(socio_id: str, db: Session = Depends(get_db)):
+    """Serve the stored carnet photo as image/jpeg."""
+    socio = db.query(Socio).filter(Socio.id == socio_id).first()
+    if socio is None or socio.foto is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Socio {socio_id} not found or has no foto",
+        )
+    return Response(content=socio.foto, media_type="image/jpeg")
+
+
+@router.delete("/{socio_id}/foto", status_code=204)
+def delete_socio_foto(socio_id: str, db: Session = Depends(get_db)):
+    """Remove the carnet photo (falls back to initials on the printed carnet)."""
+    socio = db.query(Socio).filter(Socio.id == socio_id).first()
+    if socio is None:
+        raise HTTPException(status_code=404, detail=f"Socio {socio_id} not found")
+    socio.foto = None
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.post("", response_model=SocioResponse, status_code=201)
@@ -136,16 +249,35 @@ def create_socio(
 ):
     """Create a new socio."""
     socio_id = data.id or f"s{uuid.uuid4().hex[:8]}"
+
+    # Carnet: honor an explicit non-empty numeroSocio, otherwise auto-assign the
+    # next sequential member number (atomic, advisory-locked on Postgres).
+    numero_socio = None
+    if data.numero_socio is None:
+        numero_socio = siguiente_numero_socio(db)
+    elif data.numero_socio.strip():
+        numero_socio = data.numero_socio.strip()
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="numeroSocio no puede estar vacío.",
+        )
+
     socio = Socio(
         id=socio_id,
         fechaAlta=data.fechaAlta or date.today(),
+        numero_socio=numero_socio,
         created_by=current_user.id,
-        **data.model_dump(exclude={"id", "fechaAlta"}),
+        **data.model_dump(exclude={"id", "fechaAlta", "numero_socio"}),
     )
     db.add(socio)
+    # Every socio owes the cuota social (CS-02): it is created together with
+    # the socio, inside the same transaction, so a rolled-back socio never
+    # leaves an orphan cuota row behind.
+    crear_cuota_social(db, socio)
     db.commit()
     db.refresh(socio)
-    return socio
+    return _con_estado([socio], db)[0]
 
 
 @router.put("/{socio_id}", response_model=SocioResponse)
@@ -164,7 +296,7 @@ def update_socio(
     socio.updated_by = current_user.id
     db.commit()
     db.refresh(socio)
-    return socio
+    return _con_estado([socio], db)[0]
 
 
 @router.delete("/{socio_id}", status_code=204)

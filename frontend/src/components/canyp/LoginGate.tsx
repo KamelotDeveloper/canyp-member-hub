@@ -2,13 +2,7 @@ import { Loader2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ApiError, createFirstUser, login, setToken } from "@/lib/canyp/api";
@@ -36,19 +30,20 @@ export function LoginGate({ onAuthenticated }: { onAuthenticated: (token: string
   const configured = settings?.configured === true || settingsUnauthorized;
   const usersExist = status?.users_exist ?? false;
 
+  if (settingsLoading || statusLoading) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-background">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">Iniciando servidor…</p>
+      </div>
+    );
+  }
+
   if (!configured) {
     // El wizard de primer uso maneja la pre-configuración; no mostramos nada.
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
         <span className="sr-only">Configurando CANYP…</span>
-      </div>
-    );
-  }
-
-  if (settingsLoading || statusLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-background">
-        <Loader2 className="size-6 animate-spin text-muted-foreground" />
       </div>
     );
   }
@@ -65,10 +60,7 @@ export function LoginGate({ onAuthenticated }: { onAuthenticated: (token: string
   }
 
   return (
-    <AuthShell
-      title="Ingresar"
-      description="Ingresá con tu usuario para acceder al sistema."
-    >
+    <AuthShell title="Ingresar" description="Ingresá con tu usuario para acceder al sistema.">
       <LoginForm onAuthenticated={onAuthenticated} />
     </AuthShell>
   );

@@ -1,6 +1,7 @@
 """Membresia CRUD endpoints."""
 
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
@@ -18,12 +19,24 @@ from backend.schemas.import_bulk import (
     PreviewResult,
     RowData,
 )
-from backend.schemas.membresia import MembresiaCreate, MembresiaResponse, MembresiaUpdate
+from backend.schemas.membresia import (
+    MembresiaCreate,
+    MembresiaResponse,
+    MembresiaUpdate,
+    MembresiaVencimientoUpdate,
+)
 from backend.security import get_current_user
-from backend.services.estado_visual import calcular_estado_visual
+from backend.services.estado_socio import (
+    InputsSocio,
+    areas_por_unidad,
+    calcular_estado_socio,
+    inputs_socio,
+    vigencia_mas_vencida,
+)
 from backend.services.importer.exporter import build_template
 from backend.services.importer.parser import ParseError
 from backend.services.importer.pipeline import execute_rows, preview_file
+from backend.services.vencimiento import editar_vencimiento
 
 router = APIRouter(prefix="/api/membresias", tags=["membresias"])
 
@@ -89,18 +102,35 @@ def list_membresias(
 
 @router.get("/parcelas", response_model=list)
 def group_by_parcela(db: Session = Depends(get_db)):
-    """List membresias grouped by parcela with computed estado_visual."""
+    """List membresias grouped by parcela, each carrying its socio's state.
+
+    The badge a member shows is their SOCIO state, served by the same function
+    the padrón uses (EST-01) — and scoped to the UNIT: a balsa is paid once, so
+    the unit's worst área membership decides ⚠️ for the titular AND every
+    integrante, never one stale row at a time.
+    """
     from backend.models.parcela import Parcela
 
     parcelas = db.query(Parcela).all()
-    result = []
-    for p in parcelas:
-        membresias = (
+    miembros = {
+        p.id: (
             db.query(Membresia)
             .filter(Membresia.parcelaId == p.id)
             .order_by(Membresia.vencimiento.desc())
             .all()
         )
+        for p in parcelas
+    }
+
+    # Two grouped queries, both O(1) in members (D5).
+    inputs = inputs_socio(
+        db, sorted({m.socioId for rows in miembros.values() for m in rows})
+    )
+    areas_unidad = areas_por_unidad(db, [p.id for p in parcelas])
+    hoy = date.today()
+
+    result = []
+    for p in parcelas:
         result.append(
             {
                 "parcela": {
@@ -111,25 +141,40 @@ def group_by_parcela(db: Session = Depends(get_db)):
                     "predio": p.predio.value,
                     "categoria": p.categoria.value if p.categoria else None,
                 },
-                "membresias": [
-                    {
-                        "id": m.id,
-                        "socioId": m.socioId,
-                        "area": m.area.value,
-                        "predio": m.predio.value,
-                        "estado": m.estado.value,
-                        "vencimiento": str(m.vencimiento),
-                        "rol": m.rol.value if m.rol else None,
-                        "detalle": m.detalle,
-                        "estadoVisual": calcular_estado_visual(
-                            m.estado.value, m.vencimiento
-                        ),
-                    }
-                    for m in membresias
-                ],
+                "membresias": [_miembro(db, m, inputs, areas_unidad, hoy) for m in miembros[p.id]],
             }
         )
     return result
+
+
+def _miembro(
+    db: Session,
+    m: Membresia,
+    inputs: dict,
+    areas_unidad: dict,
+    hoy: date,
+) -> dict:
+    """One unit member row, with the server-served state of its socio."""
+    inputs_m = inputs.get(m.socioId, InputsSocio(None, None))
+    estado = calcular_estado_socio(
+        inputs_m.cuota,
+        vigencia_mas_vencida(inputs_m.area, areas_unidad.get(m.parcelaId)),
+        hoy,
+    )
+    return {
+        "id": m.id,
+        "socioId": m.socioId,
+        # `area`/`predio` are nullable: a cuota social membership has neither,
+        # so the unit listing reports null rather than 500-ing on `.value`.
+        "area": m.area.value if m.area is not None else None,
+        "predio": m.predio.value if m.predio is not None else None,
+        "estado": m.estado.value,
+        "vencimiento": str(m.vencimiento),
+        "rol": m.rol.value if m.rol else None,
+        "detalle": m.detalle,
+        "estadoSocio": estado.value,
+        "nominacion": estado.value,
+    }
 
 
 @router.get("/import/template")
@@ -296,6 +341,38 @@ def set_estado_membresia(
         raise HTTPException(status_code=404, detail=f"Membresia {membresia_id} not found")
     if data.estado is not None:
         m.estado = data.estado
+    m.updated_by = current_user.id
+    db.commit()
+    db.refresh(m)
+    return m
+
+
+@router.put("/{membresia_id}/vencimiento", response_model=MembresiaResponse)
+def set_vencimiento_membresia(
+    membresia_id: str,
+    data: MembresiaVencimientoUpdate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
+):
+    """Set an ABSOLUTE `vencimiento` on one membership (CBM-06).
+
+    Works for an área membership and for a cuota social one — the id decides
+    which, there is no separate cuota endpoint. The date is stored VERBATIM:
+    this is the manual correction valve, so the 10->10 projection belongs to
+    `services/renovacion` (charges) and never runs here, and a date in the past
+    is accepted because legacy rows really do sit in the past.
+
+    A malformed, null or missing date is rejected by the schema with a 422
+    before this handler runs, so a rejected edit changes nothing at all.
+
+    This is NOT a charge: no `Pago`/`PagoItem` is created, altered or deleted.
+    The badge is not stored either — the new state simply falls out of
+    `services.estado_socio` on the next read (EST-02).
+    """
+    m = db.query(Membresia).filter(Membresia.id == membresia_id).first()
+    if m is None:
+        raise HTTPException(status_code=404, detail=f"Membresia {membresia_id} not found")
+    editar_vencimiento(db, [m], data.vencimiento)
     m.updated_by = current_user.id
     db.commit()
     db.refresh(m)

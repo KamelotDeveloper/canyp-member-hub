@@ -345,9 +345,11 @@ class TestDeleteSocioCascade:
         # The integrante's membership is now Titular
         resp = test_client.get("/api/socios/sInt/membresias")
         assert resp.status_code == 200
-        membresias = resp.json()
-        assert len(membresias) == 1
-        assert membresias[0]["rol"] == "Titular"
+        # Filter to the unit row: the socio also owns a cuota social membership
+        # (no parcelaId), which is not what this test is about.
+        unidades = [m for m in resp.json() if m["parcelaId"] is not None]
+        assert len(unidades) == 1
+        assert unidades[0]["rol"] == "Titular"
 
     def test_delete_titular_no_integrante_leaves_no_titular(self, test_client):
         """Deleting a Titular with no other members just removes the unit."""
@@ -409,9 +411,10 @@ class TestDeleteSocioCascade:
         assert resp.status_code == 200
         resp = test_client.get("/api/socios/sTit/membresias")
         assert resp.status_code == 200
-        membresias = resp.json()
-        assert len(membresias) == 1
-        assert membresias[0]["rol"] == "Titular"
+        # Unit rows only — the Titular also owns a cuota social membership.
+        unidades = [m for m in resp.json() if m["parcelaId"] is not None]
+        assert len(unidades) == 1
+        assert unidades[0]["rol"] == "Titular"
 
     def test_delete_titular_with_multiple_units(self, test_client):
         """Deleting a socio who is Titular in multiple units promotes in each."""
@@ -501,9 +504,10 @@ class TestDeleteSocioCascade:
         for sid, _, _, _, _ in integrantes:
             resp = test_client.get(f"/api/socios/{sid}/membresias")
             assert resp.status_code == 200
-            membresias = resp.json()
-            assert len(membresias) == 1
-            assert membresias[0]["rol"] == "Titular"
+            # Unit rows only — each socio also owns a cuota social membership.
+            unidades = [m for m in resp.json() if m["parcelaId"] is not None]
+            assert len(unidades) == 1
+            assert unidades[0]["rol"] == "Titular"
 
 
 class TestDeleteSocioConPagos:
@@ -578,7 +582,14 @@ class TestDeleteSocioConPagos:
         # Socio still exists and history is intact
         assert test_client.get("/api/socios/sPagos").status_code == 200
         assert test_db.query(Pago).filter(Pago.socioId == "sPagos").count() == 1
-        assert test_db.query(Membresia).filter(Membresia.socioId == "sPagos").count() == 1
+        # The rejection must not have touched the socio's area membership
+        # (it also owns a cuota social membership, created with the socio).
+        assert (
+            test_db.query(Membresia)
+            .filter(Membresia.socioId == "sPagos", Membresia.id == "mPagos")
+            .count()
+            == 1
+        )
 
     def test_delete_socio_sin_pagos_permite(self, test_client):
         """A socio without payments can still be deleted normally."""

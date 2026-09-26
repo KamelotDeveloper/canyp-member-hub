@@ -55,7 +55,7 @@ backend\venv\Scripts\python.exe -m backend.seed
 ```bash
 cd frontend
 pnpm install
-pnpm dev        # → http://localhost:8080 (proxea /api → http://localhost:8000)
+pnpm dev        # → http://localhost:8080 (proxea /api → backend dev en el puerto 8000)
 ```
 
 ### Verificaciones

@@ -10,6 +10,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { DataModeBadge } from "@/components/canyp/DataModeBadge";
 import { PageHeader } from "@/components/canyp/AppShell";
 import { cn } from "@/lib/utils";
+import { CLIENT_BUILD } from "@/lib/canyp/build-flags";
 import { useSettings, useUpdateSettings } from "@/lib/canyp/queries";
 import type { DataMode } from "@/lib/canyp/types";
 
@@ -40,15 +41,33 @@ function AjustesPage() {
 
   useEffect(() => {
     if (settings) {
-      setMode(settings.dataMode);
+      setMode(CLIENT_BUILD ? "remoto" : settings.dataMode);
       setUrl(settings.databaseUrl);
       setSaved(false);
     }
   }, [settings]);
 
+  // Client builds are provisioned by the administrator: nothing editable here.
+  if (CLIENT_BUILD) {
+    return (
+      <>
+        <PageHeader title="Ajustes" />
+        <Card className="max-w-2xl space-y-4 p-6">
+          <p className="text-sm text-muted-foreground">
+            Este equipo está configurado por el administrador. La conexión remota se aplica
+            automáticamente.
+          </p>
+          <DataModeBadge />
+        </Card>
+      </>
+    );
+  }
+
   function guardar() {
     updateSettings.mutate(
-      { dataMode: mode, ...(mode === "remoto" ? { databaseUrl: url.trim() } : {}) },
+      CLIENT_BUILD
+        ? { dataMode: "remoto", databaseUrl: url.trim() }
+        : { dataMode: mode, ...(mode === "remoto" ? { databaseUrl: url.trim() } : {}) },
       {
         onSuccess: () => {
           setSaved(true);
@@ -88,12 +107,14 @@ function AjustesPage() {
             onValueChange={(v) => setMode(v as DataMode)}
             className="mt-3 gap-3"
           >
-            <ModeOption
-              selected={mode === "local"}
-              icon={<Database className="size-4 text-muted-foreground" />}
-              title="Local"
-              description="Funciona sin internet. Los datos quedan solo en esta PC."
-            />
+            {!CLIENT_BUILD && (
+              <ModeOption
+                selected={mode === "local"}
+                icon={<Database className="size-4 text-muted-foreground" />}
+                title="Local"
+                description="Funciona sin internet. Los datos quedan solo en esta PC."
+              />
+            )}
             <ModeOption
               selected={mode === "remoto"}
               icon={<Cloud className="size-4 text-sky-600" />}
@@ -103,7 +124,7 @@ function AjustesPage() {
           </RadioGroup>
         </div>
 
-        {mode === "remoto" && (
+        {(CLIENT_BUILD || mode === "remoto") && (
           <div className="space-y-2">
             <Label htmlFor="ajustes-db-url">Cadena de conexión (Supabase)</Label>
             <Input

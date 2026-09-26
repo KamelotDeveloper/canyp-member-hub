@@ -12,8 +12,8 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { estadoVisual } from "@/lib/canyp/utils";
-import { useMembresias } from "@/lib/canyp/queries";
+import { CLIENT_BUILD } from "@/lib/canyp/build-flags";
+import { useDashboardAlertas } from "@/lib/canyp/queries";
 import { DataModeBadge } from "@/components/canyp/DataModeBadge";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -28,19 +28,12 @@ const nav: { to: string; label: string; icon: typeof Users; exact?: boolean }[] 
   { to: "/ajustes", label: "Ajustes", icon: Settings },
 ];
 
-export function AppShell({
-  children,
-  onLogout,
-}: {
-  children: ReactNode;
-  onLogout?: () => void;
-}) {
+export function AppShell({ children, onLogout }: { children: ReactNode; onLogout?: () => void }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const { data: membresias = [] } = useMembresias();
-  const alertas = membresias.filter((m) => {
-    const e = estadoVisual(m);
-    return e === "vencida" || e === "por_vencer";
-  }).length;
+  // El badge de Notificaciones cuenta las alertas SERVIDAS por el backend
+  // (membresías vencidas/suspendidas), no un estado derivado en el cliente.
+  const { data: alertas = [] } = useDashboardAlertas();
+  const navItems = CLIENT_BUILD ? nav.filter((i) => i.to !== "/ajustes") : nav;
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -60,7 +53,7 @@ export function AppShell({
             </div>
           </div>
           <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
-            {nav.map((item) => {
+            {navItems.map((item) => {
               const active = item.exact ? pathname === item.to : pathname.startsWith(item.to);
               return (
                 <Link
@@ -75,9 +68,9 @@ export function AppShell({
                 >
                   <item.icon className="size-4" />
                   <span className="flex-1">{item.label}</span>
-                  {item.label === "Notificaciones" && alertas > 0 && (
+                  {item.label === "Notificaciones" && alertas.length > 0 && (
                     <span className="rounded-full bg-danger px-1.5 py-0.5 text-[10px] font-bold text-danger-foreground">
-                      {alertas}
+                      {alertas.length}
                     </span>
                   )}
                 </Link>
@@ -101,7 +94,7 @@ export function AppShell({
 
         <div className="flex min-w-0 flex-1 flex-col md:pl-60">
           <nav className="flex gap-1 overflow-x-auto border-b border-border bg-sidebar px-3 py-2 md:hidden">
-            {nav.map((item) => (
+            {navItems.map((item) => (
               <Link
                 key={item.to}
                 to={item.to as string}

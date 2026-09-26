@@ -1,30 +1,26 @@
-import type { Membresia } from "./types";
+import type { EstadoSocio } from "./types";
 
-export type EstadoVisual = "activa" | "por_vencer" | "vencida" | "suspendida" | "baja";
+/**
+ * Orden de severidad de los 4 estados servidos (EST-01), de más urgente a menos.
+ *
+ * Es el orden de presentación que consumen los badges y el agregado por unidad
+ * (`estadoCriticoDe`). El string ES la nominación exacta de UI (UI-04): el
+ * frontend nunca la arma, la muestra tal cual viene del backend.
+ */
+export const ORDEN_ESTADOS: readonly EstadoSocio[] = [
+  "Inactivo — revisar",
+  "Socio activo — revisar",
+  "Socio activo",
+  "Solo cuota social",
+];
 
+/** Días restantes (pueden ser negativos) hasta un vencimiento, a las 12:00 locales. */
 export function diasRestantes(vencimiento: string) {
   const hoy = new Date();
   hoy.setHours(12, 0, 0, 0);
   const v = new Date(`${vencimiento}T12:00:00`);
   return Math.round((v.getTime() - hoy.getTime()) / 86400000);
 }
-
-export function estadoVisual(m: Membresia): EstadoVisual {
-  if (m.estado === "baja") return "baja";
-  if (m.estado === "suspendida") return "suspendida";
-  const d = diasRestantes(m.vencimiento);
-  if (d < 0) return "vencida";
-  if (d <= 30) return "por_vencer";
-  return "activa";
-}
-
-export const estadoLabel: Record<EstadoVisual, string> = {
-  activa: "Activa",
-  por_vencer: "Por vencer",
-  vencida: "Vencida",
-  suspendida: "Suspendida",
-  baja: "Dada de baja",
-};
 
 export function formatARS(n: number) {
   return `$ ${n.toLocaleString("es-AR")}`;

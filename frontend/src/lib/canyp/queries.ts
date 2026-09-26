@@ -7,7 +7,10 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as api from "./api";
+import { clearFotosCache } from "./fotos";
+import { verificarSuscripcion } from "./suscripcion";
 import type {
+  ConceptoMembresia,
   EstadoMembresia,
   ExecuteResult,
   ImportPayload,
@@ -67,6 +70,15 @@ export function useMembresia(id: string) {
   });
 }
 
+/** List unidades (cabañas/balsas) con sus miembros y `estadoSocio` unit-scoped. */
+export function useMembresiasParcelas() {
+  return useQuery({
+    queryKey: ["membresias", "parcelas"],
+    queryFn: api.getMembresiasParcelas,
+    refetchInterval: REFRESH_INTERVAL_MS,
+  });
+}
+
 /** List aranceles, optionally filtered by predio */
 export function useAranceles(params?: { predio?: string; area?: string }) {
   return useQuery({
@@ -121,15 +133,49 @@ export function useParcelas(predio?: string) {
   });
 }
 
+/**
+ * Reintentar SOLO errores de red (fetch TypeError: ERR_CONNECTION_REFUSED…),
+ * y hacerlo SIN límite: el sidecar empaquetado es local y SIEMPRE termina
+ * arrancando. En frío (PyInstaller onefile, ~55 MB) puede tardar entre 20 y 60+ s
+ * según disco/antivirus; si abandonáramos los reintentos el LoginGate caería en
+ * el placeholder "Configurando CANYP…" (pantalla en blanco) aunque el backend
+ * levante un segundo después. Un 401 real (settings configurado, D9) NO
+ * reintenta: el LoginGate deriva `configured=true` al instante de ese status.
+ */
+const NETWORK_RETRY_DELAY_MS = 3_000;
+
+function retryOnNetwork(_failureCount: number, error: Error): boolean {
+  return error instanceof TypeError;
+}
+
 /** Current data-mode settings (badge + wizard + Ajustes). */
 export function useSettings() {
   return useQuery({
     queryKey: ["settings"],
     queryFn: api.getSettings,
     staleTime: 30_000,
-    // Una vez configurado, GET /api/settings responde 401 sin token (D9). No
-    // reintentar: el LoginGate deriva `configured=true` de ese 401 al instante.
-    retry: false,
+    retry: retryOnNetwork,
+    retryDelay: NETWORK_RETRY_DELAY_MS,
+  });
+}
+
+/**
+ * License state for a client_id (POST /suscripcion/verificar).
+ *
+ * Cached per client_id so a remount of LicenseGate NEVER resets the gate to
+ * "checking": the verdict is served from cache instantly and the endpoint is
+ * not re-pinged at 1Hz. Refetch only on explicit invalidation (reintentar,
+ * trial activado) or after staleTime.
+ */
+export function useLicencia(clientId: string) {
+  return useQuery({
+    queryKey: ["licencia", clientId],
+    queryFn: () => verificarSuscripcion(clientId),
+    staleTime: 60_000,
+    retry: retryOnNetwork,
+    retryDelay: NETWORK_RETRY_DELAY_MS,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -158,6 +204,8 @@ export function useAuthStatus() {
     queryKey: ["auth", "status"],
     queryFn: api.getAuthStatus,
     staleTime: Infinity,
+    retry: retryOnNetwork,
+    retryDelay: NETWORK_RETRY_DELAY_MS,
   });
 }
 
@@ -216,6 +264,37 @@ export function useDeleteSocio() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["socios"] });
       qc.invalidateQueries({ queryKey: ["membresias"] });
+    },
+  });
+}
+
+/**
+ * Upload a socio photo (carnet). On success `tieneFoto` flips in the payloads,
+ * so the `socios` cache is invalidated; the object-URL cache is also cleared
+ * so the next print refetches the photo.
+ */
+export function useSubirFoto() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, foto }: { id: string; foto: File }) => api.subirFoto(id, foto),
+    onSuccess: () => {
+      clearFotosCache();
+      qc.invalidateQueries({ queryKey: ["socios"] });
+    },
+  });
+}
+
+/**
+ * Remove a socio photo (carnet). Same cache handling as `useSubirFoto`:
+ * `tieneFoto` flips back to false, object URLs are revoked.
+ */
+export function useQuitarFoto() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.quitarFoto(id),
+    onSuccess: () => {
+      clearFotosCache();
+      qc.invalidateQueries({ queryKey: ["socios"] });
     },
   });
 }
@@ -330,10 +409,34 @@ export function useSetBatchEstado() {
 export function useSetBatchVencimiento() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ parcelaId, vencimiento }: { parcelaId: string; vencimiento: string }) =>
-      api.setBatchVencimiento(parcelaId, vencimiento),
+    mutationFn: ({
+      parcelaId,
+      vencimiento,
+      concepto,
+    }: {
+      parcelaId: string;
+      vencimiento: string;
+      concepto?: ConceptoMembresia;
+    }) => api.setBatchVencimiento(parcelaId, vencimiento, concepto),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["membresias"] });
+      // El vencimiento mueve el estado del socio: refrescar el padrón y el dashboard.
+      qc.invalidateQueries({ queryKey: ["socios"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+}
+
+/** Edita el vencimiento absoluto de UNA membresía (área | cuota social). */
+export function useUpdateMembresiaVencimiento() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, vencimiento }: { id: string; vencimiento: string }) =>
+      api.updateMembresiaVencimiento(id, vencimiento),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["membresias"] });
+      qc.invalidateQueries({ queryKey: ["socios"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
 }

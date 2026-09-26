@@ -2,10 +2,11 @@
 
 from datetime import date
 
-from sqlalchemy import Date, Float, ForeignKey, String
+from sqlalchemy import Date, Enum, Float, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.database import Base
+from backend.models.enums import ConceptoCobro
 
 
 class Pago(Base):
@@ -35,3 +36,11 @@ class PagoItem(Base):
     )
     montoAplicado: Mapped[float] = mapped_column(Float, nullable=False)
     arancelNombre: Mapped[str] = mapped_column(String, nullable=False)
+    # One item = one charge concept. NOT NULL with an AREA default keeps both
+    # existing FKs intact, so no SQLite rebuild is needed (D2/PAG-01).
+    concepto: Mapped[ConceptoCobro] = mapped_column(
+        Enum(ConceptoCobro), nullable=False, default=ConceptoCobro.AREA
+    )
+    # Resolved multiplier behind montoAplicado (1.0 = not multiplied, e.g. balsa
+    # stays flat; n = cuota social × unit member count).
+    factor: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)

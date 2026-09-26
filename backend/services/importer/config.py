@@ -251,6 +251,18 @@ _IMPORT_MEMBRESIAS: dict[str, Any] = {
 }
 
 
+def _after_insert_socio(socio: Socio, db: Session) -> None:
+    """Give every imported socio its cuota social membership (CS-02).
+
+    The imported socio has no area membership yet, so the cuota row anchors on
+    the current 10->10 window. Runs inside the row's SAVEPOINT, so a rejected
+    row never leaves an orphan cuota behind.
+    """
+    from backend.services.cuota_social import crear_cuota_social
+
+    crear_cuota_social(db, socio)
+
+
 _IMPORT_SOCIOS: dict[str, Any] = {
     "model": ImportSocioRow,
     "model_cls": Socio,
@@ -291,6 +303,8 @@ _IMPORT_SOCIOS: dict[str, Any] = {
         "fechaAlta",
         "categoria",
     ],
+    # Per-row follow-up: one cuota social membership per imported socio.
+    "after_insert": _after_insert_socio,
 }
 
 

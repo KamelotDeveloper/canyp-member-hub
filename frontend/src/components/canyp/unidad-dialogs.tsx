@@ -18,6 +18,7 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Check, ChevronsUpDown, Pencil, Trash2 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -60,9 +61,13 @@ import {
 } from "@/components/ui/command";
 import { buildUnitPago } from "@/lib/canyp/api";
 import {
-  itemsParaMembresias,
+  arancelPorConcepto,
   buildNuevaUnidadPayload,
+  conceptoDeMembresia,
+  itemsPorConcepto,
+  lineaAPagoItem,
   predioDeTipo,
+  totalEstimado,
   type NuevaUnidadSocio,
 } from "@/lib/canyp/unidad-helpers";
 import {
@@ -78,11 +83,13 @@ import {
   useSetBatchVencimiento,
   useCreatePago,
   useImportParcelas,
+  useMembresias,
 } from "@/lib/canyp/queries";
 import { formatARS, formatFecha } from "@/lib/canyp/utils";
 import type {
   Area,
   CategoriaParcela,
+  ConceptoCobro,
   EstadoMembresia,
   Membresia,
   Parcela,
@@ -126,6 +133,7 @@ export function GestionarDialog({
 
   const updateParcela = useUpdateParcela();
   const deleteParcela = useDeleteParcela();
+  const deleteMembresia = useDeleteMembresia();
   const updateMembresia = useUpdateMembresia();
   const createMembresia = useCreateMembresia();
   const createSocio = useCreateSocio();
@@ -204,6 +212,8 @@ export function GestionarDialog({
         email: nuevoMail.trim(),
         direccion: "",
         activo: true,
+        numeroSocio: null,
+        tieneFoto: false,
       },
       {
         onSuccess: (socio) => {
@@ -256,7 +266,9 @@ export function GestionarDialog({
   function aplicarVencimiento() {
     if (!grupo.parcelaId || !vencBatch) return;
     setBatchVencimiento.mutate(
-      { parcelaId: grupo.parcelaId, vencimiento: vencBatch },
+      // El lote de una unidad toca SOLO el área (CBM-06): la cuota social queda
+      // intacta. Siempre se envía el concepto para no mezclar ambos.
+      { parcelaId: grupo.parcelaId, vencimiento: vencBatch, concepto: "area" },
       {
         onSuccess: () => {
           setVencBatch("");
@@ -487,15 +499,13 @@ export function GestionarDialog({
 
         <DialogFooter className="gap-2 sm:justify-between">
           <div className="flex items-center gap-2">
-            {conParcela && (
-              <Button
-                variant="outline"
-                className="text-destructive hover:bg-destructive hover:text-destructive-foreground"
-                onClick={() => setConfirmEliminar(true)}
-              >
-                <Trash2 className="mr-1.5 size-4" /> Eliminar unidad
-              </Button>
-            )}
+            <Button
+              variant="outline"
+              className="text-destructive hover:bg-destructive hover:text-destructive-foreground"
+              onClick={() => setConfirmEliminar(true)}
+            >
+              <Trash2 className="mr-1.5 size-4" /> Eliminar unidad
+            </Button>
             <Button
               variant="outline"
               onClick={() => setCobrando(true)}
@@ -517,9 +527,22 @@ export function GestionarDialog({
           <AlertDialogHeader>
             <AlertDialogTitle>Eliminar unidad</AlertDialogTitle>
             <AlertDialogDescription>
-              ¿Seguro que querés eliminar la unidad <strong>{grupo.nombre}</strong>? Se borrarán la
-              parcela y todas las membresías asociadas. Los socios se mantienen en el padrón sin
-              unidad asignada.
+              {grupo.parcelaId ? (
+                <>
+                  ¿Seguro que querés eliminar la unidad <strong>{grupo.nombre}</strong>? Se borrarán
+                  la parcela y todas las membresías asociadas. Los socios se mantienen en el padrón
+                  sin unidad asignada.
+                </>
+              ) : (
+                <>
+                  ¿Seguro que querés eliminar el grupo <strong>{grupo.nombre}</strong>? Se van a
+                  eliminar las {grupo.members.length} membresías de este grupo. Los socios se
+                  mantienen en el padrón sin unidad asignada.
+                  {grupo.members.some((m) => m.rol === "Titular")
+                    ? " Una de las membresías tiene rol Titular."
+                    : ""}
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -527,15 +550,29 @@ export function GestionarDialog({
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => {
-                if (!grupo.parcelaId) return;
-                deleteParcela.mutate(grupo.parcelaId, {
-                  onSuccess: () => {
+                if (grupo.parcelaId) {
+                  deleteParcela.mutate(grupo.parcelaId, {
+                    onSuccess: () => {
+                      setConfirmEliminar(false);
+                      onOpenChange(false);
+                      toast.success(`Unidad ${grupo.nombre} eliminada`);
+                    },
+                    onError: () => toast.error("Error al eliminar la unidad"),
+                  });
+                  return;
+                }
+                if (grupo.members.length === 0) {
+                  setConfirmEliminar(false);
+                  onOpenChange(false);
+                  return;
+                }
+                Promise.all(grupo.members.map((m) => deleteMembresia.mutateAsync(m.id)))
+                  .then(() => {
                     setConfirmEliminar(false);
                     onOpenChange(false);
-                    toast.success(`Unidad ${grupo.nombre} eliminada`);
-                  },
-                  onError: () => toast.error("Error al eliminar la unidad"),
-                });
+                    toast.success(`Grupo ${grupo.nombre} eliminado`);
+                  })
+                  .catch(() => toast.error("Error al eliminar el grupo"));
               }}
             >
               Eliminar
@@ -1015,8 +1052,13 @@ export function NuevaUnidadDialog({
 }
 
 // ---------------------------------------------------------------------------
-// CobrarUnidadDialog — confirmación de cobro por unidad (tarjeta + Gestionar)
+// CobrarUnidadDialog — cobro por unidad con múltiples conceptos (CBM-02)
 // ---------------------------------------------------------------------------
+
+/** Fecha de hoy en ISO corto, el default del cobro (PAG-02). */
+function hoyIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
 export function CobrarUnidadDialog({
   grupo,
@@ -1030,15 +1072,70 @@ export function CobrarUnidadDialog({
   const navigate = useNavigate();
   const { data: aranceles = [] } = useAranceles();
   const { data: socios = [] } = useSocios();
+  const { data: membresias = [] } = useMembresias();
   const createPago = useCreatePago();
   const [medio, setMedio] = useState("Transferencia");
   const [nota, setNota] = useState("");
+  const [fecha, setFecha] = useState(hoyIso);
+  const [marcas, setMarcas] = useState<ConceptoCobro[]>([]);
+  const [recargo, setRecargo] = useState("");
+  const [servicio, setServicio] = useState("");
 
   const socioMap = useMemo(() => new Map(socios.map((s) => [s.id, s])), [socios]);
-  const items = itemsParaMembresias(grupo.members, aranceles, grupo.categoria);
-  const total = items.reduce((s, i) => s + i.montoAplicado, 0);
   const titular = grupo.members.find((m) => m.rol === "Titular") ?? grupo.members[0];
-  const arancel = items[0] ? aranceles.find((a) => a.id === items[0]!.arancelId) : undefined;
+
+  /**
+   * Membresía de cuota social del titular: ancla de esa línea, y la única forma
+   * de ofrecerla con honestidad — sin ella el servidor rechaza el cobro (422).
+   */
+  const cuotaTitular = useMemo(
+    () =>
+      titular
+        ? membresias.find(
+            (m) => m.socioId === titular.socioId && conceptoDeMembresia(m) === "cuota social",
+          )
+        : undefined,
+    [membresias, titular],
+  );
+
+  // Conceptos que este cobro puede emitir: cada tick necesita fila de catálogo.
+  const disponibles = useMemo(() => {
+    const out: ConceptoCobro[] = ["area"];
+    if (cuotaTitular) out.push("cuota social");
+    if (arancelPorConcepto(aranceles, "servicio")) out.push("servicio");
+    if (arancelPorConcepto(aranceles, "recargo")) out.push("recargo");
+    return out;
+  }, [aranceles, cuotaTitular]);
+
+  const lugar =
+    titular && titular.area && titular.predio
+      ? { area: titular.area, predio: titular.predio, categoria: grupo.categoria }
+      : undefined;
+
+  const lineas = useMemo(
+    () =>
+      itemsPorConcepto(marcas, {
+        anclas: { area: titular?.id, cuota: cuotaTitular?.id },
+        miembros: grupo.members.length,
+        aranceles,
+        ...(lugar ? { lugar } : {}),
+        ...(recargo ? { recargo: Number(recargo) } : {}),
+        ...(servicio ? { servicio: Number(servicio) } : {}),
+      }),
+    [marcas, titular, cuotaTitular, grupo.members.length, aranceles, lugar, recargo, servicio],
+  );
+
+  const total = totalEstimado(lineas);
+
+  /** Precio de catálogo de un concepto, se marque o no, para poder mostrarlo. */
+  const precioDe = (concepto: ConceptoCobro) =>
+    arancelPorConcepto(aranceles, concepto, lugar)?.monto;
+
+  function alternar(concepto: ConceptoCobro) {
+    setMarcas((prev) =>
+      prev.includes(concepto) ? prev.filter((c) => c !== concepto) : [...prev, concepto],
+    );
+  }
 
   function confirmar() {
     if (!titular) {
@@ -1051,17 +1148,23 @@ export function CobrarUnidadDialog({
         .filter((m) => m.id !== titular.id)
         .map((m) => ({ membresiaId: m.id })),
       medio,
+      fecha,
       ...(nota.trim() ? { nota: nota.trim() } : {}),
-      items,
+      items: lineas.map(lineaAPagoItem),
     });
     if (!payload) {
-      toast.error("No hay aranceles para cobrar esta unidad");
+      toast.error("Elegí al menos un concepto para cobrar");
       return;
     }
     createPago.mutate(payload, {
-      onSuccess: () => {
+      onSuccess: (pago) => {
         onOpenChange(false);
-        toast.success("Unidad cobrada: membresías renovadas por 12 meses.");
+        // Total y desglose son los que resolvió el servidor. Nada de "renovadas
+        // por 12 meses": qué se renueva depende de los conceptos marcados y
+        // cuánto dura lo define el servidor (PAG-01, REN-01).
+        toast.success(
+          `Unidad cobrada: ${pago.items.map((i) => i.nombre).join(" + ")} · ${formatARS(pago.total)}`,
+        );
         navigate({ to: "/pagos" });
       },
       onError: () => toast.error("Error al cobrar la unidad"),
@@ -1095,20 +1198,84 @@ export function CobrarUnidadDialog({
             </ul>
           </div>
 
-          <div className="rounded-md border border-border p-3 text-sm">
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Arancel</span>
-              <span className="text-right">{arancel?.nombre ?? "—"}</span>
-            </div>
-            <div className="mt-2 flex items-center justify-between border-t border-border pt-2">
-              <span className="text-muted-foreground">Total</span>
-              <span className="font-semibold tabular-nums">{formatARS(total)}</span>
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              El comprobante queda a nombre del titular y renueva a los {grupo.members.length}{" "}
-              miembros de la unidad.
-            </p>
+          <div>
+            <Label>Conceptos</Label>
+            <ul className="mt-1.5 space-y-2">
+              {disponibles.map((c) => (
+                <li key={c} className="flex items-center gap-3 rounded-md border border-border p-3">
+                  <Checkbox checked={marcas.includes(c)} onCheckedChange={() => alternar(c)} />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium">{labelConcepto(c)}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {detalleConcepto(c, precioDe, grupo.members.length)}
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ul>
           </div>
+
+          {marcas.includes("servicio") && (
+            <div>
+              <Label htmlFor="unidad-servicio">Importe del servicio</Label>
+              <Input
+                id="unidad-servicio"
+                type="number"
+                min={0}
+                step={100}
+                className="mt-1.5"
+                value={servicio}
+                onChange={(e) => setServicio(e.target.value)}
+                placeholder={String(precioDe("servicio") ?? "")}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Vacío = precio de catálogo. El ajuste se cobra solo en este comprobante.
+              </p>
+            </div>
+          )}
+
+          {marcas.includes("recargo") && (
+            <div>
+              <Label htmlFor="unidad-recargo">Importe del recargo</Label>
+              <Input
+                id="unidad-recargo"
+                type="number"
+                min={0}
+                step={100}
+                className="mt-1.5"
+                value={recargo}
+                onChange={(e) => setRecargo(e.target.value)}
+                placeholder="0"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Se suma a los demás conceptos. Tiene que ser mayor a 0 para poder cobrarse.
+              </p>
+            </div>
+          )}
+
+          {lineas.length > 0 && (
+            <div className="rounded-md bg-secondary p-3">
+              <p className="text-xs font-semibold tracking-wide uppercase">Ítems a cobrar</p>
+              <ul className="mt-2 space-y-1 text-sm">
+                {lineas.map((l) => (
+                  <li key={l.concepto} className="flex justify-between">
+                    <span>
+                      {l.arancelNombre}
+                      {l.factor > 1 && <span className="text-muted-foreground"> ×{l.factor}</span>}
+                    </span>
+                    <span className="tabular-nums">{formatARS(l.monto)}</span>
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-2 flex justify-between border-t border-border pt-2 text-sm font-bold">
+                <span>Total estimado</span>
+                <span className="tabular-nums">{formatARS(total)}</span>
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Estimación del cliente: el importe final lo calcula el servidor.
+              </p>
+            </div>
+          )}
 
           <div>
             <Label>Medio de pago</Label>
@@ -1126,6 +1293,17 @@ export function CobrarUnidadDialog({
           </div>
 
           <div>
+            <Label htmlFor="unidad-fecha">Fecha del cobro</Label>
+            <Input
+              id="unidad-fecha"
+              type="date"
+              className="mt-1.5"
+              value={fecha}
+              onChange={(e) => setFecha(e.target.value)}
+            />
+          </div>
+
+          <div>
             <Label htmlFor="unidad-nota">Nota (opcional)</Label>
             <Textarea
               id="unidad-nota"
@@ -1136,17 +1314,44 @@ export function CobrarUnidadDialog({
               rows={3}
             />
           </div>
+          <p className="text-xs text-muted-foreground">
+            El comprobante queda a nombre del titular. Solo renuevan las membresías cuyo concepto
+            esté marcado.
+          </p>
         </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancelar
           </Button>
-          <Button onClick={confirmar} disabled={createPago.isPending || items.length === 0}>
+          <Button onClick={confirmar} disabled={createPago.isPending || lineas.length === 0}>
             Confirmar pago
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
+}
+
+/** Etiqueta de un concepto de cobro, tal como la nombra el dominio. */
+export function labelConcepto(c: ConceptoCobro): string {
+  if (c === "cuota social") return "Cuota social";
+  if (c === "recargo") return "Recargo";
+  if (c === "servicio") return "Servicio";
+  return "Cuota de la unidad";
+}
+
+/** Texto auxiliar de un concepto: cuánto costaría y por qué se multiplica. */
+function detalleConcepto(
+  c: ConceptoCobro,
+  precioDe: (c: ConceptoCobro) => number | undefined,
+  miembros: number,
+): string {
+  if (c === "cuota social") return `${formatARS(precioDe(c) ?? 0)} × ${miembros} miembros`;
+  if (c === "area") {
+    const precio = precioDe(c);
+    return precio != null ? formatARS(precio) : "Sin arancel configurado";
+  }
+  if (c === "servicio") return `Catálogo ${formatARS(precioDe(c) ?? 0)} (ajustable)`;
+  return "Importe que defina el operador";
 }

@@ -1,11 +1,21 @@
 import { createFileRoute, Link, useNavigate, useParams } from "@tanstack/react-router";
-import { ArrowLeft, CreditCard, Pencil, Plus, Trash2, UserCheck, UserX } from "lucide-react";
-import { useMemo, useState } from "react";
+import {
+  ArrowLeft,
+  CreditCard,
+  Pencil,
+  Plus,
+  Printer,
+  Trash2,
+  UserCheck,
+  UserX,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CarnetPrint } from "@/components/canyp/CarnetPrint";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -41,7 +51,9 @@ import {
 } from "@/components/ui/table";
 import { EstadoBadge } from "@/components/canyp/EstadoBadge";
 import { PageHeader } from "@/components/canyp/AppShell";
-import { diasRestantes, estadoVisual, formatARS, formatFecha } from "@/lib/canyp/utils";
+import { getSocioFoto } from "@/lib/canyp/api";
+import { iniciales } from "@/lib/canyp/carnets";
+import { diasRestantes, formatARS, formatFecha } from "@/lib/canyp/utils";
 import {
   useSocio,
   useMembresias,
@@ -52,6 +64,8 @@ import {
   useDeleteSocio,
   useAranceles,
   useUsuarios,
+  useSubirFoto,
+  useQuitarFoto,
 } from "@/lib/canyp/queries";
 import type { Arancel, Area, Membresia, Predio, Rol, Socio, Usuario } from "@/lib/canyp/types";
 
@@ -90,9 +104,48 @@ function FichaSocio() {
   const deleteSocio = useDeleteSocio();
   const { data: aranceles = [] } = useAranceles();
   const { data: usuarios = [] } = useUsuarios();
+  const subirFoto = useSubirFoto();
+  const quitarFoto = useQuitarFoto();
+
+  // Object URL de la foto del carnet (solo existe cuando socio.tieneFoto).
+  const [fotoUrl, setFotoUrl] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const replaceFotoUrl = useCallback((url: string | null) => {
+    setFotoUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return url;
+    });
+  }, []);
+
+  // Refrescar la preview cuando el socio (re)carga o cuando tieneFoto cambia.
+  useEffect(() => {
+    let active = true;
+    if (socio?.tieneFoto) {
+      getSocioFoto(socio.id)
+        .then((blob) => {
+          if (!active) return;
+          replaceFotoUrl(URL.createObjectURL(blob));
+        })
+        .catch(() => {
+          if (active) replaceFotoUrl(null);
+        });
+    } else {
+      replaceFotoUrl(null);
+    }
+    return () => {
+      active = false;
+    };
+  }, [socio?.id, socio?.tieneFoto, replaceFotoUrl]);
+
+  const usuarioMap = useMemo(
+    () => new Map(usuarios.map((u: Usuario) => [u.id, u.username])),
+    [usuarios],
+  );
 
   const [editOpen, setEditOpen] = useState(false);
   const [memOpen, setMemOpen] = useState(false);
+  const [printOpen, setPrintOpen] = useState(false);
   const [edit, setEdit] = useState<Socio | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [bajaOpen, setBajaOpen] = useState(false);
@@ -132,11 +185,6 @@ function FichaSocio() {
   const membresias = allMembresias.filter((m: Membresia) => m.socioId === socio.id);
   const pagosSocio = pagos.filter((p) => p.socioId === socio.id);
 
-  const usuarioMap = useMemo(
-    () => new Map(usuarios.map((u: Usuario) => [u.id, u.username])),
-    [usuarios],
-  );
-
   const arancelesArea = aranceles.filter(
     (a: Arancel) => a.area === nueva.area && a.predio === nueva.predio,
   );
@@ -152,7 +200,12 @@ function FichaSocio() {
 
       {(socio.activo === false || socio.categoria === "vitalicio") && (
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          {socio.activo === false && <EstadoBadge estado="baja" />}
+          {socio.activo === false && (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs font-semibold text-muted-foreground whitespace-nowrap">
+              <span className="size-1.5 rounded-full bg-current" />
+              Dada de baja
+            </span>
+          )}
           {socio.categoria === "vitalicio" && (
             <span className="rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground">
               Vitalicio
@@ -174,6 +227,9 @@ function FichaSocio() {
               }}
             >
               <Pencil className="mr-2 size-4" /> Editar datos
+            </Button>
+            <Button variant="outline" onClick={() => setPrintOpen(true)}>
+              <Printer className="mr-2 size-4" /> Imprimir carnet
             </Button>
             <Button variant="outline" onClick={() => setMemOpen(true)}>
               <Plus className="mr-2 size-4" /> Nueva membresía
@@ -225,20 +281,19 @@ function FichaSocio() {
             </div>
             <ul className="divide-y divide-border">
               {membresias.map((m) => {
-                const e = estadoVisual(m);
                 const d = diasRestantes(m.vencimiento);
                 return (
                   <li key={m.id} className="flex flex-wrap items-center gap-4 px-5 py-4">
                     <div className="min-w-[180px] flex-1">
                       <p className="text-sm font-semibold">
-                        {m.area} · {m.predio}
+                        {m.area ? `${m.area} · ${m.predio}` : "Cuota social"}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {m.detalle} — vence {formatFecha(m.vencimiento)} (
                         {d < 0 ? `hace ${Math.abs(d)} días` : `en ${d} días`})
                       </p>
                     </div>
-                    <EstadoBadge estado={e} />
+                    {socio.estado && <EstadoBadge estado={socio.estado} />}
                     <Select
                       value={m.estado}
                       onValueChange={(v) => {
@@ -309,6 +364,70 @@ function FichaSocio() {
             </Table>
           </Card>
         </div>
+
+        <Card className="h-fit p-5">
+          <h2 className="text-sm font-semibold">Foto del carnet</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Se imprime en la portada del carnet. Sin foto, se usan las iniciales.
+          </p>
+          <div className="mt-4 flex items-center gap-4">
+            <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-200">
+              {fotoUrl ? (
+                <img src={fotoUrl} alt={socio.nombre} className="h-full w-full object-cover" />
+              ) : (
+                <span className="text-xl font-bold text-slate-600">{iniciales(socio.nombre)}</span>
+              )}
+            </div>
+            <div className="flex flex-col items-start gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  subirFoto.mutate(
+                    { id: socio.id, foto: file },
+                    {
+                      onSuccess: () => toast.success("Foto actualizada"),
+                      onError: (err) => toast.error(`Error al subir la foto: ${err.message}`),
+                    },
+                  );
+                  e.target.value = "";
+                }}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={subirFoto.isPending}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {subirFoto.isPending
+                  ? "Subiendo..."
+                  : socio.tieneFoto
+                    ? "Cambiar foto"
+                    : "Subir foto"}
+              </Button>
+              {socio.tieneFoto && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                  disabled={quitarFoto.isPending}
+                  onClick={() =>
+                    quitarFoto.mutate(socio.id, {
+                      onSuccess: () => toast.success("Foto eliminada"),
+                      onError: (err) => toast.error(`Error al quitar la foto: ${err.message}`),
+                    })
+                  }
+                >
+                  {quitarFoto.isPending ? "Quitando..." : "Quitar foto"}
+                </Button>
+              )}
+            </div>
+          </div>
+        </Card>
 
         <Card className="h-fit p-5">
           <h2 className="text-sm font-semibold">Datos personales</h2>
@@ -610,6 +729,8 @@ function FichaSocio() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {printOpen && <CarnetPrint socios={[socio]} onClose={() => setPrintOpen(false)} />}
     </>
   );
 }

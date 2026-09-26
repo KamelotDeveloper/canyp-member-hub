@@ -25,6 +25,9 @@ Behaviour
   in FK-safe order using chunked ``executemany`` (500 rows), committing once per
   table so a mid-run failure is recoverable. Existing target rows are skipped
   unless ``--replace`` deletes them first (FK-safe reverse order).
+- ``create_all`` never ALTERs an existing table, so full mode first calls
+  ``sync_target_schema`` to give an already-provisioned Postgres the additive
+  columns and enum-NAME backfills of ``backend/migrate.py`` (idempotent).
 - Dates: modern rows are ISO strings handled by the SQLAlchemy ``Date`` type.
   If a legacy row holds a non-ISO string, the row is re-read raw and parsed with
   ``dateutil`` best-effort; unparseable rows are skipped and reported visibly.
@@ -47,7 +50,17 @@ from pathlib import Path
 from typing import Any
 
 from dateutil import parser as dateutil_parser
-from sqlalchemy import JSON, Boolean, Date, create_engine, func, insert, inspect, select
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Date,
+    create_engine,
+    func,
+    insert,
+    inspect,
+    select,
+    text,
+)
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.sql.schema import Table
 
@@ -65,6 +78,44 @@ import backend.models  # noqa: E402, F401  (registers every model on Base.metada
 DEFAULT_DB_FILE = REPO_ROOT / "canyp.db"
 CHUNK_SIZE = 500
 BACKUPS_DIR = REPO_ROOT / "backups"
+
+
+# ---------------------------------------------------------------------------
+# Target schema sync (Postgres parity with ``backend/migrate.py``)
+# ---------------------------------------------------------------------------
+
+# Table -> additive columns. ``Base.metadata.create_all`` only fabricates NEW
+# tables, it never ALTERs an existing one, so a target provisioned before the
+# concept dimension would keep the old shape and the row copy below would fail
+# on the missing columns.
+_TARGET_COLUMN_ADDITIONS: dict[str, tuple[str, ...]] = {
+    "membresias": ("concepto",),
+    "pago_items": ("concepto", "factor"),
+    "aranceles": ("concepto",),
+    "parcelas": ("cuotaSocialIncluida",),
+}
+
+# (table, column) -> SQL type; default "VARCHAR".
+_TARGET_COLUMN_TYPES: dict[tuple[str, str], str] = {
+    ("pago_items", "factor"): "FLOAT",
+    ("parcelas", "cuotaSocialIncluida"): "BOOLEAN",
+}
+
+# Table -> columns to relax to nullable. A cuota social membership is not a
+# physical location, so it carries no area/predio (CS-01).
+_TARGET_NULLABLE: dict[str, tuple[str, ...]] = {
+    "membresias": ("area", "predio"),
+}
+
+# (table, column, value) NULL -> value backfills. Values are SQLAlchemy Enum
+# NAMES, never the display value, so hydration resolves them to enum members.
+_TARGET_BACKFILLS: tuple[tuple[str, str, Any], ...] = (
+    ("membresias", "concepto", "AREA"),
+    ("pago_items", "concepto", "AREA"),
+    ("pago_items", "factor", 1.0),
+    ("aranceles", "concepto", "AREA"),
+    ("parcelas", "cuotaSocialIncluida", 0),
+)
 
 
 class MigrationError(Exception):
@@ -397,6 +448,18 @@ def run_migrate(
         print(f"No se pudo crear el esquema remoto ({type(exc).__name__}).")
         return 1
 
+    # create_all never ALTERs an existing table, so an already-provisioned
+    # target still needs the additive columns/backfills before any copy.
+    try:
+        schema_actions = sync_target_schema(target_engine)
+    except Exception as exc:
+        print(f"No se pudo sincronizar el esquema remoto ({type(exc).__name__}).")
+        return 1
+    if schema_actions:
+        print("Esquema remoto actualizado:")
+        for action in schema_actions:
+            print(f"  {action}")
+
     if replace:
         print("--replace: eliminando los datos existentes en la base remota...")
         try:
@@ -465,6 +528,89 @@ def run_migrate(
         return 0
     print("La migración finalizó con diferencias de conteo. Revisá el informe anterior.")
     return 1
+
+
+# ---------------------------------------------------------------------------
+# Target schema sync
+# ---------------------------------------------------------------------------
+
+
+def sync_target_schema(target_engine: Engine) -> list[str]:
+    """Bring an already-provisioned target up to the current model schema.
+
+    Mirrors ``backend/migrate.py`` (additive columns, enum-NAME backfills) for
+    the remote database. Two deliberate differences:
+
+    - ``membresias.area``/``predio`` are relaxed with
+      ``ALTER COLUMN ... DROP NOT NULL`` instead of SQLite's table rebuild:
+      Postgres does it natively, in place, with no data copy. Applied only on
+      Postgres; a legacy SQLite *target* is the local DB and belongs to
+      ``backend/migrate.py``.
+    - Columns land nullable (the NOT NULL contract lives in the ORM model) and
+      the backfills uphold it, exactly as the SQLite path does.
+
+    Idempotent: every step is driven by fresh inspector reads, and
+    ``create_all`` has already run, so a brand new target is a clean no-op.
+    Returns human-readable action strings.
+    """
+    actions: list[str] = []
+    if not inspect(target_engine).has_table("membresias"):
+        return actions
+
+    # 1) Drop NOT NULL. Drives off the inspector: a fresh target already has
+    #    them nullable thanks to create_all.
+    if target_engine.dialect.name == "postgresql":
+        for table, columns in _TARGET_NULLABLE.items():
+            if not inspect(target_engine).has_table(table):
+                continue
+            for column in columns:
+                info = {
+                    col["name"]: col for col in inspect(target_engine).get_columns(table)
+                }.get(column)
+                if info is None or info.get("nullable", True):
+                    continue
+                with target_engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            f'ALTER TABLE "{table}" '
+                            f'ALTER COLUMN "{column}" DROP NOT NULL'
+                        )
+                    )
+                actions.append(f"{table}.{column}: NOT NULL -> nullable")
+
+    # 2) Additive columns. No IF NOT EXISTS: Postgres and SQLite alike do not
+    #    accept it on ADD COLUMN.
+    for table, columns in _TARGET_COLUMN_ADDITIONS.items():
+        if not inspect(target_engine).has_table(table):
+            continue
+        existing = {col["name"] for col in inspect(target_engine).get_columns(table)}
+        for column in columns:
+            if column in existing:
+                continue
+            sql_type = _TARGET_COLUMN_TYPES.get((table, column), "VARCHAR")
+            with target_engine.begin() as conn:
+                conn.execute(
+                    text(f'ALTER TABLE "{table}" ADD COLUMN "{column}" {sql_type}')
+                )
+            actions.append(f"{table}.{column}: agregada (nullable {sql_type})")
+
+    # 3) Backfills (idempotent by the IS NULL guard).
+    for table, column, value in _TARGET_BACKFILLS:
+        if not inspect(target_engine).has_table(table):
+            continue
+        existing = {col["name"] for col in inspect(target_engine).get_columns(table)}
+        if column not in existing:
+            continue
+        with target_engine.begin() as conn:
+            result = conn.execute(
+                text(f'UPDATE "{table}" SET "{column}" = :value WHERE "{column}" IS NULL'),
+                {"value": value},
+            )
+        if result.rowcount:
+            actions.append(
+                f"{table}.{column}: backfilled {result.rowcount} fila(s) a {value!r}"
+            )
+    return actions
 
 
 # ---------------------------------------------------------------------------

@@ -49,6 +49,7 @@ build_work/
 *.pdf
 cosas.txt
 prueba_import_socios.xlsx
+planillas/
 
 # Secretos y datos locales
 canyp-settings.json

@@ -148,6 +148,10 @@ def execute_rows(
     ``rows`` is a list of ``{skip: bool, data: {canonical fields}}`` dicts
     (mirroring :class:`RowData`). Each non-skipped row is re-validated and
     inserted inside its own SAVEPOINT; the whole batch is committed once.
+
+    A resource config may declare an ``after_insert(instance, db)`` hook for
+    per-row follow-up rows. It runs inside that row's SAVEPOINT, so dependents
+    roll back with the row instead of surviving as orphans.
     """
     config = get_config(resource)
     dedupe_key, existing = _dedupe_context(config, db)
@@ -217,6 +221,12 @@ def execute_rows(
                 db.add(instance)
                 db.flush()
                 new_id = instance.id
+                # Per-row follow-up work (e.g. the cuota social membership every
+                # socio owes). It runs INSIDE the SAVEPOINT, so a row that fails
+                # afterwards rolls back its dependents too, not just itself.
+                after_insert = config.get("after_insert")
+                if after_insert:
+                    after_insert(instance, db)
             importados += 1
             result_rows.append(ExecuteRow(fila=fila, outcome="importado", id=new_id))
         except (SQLAlchemyError, ValueError) as exc:

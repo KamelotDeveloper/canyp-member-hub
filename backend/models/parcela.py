@@ -1,6 +1,6 @@
 """Parcela model."""
 
-from sqlalchemy import Enum, String
+from sqlalchemy import Boolean, Enum, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.database import Base
@@ -17,4 +17,9 @@ class Parcela(Base):
     predio: Mapped[Predio] = mapped_column(Enum(Predio), nullable=False)
     categoria: Mapped[CategoriaParcela | None] = mapped_column(
         Enum(CategoriaParcela), nullable=True
+    )
+    # Guardería only: whether cuota social is included in the parcel charge.
+    # Defaults to OFF — the operator ticks it explicitly (CS-04).
+    cuotaSocialIncluida: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
     )

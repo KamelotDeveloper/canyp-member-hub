@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { cn } from "@/lib/utils";
+import { CLIENT_BUILD } from "@/lib/canyp/build-flags";
 import { useSettings, useUpdateSettings } from "@/lib/canyp/queries";
 import type { DataMode } from "@/lib/canyp/types";
 
@@ -24,7 +25,7 @@ export function DataModeWizard() {
   const { data, isLoading, isError } = useSettings();
   const updateSettings = useUpdateSettings();
   const [dismissed, setDismissed] = useState(false);
-  const [mode, setMode] = useState<DataMode>("local");
+  const [mode, setMode] = useState<DataMode>(CLIENT_BUILD ? "remoto" : "local");
   const [url, setUrl] = useState("");
 
   if (isLoading || isError || !data || data.configured) return null;
@@ -33,7 +34,9 @@ export function DataModeWizard() {
 
   function guardar() {
     updateSettings.mutate(
-      { dataMode: mode, ...(mode === "remoto" ? { databaseUrl: url.trim() } : {}) },
+      CLIENT_BUILD
+        ? { dataMode: "remoto", databaseUrl: url.trim() }
+        : { dataMode: mode, ...(mode === "remoto" ? { databaseUrl: url.trim() } : {}) },
       {
         onSuccess: () => {
           setDismissed(true);
@@ -56,22 +59,33 @@ export function DataModeWizard() {
           </DialogDescription>
         </DialogHeader>
 
-        <RadioGroup value={mode} onValueChange={(v) => setMode(v as DataMode)} className="gap-3">
-          <ModeOption
-            selected={mode === "local"}
-            icon={<Database className="size-4 text-muted-foreground" />}
-            title="Local"
-            description="Funciona sin internet. Los datos quedan solo en esta PC."
-          />
-          <ModeOption
-            selected={mode === "remoto"}
-            icon={<Cloud className="size-4 text-sky-600" />}
-            title="Remoto"
-            description="Base compartida en Supabase: varias PCs ven lo mismo."
-          />
-        </RadioGroup>
+        {CLIENT_BUILD ? (
+          <RadioGroup value="remoto" className="gap-3">
+            <ModeOption
+              selected
+              icon={<Cloud className="size-4 text-sky-600" />}
+              title="Remoto"
+              description="Base compartida en Supabase: varias PCs ven lo mismo."
+            />
+          </RadioGroup>
+        ) : (
+          <RadioGroup value={mode} onValueChange={(v) => setMode(v as DataMode)} className="gap-3">
+            <ModeOption
+              selected={mode === "local"}
+              icon={<Database className="size-4 text-muted-foreground" />}
+              title="Local"
+              description="Funciona sin internet. Los datos quedan solo en esta PC."
+            />
+            <ModeOption
+              selected={mode === "remoto"}
+              icon={<Cloud className="size-4 text-sky-600" />}
+              title="Remoto"
+              description="Base compartida en Supabase: varias PCs ven lo mismo."
+            />
+          </RadioGroup>
+        )}
 
-        {mode === "remoto" && (
+        {(CLIENT_BUILD || mode === "remoto") && (
           <div className="space-y-2">
             <Label htmlFor="wizard-db-url">Cadena de conexión</Label>
             <Input

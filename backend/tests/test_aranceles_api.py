@@ -3,7 +3,7 @@
 from datetime import date
 
 from backend.models.arancel import Arancel
-from backend.models.enums import Area, Predio
+from backend.models.enums import Area, ConceptoCobro, Predio
 
 
 def _seed_arancel(db):
@@ -204,3 +204,66 @@ class TestArancelAuditColumns:
         body = resp.json()
         assert body["createdBy"] is None
         assert body["updatedBy"] is None
+
+
+class TestConceptoReadOnly:
+    """GET /api/aranceles exposes the catalog `concepto` (CBM-01, PR 7).
+
+    The frontend has to know which row prices the cuota social and which one
+    prices a servicio charge. Exposing `concepto` is the only way to do that
+    without string-matching the row name, and it must stay OUTPUT-ONLY: the
+    concept is owned by the cobro service, never by a write endpoint.
+    """
+
+    def test_list_serves_the_concept_of_every_row(self, test_client, test_db):
+        test_db.add_all(
+            [
+                Arancel(
+                    id="a_area",
+                    nombre="Cuota Balseros Embalse",
+                    area=Area.BALSEROS,
+                    predio=Predio.EMBALSE,
+                    monto=130000.0,
+                    vigenteDesde=date(2025, 1, 1),
+                    historico=[],
+                    concepto=ConceptoCobro.AREA,
+                ),
+                Arancel(
+                    id="a_cuota",
+                    nombre="Cuota social",
+                    area=Area.BALSEROS,
+                    predio=Predio.EMBALSE,
+                    monto=12000.0,
+                    vigenteDesde=date(2025, 1, 1),
+                    historico=[],
+                    concepto=ConceptoCobro.CUOTA_SOCIAL,
+                ),
+            ]
+        )
+        test_db.commit()
+
+        resp = test_client.get("/api/aranceles")
+        assert resp.status_code == 200
+        by_id = {row["id"]: row for row in resp.json()}
+        assert by_id["a_area"]["concepto"] == "area"
+        assert by_id["a_cuota"]["concepto"] == "cuota social"
+
+    def test_create_ignores_a_client_supplied_concepto(self, test_client, test_db):
+        """A POST must not be able to invent a catalog concept (CBM-01)."""
+        resp = test_client.post(
+            "/api/aranceles",
+            json={
+                "id": "a_injected",
+                "nombre": "Inventado",
+                "area": "Balseros",
+                "predio": "Embalse",
+                "monto": 1.0,
+                "vigenteDesde": "2025-06-01",
+                "historico": [],
+                "concepto": "recargo",
+            },
+        )
+        assert resp.status_code == 201
+        a = test_db.query(Arancel).filter(Arancel.id == "a_injected").first()
+        assert a.concepto == ConceptoCobro.AREA
+        assert resp.json()["concepto"] == "area"

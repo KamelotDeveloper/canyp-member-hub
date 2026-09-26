@@ -23,6 +23,7 @@ import {
   previewImport,
   setBatchEstado,
   setBatchVencimiento,
+  updateMembresiaVencimiento,
   updateSettings,
 } from "../api";
 import type {
@@ -113,6 +114,8 @@ describe("apiFetch", () => {
         direccion: "Calle 1",
         fechaAlta: "2024-01-01",
         activo: true,
+        numeroSocio: null,
+        tieneFoto: false,
       },
     ];
     vi.stubGlobal(
@@ -152,6 +155,8 @@ describe("getSocios / getParcelas", () => {
         direccion: "Calle 1",
         fechaAlta: "2024-01-01",
         activo: true,
+        numeroSocio: null,
+        tieneFoto: false,
       },
     ];
     vi.stubGlobal(
@@ -268,22 +273,117 @@ describe("unidades compartidas API (PR 3)", () => {
     expect(JSON.parse(init.body as string)).toEqual({ vencimiento: "2027-01-01" });
   });
 
-  it("buildUnitPago sends one arancel item + all membresiaIds (RQ 14)", () => {
+  it("setBatchVencimiento envía el concepto como query (area | cuota social)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          parcelaId: "p1",
+          vencimiento: "2027-01-01",
+          concepto: "area",
+          actualizadas: 4,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await setBatchVencimiento("p1", "2027-01-01", "cuota social");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/parcelas/p1/vencimiento?concepto=cuota%20social");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({ vencimiento: "2027-01-01" });
+  });
+
+  it("updateMembresiaVencimiento PUTs to /membresias/{id}/vencimiento", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: "m1", vencimiento: "2027-01-01" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateMembresiaVencimiento("m1", "2027-01-01");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/membresias/m1/vencimiento");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({ vencimiento: "2027-01-01" });
+  });
+
+  it("buildUnitPago sends one item per concept + all membresiaIds (RQ 14 / CBM-02)", () => {
     const pago = buildUnitPago({
       titular: { socioId: "a1", membresiaId: "m1" },
       integrantes: [{ membresiaId: "m2" }, { membresiaId: "m3" }],
       medio: "Transferencia",
       items: [
-        { arancelId: "ar1", arancelNombre: "Mensualidad", montoAplicado: 100, membresiaId: "m1" },
+        {
+          arancelId: "ar1",
+          arancelNombre: "Cuota Balsa",
+          montoAplicado: 130000,
+          membresiaId: "m1",
+          concepto: "area",
+        },
+        {
+          arancelId: "ar2",
+          arancelNombre: "Cuota social",
+          montoAplicado: 36000,
+          membresiaId: "mc1",
+          concepto: "cuota social",
+        },
+        {
+          arancelId: "ar3",
+          arancelNombre: "Recargo",
+          montoAplicado: 5000,
+          membresiaId: "m1",
+          concepto: "recargo",
+        },
       ],
     });
     expect(pago).not.toBeNull();
     expect(pago!.socioId).toBe("a1");
-    // Un solo ítem: el arancel de la unidad (no por integrante).
-    expect(pago!.items).toHaveLength(1);
+    expect(pago!.items).toHaveLength(3);
+    expect(pago!.items.map((i) => i.concepto)).toEqual(["area", "cuota social", "recargo"]);
     // Renueva a TODOS los miembros (titular + integrantes).
     expect(pago!.membresiaIds).toEqual(["m1", "m2", "m3"]);
-    expect(pago!.total).toBe(100);
+  });
+
+  it("buildUnitPago no invents a total: el servidor es la autoridad (PAG-01)", () => {
+    const pago = buildUnitPago({
+      titular: { socioId: "a1", membresiaId: "m1" },
+      integrantes: [],
+      medio: "Transferencia",
+      items: [
+        {
+          arancelId: "ar1",
+          arancelNombre: "Cuota Balsa",
+          montoAplicado: 130000,
+          membresiaId: "m1",
+          concepto: "area",
+        },
+      ],
+    });
+    // El importe del cliente es una pista por ítem; el total lo calcula el server.
+    expect(pago!.total).toBeUndefined();
+  });
+
+  it("buildUnitPago sends the chosen fecha and defaults to today (PAG-02)", async () => {
+    const conFecha = buildUnitPago({
+      titular: { socioId: "a1", membresiaId: "m1" },
+      integrantes: [],
+      medio: "Efectivo",
+      fecha: "2026-03-15",
+      items: [{ arancelId: "ar1", arancelNombre: "X", montoAplicado: 10, membresiaId: "m1" }],
+    });
+    expect(conFecha!.fecha).toBe("2026-03-15");
+
+    const sinFecha = buildUnitPago({
+      titular: { socioId: "a1", membresiaId: "m1" },
+      integrantes: [],
+      medio: "Efectivo",
+      items: [{ arancelId: "ar1", arancelNombre: "X", montoAplicado: 10, membresiaId: "m1" }],
+    });
+    // Sin fecha explícita, el default vive en createPago (hoy).
+    expect(sinFecha!.fecha).toBeUndefined();
   });
 
   it("buildUnitPago returns null without a titular or without items", () => {
@@ -352,6 +452,41 @@ describe("unidades compartidas API (PR 3)", () => {
     expect(body.items.map((i: { membresiaId: string }) => i.membresiaId)).toEqual(["m1", "m2"]);
     expect(body.membresiaIds).toEqual(["m1", "m2"]);
     expect(body.id).toBeUndefined();
+  });
+
+  it("createPago sends the chosen fecha (PAG-02)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response("null", { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createPago({
+      socioId: "a1",
+      medio: "Efectivo",
+      fecha: "2026-03-15",
+      items: [{ arancelId: "ar1", membresiaId: "m1", montoAplicado: 10, arancelNombre: "X" }],
+    });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string).fecha).toBe("2026-03-15");
+  });
+
+  it("createPago defaults fecha to today when the caller omits it", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response("null", { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createPago({
+      socioId: "a1",
+      medio: "Efectivo",
+      items: [{ arancelId: "ar1", membresiaId: "m1", montoAplicado: 10, arancelNombre: "X" }],
+    });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string).fecha).toBe(new Date().toISOString().slice(0, 10));
   });
 });
 
