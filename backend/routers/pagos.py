@@ -8,7 +8,9 @@ from sqlalchemy.orm import Session
 
 from backend.database import get_db
 from backend.models.pago import Pago, PagoItem
+from backend.models.usuario import Usuario
 from backend.schemas.pago import PagoCreate, PagoResponse, PagoUpdate
+from backend.security import get_current_user
 from backend.services.numeracion import siguiente_numero_comprobante
 from backend.services.renovacion import renovar_membresias
 
@@ -36,6 +38,8 @@ def _pago_response(db: Session, pago: Pago) -> dict:
             for item in items
         ],
         "membresiaIds": membresia_ids,
+        "createdBy": pago.created_by,
+        "updatedBy": pago.updated_by,
     }
 
 
@@ -71,9 +75,17 @@ def get_pago(pago_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=dict, status_code=201)
-def create_pago(data: PagoCreate, db: Session = Depends(get_db)):
-    """Create a payment (uses services for numbering + renewal)."""
-    pago_id = f"p{uuid.uuid4().hex[:8]}"
+def create_pago(
+    data: PagoCreate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
+):
+    """Create a payment (uses services for numbering + renewal).
+
+    The pago id is always server-generated (uuid4 hex, collision-safe across
+    concurrent clients in remoto mode); any client-sent id is ignored.
+    """
+    pago_id = f"p{uuid.uuid4().hex}"
     numero = siguiente_numero_comprobante(db)
 
     pago = Pago(
@@ -84,6 +96,7 @@ def create_pago(data: PagoCreate, db: Session = Depends(get_db)):
         medio=data.medio,
         total=data.total,
         nota=data.nota,
+        created_by=current_user.id,
     )
     db.add(pago)
     db.flush()  # get pago.id available for PagoItem FK
@@ -93,7 +106,7 @@ def create_pago(data: PagoCreate, db: Session = Depends(get_db)):
 
     # Build PagoItems from the client's typed items
     for item in data.items or []:
-        item_id = f"pi{uuid.uuid4().hex[:8]}"
+        item_id = f"pi{uuid.uuid4().hex}"
         pago_item = PagoItem(
             id=item_id,
             pagoId=pago_id,

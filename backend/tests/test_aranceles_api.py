@@ -106,3 +106,101 @@ class TestUpdateMonto:
     def test_update_monto_nonexistent_returns_404(self, test_client):
         resp = test_client.put("/api/aranceles/doesnotexist/monto", json={"monto": 100.0})
         assert resp.status_code == 404
+
+
+class TestUpdateArancel:
+    """PUT /api/aranceles/{id} — full edit of an arancel."""
+
+    def test_update_non_monto_fields_only(self, test_client, test_db):
+        """Editing nombre/area/predio must NOT touch historico."""
+        _seed_arancel(test_db)
+        resp = test_client.put(
+            "/api/aranceles/a1",
+            json={"nombre": "Cuota Balseros Embalse XL", "predio": "Almafuerte"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["nombre"] == "Cuota Balseros Embalse XL"
+        # No monto change -> historico untouched, vigenteDesde untouched
+        assert body["historico"] == []
+        assert body["vigenteDesde"] == "2025-01-01"
+        assert body["monto"] == 15000.0
+
+    def test_update_with_monto_preserves_historico(self, test_client, test_db):
+        """Changing the monto pushes the old value to historico."""
+        _seed_arancel(test_db)
+        resp = test_client.put(
+            "/api/aranceles/a1",
+            json={"nombre": "Cuota Renombrada", "monto": 22000.0},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["nombre"] == "Cuota Renombrada"
+        assert body["monto"] == 22000.0
+        assert body["historico"] == [{"monto": 15000.0, "vigenteDesde": "2025-01-01"}]
+        assert body["vigenteDesde"] == str(date.today())
+
+    def test_update_nonexistent_returns_404(self, test_client):
+        resp = test_client.put(
+            "/api/aranceles/doesnotexist",
+            json={"nombre": "X"},
+        )
+        assert resp.status_code == 404
+
+
+class TestDeleteArancel:
+    """DELETE /api/aranceles/{id} — remove an arancel."""
+
+    def test_delete_returns_204_and_removes_row(self, test_client, test_db):
+        _seed_arancel(test_db)
+        resp = test_client.delete("/api/aranceles/a1")
+        assert resp.status_code == 204
+        assert test_db.query(Arancel).filter(Arancel.id == "a1").first() is None
+
+    def test_delete_nonexistent_returns_404(self, test_client):
+        resp = test_client.delete("/api/aranceles/doesnotexist")
+        assert resp.status_code == 404
+
+
+class TestArancelAuditColumns:
+    """Audit (D7): created_by on create, updated_by on update + /monto sub-update."""
+
+    def test_create_sets_created_by(self, test_client, current_user_id):
+        resp = test_client.post(
+            "/api/aranceles",
+            json={
+                "id": "aAud",
+                "nombre": "Cuota Audit",
+                "area": "Cabañeros",
+                "predio": "Almafuerte",
+                "monto": 10000.0,
+                "vigenteDesde": "2025-06-01",
+                "historico": [],
+            },
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["createdBy"] == current_user_id
+        assert body["updatedBy"] is None
+
+    def test_update_sets_updated_by(self, test_client, test_db, current_user_id):
+        _seed_arancel(test_db)
+        resp = test_client.put("/api/aranceles/a1", json={"nombre": "Renombrado"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["updatedBy"] == current_user_id
+
+    def test_update_monto_sets_updated_by(self, test_client, test_db, current_user_id):
+        _seed_arancel(test_db)
+        resp = test_client.put("/api/aranceles/a1/monto", json={"monto": 16000.0})
+        assert resp.status_code == 200
+        assert resp.json()["updatedBy"] == current_user_id
+
+    def test_pre_feature_rows_are_null(self, test_client, test_db):
+        """Arancel inserted outside the router serializes null audit ids."""
+        _seed_arancel(test_db)
+        resp = test_client.get("/api/aranceles/a1")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["createdBy"] is None
+        assert body["updatedBy"] is None

@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import {
   Outlet,
   Link,
@@ -7,11 +7,14 @@ import {
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
+import { TOKEN_KEY, clearToken, logout } from "../lib/canyp/api";
 import { AppShell } from "../components/canyp/AppShell";
+import { DataModeWizard } from "../components/canyp/DataModeWizard";
+import { LoginGate } from "../components/canyp/LoginGate";
 import { Toaster } from "../components/ui/sonner";
 
 function NotFoundComponent() {
@@ -148,11 +151,55 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <AppShell>
-        {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-        <Outlet />
-      </AppShell>
-      <Toaster position="top-right" richColors />
+      {/* Wizard de primer uso: aparece solo mientras no haya modo configurado. */}
+      <DataModeWizard />
+      <AuthGate />
     </QueryClientProvider>
+  );
+}
+
+/**
+ * Login gate (D12): guard inline, sin redirect por ruta. El token vive en
+ * localStorage y se lee client-only en un useEffect (SSR-safe: el primer
+ * render, en el servidor, es `token === null` → LoginGate).
+ */
+function AuthGate() {
+  const queryClient = useQueryClient();
+  const router = useRouter();
+  const [token, setToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    setToken(window.localStorage.getItem(TOKEN_KEY));
+  }, []);
+
+  if (token) {
+    return (
+      <>
+        <AppShell
+          onLogout={() => {
+            // Cerrar sesión: avisa al backend, limpia el token y vuelve al login.
+            void logout();
+            clearToken();
+            setToken(null);
+            queryClient.clear();
+          }}
+        >
+          {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
+          <Outlet />
+        </AppShell>
+        <Toaster position="top-right" richColors />
+      </>
+    );
+  }
+
+  return (
+    <LoginGate
+      onAuthenticated={(newToken) => {
+        setToken(newToken);
+        // Las rutas montadas esperan datos autenticados; forzar refetch con token.
+        queryClient.invalidateQueries();
+        router.invalidate();
+      }}
+    />
   );
 }

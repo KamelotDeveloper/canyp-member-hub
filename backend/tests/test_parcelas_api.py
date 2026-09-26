@@ -114,3 +114,96 @@ class TestParcelasCRUD:
         resp = test_client.get("/api/parcelas")
         assert resp.status_code == 200
         assert len(resp.json()) == 2
+
+
+class TestParcelaCascadeDelete:
+    """Deleting a parcela must also remove its associated memberships."""
+
+    def _setup_parcela_with_memberships(self, test_client):
+        """Create a parcela, two socios, and two memberships linked to it."""
+        test_client.post("/api/parcelas", json=PARCELA_PAYLOAD)
+        test_client.post(
+            "/api/socios",
+            json={
+                "id": "sDel1",
+                "nombre": "Titular Uno",
+                "dni": "10000001",
+                "telefono": "",
+                "email": "",
+                "direccion": "",
+                "activo": True,
+            },
+        )
+        test_client.post(
+            "/api/socios",
+            json={
+                "id": "sDel2",
+                "nombre": "Integrante Dos",
+                "dni": "10000002",
+                "telefono": "",
+                "email": "",
+                "direccion": "",
+                "activo": True,
+            },
+        )
+        # Create memberships linked to the parcela
+        test_client.post(
+            "/api/membresias",
+            json={
+                "id": "mDel1",
+                "socioId": "sDel1",
+                "area": "Cabañeros",
+                "predio": "Almafuerte",
+                "estado": "activa",
+                "vencimiento": "2026-12-31",
+                "rol": "Titular",
+                "parcelaId": "p001",
+            },
+        )
+        test_client.post(
+            "/api/membresias",
+            json={
+                "id": "mDel2",
+                "socioId": "sDel2",
+                "area": "Cabañeros",
+                "predio": "Almafuerte",
+                "estado": "activa",
+                "vencimiento": "2026-12-31",
+                "rol": "Integrante",
+                "parcelaId": "p001",
+            },
+        )
+
+    def test_delete_parcela_removes_memberships(self, test_client):
+        """DELETE /api/parcelas/{id} also deletes all linked memberships."""
+        self._setup_parcela_with_memberships(test_client)
+        # Confirm memberships exist
+        resp = test_client.get("/api/membresias", params={"predio": "Almafuerte"})
+        assert resp.status_code == 200
+        assert len(resp.json()) == 2
+
+        # Delete the parcela
+        resp = test_client.delete("/api/parcelas/p001")
+        assert resp.status_code == 204
+
+        # Parcela is gone
+        resp = test_client.get("/api/parcelas/p001")
+        assert resp.status_code == 404
+
+        # Memberships linked to that parcela are also gone
+        resp = test_client.get("/api/membresias", params={"predio": "Almafuerte"})
+        assert resp.status_code == 200
+        remaining = [m for m in resp.json() if m.get("parcelaId") == "p001"]
+        assert remaining == []
+
+    def test_delete_parcela_preserves_socios(self, test_client):
+        """DELETE /api/parcelas/{id} removes memberships but NOT the socios themselves."""
+        self._setup_parcela_with_memberships(test_client)
+        resp = test_client.delete("/api/parcelas/p001")
+        assert resp.status_code == 204
+
+        # Socios still exist
+        resp = test_client.get("/api/socios/sDel1")
+        assert resp.status_code == 200
+        resp = test_client.get("/api/socios/sDel2")
+        assert resp.status_code == 200

@@ -17,7 +17,9 @@ class NotificacionBase(OrmConfig, BaseModel):
 
 
 class NotificacionCreate(NotificacionBase):
-    id: str
+    # Server-generated (uuid4 hex) — a client-sent id is ignored. Required to be
+    # optional so remoto/Postgres never collides on client-generated ids.
+    id: str | None = None
 
 
 class NotificacionUpdate(BaseModel):

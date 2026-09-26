@@ -163,3 +163,21 @@ class TestArancelCreateCategoria:
         a = test_db.query(Arancel).filter(Arancel.id == "a_persist").first()
         assert a is not None
         assert a.categoria == CategoriaParcela.CHICA
+
+    def test_create_sets_created_by(self, test_client, current_user_id):
+        resp = test_client.post(
+            "/api/aranceles",
+            json={
+                "id": "a_audit",
+                "nombre": "Cuota Audit Categoría",
+                "area": "Cabañeros",
+                "predio": "Almafuerte",
+                "monto": 13000.0,
+                "categoria": "Especial",
+                "vigenteDesde": "2025-06-01",
+                "historico": [],
+            },
+        )
+        assert resp.status_code == 201
+        assert resp.json()["createdBy"] == current_user_id
+        assert resp.json()["updatedBy"] is None

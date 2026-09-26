@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
-import { Anchor, Plus, Printer } from "lucide-react";
+import { Plus, Printer } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -31,6 +32,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { PageHeader } from "@/components/canyp/AppShell";
+import { ExportButton } from "@/components/export";
+import { SocioCombobox } from "@/components/canyp/SocioCombobox";
 import { estadoVisual, formatARS, formatFecha } from "@/lib/canyp/utils";
 import { itemsParaMembresiasConParcelas, esMembresiaCobrable } from "@/lib/canyp/unidad-helpers";
 import {
@@ -40,9 +43,10 @@ import {
   usePagos,
   useCreatePago,
   useParcelas,
+  useUsuarios,
 } from "@/lib/canyp/queries";
 import { EstadoBadge } from "@/components/canyp/EstadoBadge";
-import type { Membresia, Pago, Socio } from "@/lib/canyp/types";
+import type { Membresia, Pago, Socio, Usuario } from "@/lib/canyp/types";
 
 export const Route = createFileRoute("/pagos")({
   validateSearch: (s: Record<string, unknown>): { nuevo?: string; socioId?: string } => ({
@@ -75,9 +79,18 @@ function PagosPage() {
   const { data: aranceles = [] } = useAranceles();
   const { data: pagos = [] } = usePagos();
   const { data: parcelas = [] } = useParcelas();
+  const { data: usuarios = [] } = useUsuarios();
   const createPago = useCreatePago();
 
   const socioMap = useMemo(() => new Map(socios.map((s: Socio) => [s.id, s])), [socios]);
+  const usuarioMap = useMemo(
+    () => new Map(usuarios.map((u: Usuario) => [u.id, u.username])),
+    [usuarios],
+  );
+
+  /** Usuario que cobró el pago; "sin operador" para pagos previos al multi-usuario. */
+  const operadorLabel = (createdBy?: string | null) =>
+    createdBy ? (usuarioMap.get(createdBy) ?? "sin operador") : "sin operador";
 
   const [open, setOpen] = useState(false);
   const [socioId, setSocioId] = useState<string>("");
@@ -158,34 +171,33 @@ function PagosPage() {
         title="Pagos y comprobantes"
         subtitle="Registrá un cobro y emití el comprobante con el detalle de aranceles."
         actions={
-          <Button
-            onClick={() => {
-              setSocioId("");
-              setSeleccion([]);
-              setOpen(true);
-            }}
-          >
-            <Plus className="mr-2 size-4" /> Registrar pago
-          </Button>
+          <>
+            <ExportButton resource="pagos" label="pagos" />
+            <Button
+              onClick={() => {
+                setSocioId("");
+                setSeleccion([]);
+                setOpen(true);
+              }}
+            >
+              <Plus className="mr-2 size-4" /> Registrar pago
+            </Button>
+          </>
         }
       />
 
       <Card className="mb-4 flex flex-wrap items-end gap-3 p-4">
         <div className="min-w-[220px] flex-1">
           <Label className="text-xs">Socio</Label>
-          <Select value={fSocio} onValueChange={setFSocio}>
-            <SelectTrigger className="mt-1.5">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="todos">Todos los socios</SelectItem>
-              {socios.map((s: Socio) => (
-                <SelectItem key={s.id} value={s.id}>
-                  {s.nombre}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <SocioCombobox
+            className="mt-1.5"
+            value={fSocio}
+            onChange={setFSocio}
+            socios={socios}
+            allowEmpty
+            emptyLabel="Todos los socios"
+            placeholder="Buscar socio..."
+          />
         </div>
         <div className="w-[170px]">
           <Label className="text-xs">Área</Label>
@@ -222,6 +234,7 @@ function PagosPage() {
               <TableHead>Socio</TableHead>
               <TableHead>Detalle</TableHead>
               <TableHead>Medio</TableHead>
+              <TableHead>Operador</TableHead>
               <TableHead className="text-right">Total</TableHead>
               <TableHead className="text-right">Acciones</TableHead>
             </TableRow>
@@ -236,6 +249,7 @@ function PagosPage() {
                   {p.items.map((i) => i.nombre).join(" + ")}
                 </TableCell>
                 <TableCell className="text-xs">{p.medio}</TableCell>
+                <TableCell className="text-xs">{operadorLabel(p.createdBy)}</TableCell>
                 <TableCell className="text-right font-semibold tabular-nums">
                   {formatARS(p.total)}
                 </TableCell>
@@ -248,7 +262,7 @@ function PagosPage() {
             ))}
             {historico.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={8} className="py-10 text-center text-sm text-muted-foreground">
                   No hay comprobantes con estos filtros.
                 </TableCell>
               </TableRow>
@@ -269,24 +283,16 @@ function PagosPage() {
           <div className="space-y-4">
             <div>
               <Label>Socio</Label>
-              <Select
+              <SocioCombobox
+                className="mt-1.5"
+                placeholder="Seleccionar socio"
                 value={socioId}
-                onValueChange={(v) => {
+                onChange={(v) => {
                   setSocioId(v);
                   setSeleccion([]);
                 }}
-              >
-                <SelectTrigger className="mt-1.5">
-                  <SelectValue placeholder="Seleccionar socio" />
-                </SelectTrigger>
-                <SelectContent>
-                  {socios.map((s: Socio) => (
-                    <SelectItem key={s.id} value={s.id}>
-                      {s.nombre} — {s.dni}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                socios={socios}
+              />
             </div>
 
             {socioId && (
@@ -386,67 +392,92 @@ function PagosPage() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Comprobante emitido</DialogTitle>
+            <DialogDescription>
+              Revisá el detalle y usá Imprimir para emitirlo.
+            </DialogDescription>
           </DialogHeader>
-          {comprobante && (
-            <div className="rounded-lg border border-border bg-card p-5">
-              <div className="flex items-start justify-between border-b border-border pb-3">
-                <div className="flex items-center gap-2">
-                  <span className="rounded bg-primary p-1.5 text-primary-foreground">
-                    <Anchor className="size-4" />
-                  </span>
-                  <div>
-                    <p className="text-sm font-bold">Club Náutico CANYP</p>
-                    <p className="text-[11px] text-muted-foreground">Comprobante de pago</p>
-                  </div>
-                </div>
-                <div className="text-right text-[11px]">
-                  <p className="font-mono font-semibold">{comprobante.numero}</p>
-                  <p className="text-muted-foreground">{formatFecha(comprobante.fecha)}</p>
-                </div>
-              </div>
-              <div className="py-3 text-xs">
-                <p className="text-muted-foreground">Socio</p>
-                <p className="text-sm font-semibold">{socioMap.get(comprobante.socioId)?.nombre}</p>
-                <p className="text-muted-foreground">
-                  DNI {socioMap.get(comprobante.socioId)?.dni}
-                </p>
-              </div>
-              <table className="w-full text-sm">
-                <tbody>
-                  {comprobante.items.map((i) => (
-                    <tr key={i.arancelId} className="border-t border-border">
-                      <td className="py-2">{i.nombre}</td>
-                      <td className="py-2 text-right tabular-nums">{formatARS(i.monto)}</td>
-                    </tr>
-                  ))}
-                  <tr className="border-t-2 border-foreground/20">
-                    <td className="py-2 font-bold">Total</td>
-                    <td className="py-2 text-right font-bold tabular-nums">
-                      {formatARS(comprobante.total)}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-              {comprobante.nota && (
-                <p className="mt-3 rounded-md bg-secondary p-2 text-xs whitespace-pre-wrap">
-                  {comprobante.nota}
-                </p>
-              )}
-              <p className="mt-3 text-[11px] text-muted-foreground">
-                Abonado con {comprobante.medio}
-              </p>
-            </div>
-          )}
+          {comprobante && <ComprobanteView comprobante={comprobante} socioMap={socioMap} />}
           <DialogFooter>
             <Button variant="outline" onClick={() => setComprobante(null)}>
               Cerrar
             </Button>
-            <Button onClick={() => toast.success("Comprobante enviado a imprimir")}>
+            <Button
+              onClick={() => {
+                window.print();
+                toast.success("Comprobante enviado a imprimir");
+              }}
+            >
               <Printer className="mr-2 size-4" /> Imprimir
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {comprobante &&
+        createPortal(
+          <div className="print-root">
+            <ComprobanteView comprobante={comprobante} socioMap={socioMap} />
+          </div>,
+          document.body,
+        )}
     </>
+  );
+}
+
+/** Comprobante impreso: detalle de ítems + total. Reutilizado por el Dialog y el print-root. */
+function ComprobanteView({
+  comprobante,
+  socioMap,
+}: {
+  comprobante: Pago;
+  socioMap: Map<string, Socio>;
+}) {
+  return (
+    <div className="print-area rounded-lg border border-border bg-card p-5">
+      <div className="flex items-start justify-between border-b border-border pb-3">
+        <div className="flex items-center gap-2">
+          <img
+            src="/CANYP_Almafuerte_logo.svg?v=3"
+            alt="CANYP logo"
+            className="size-9 object-contain"
+          />
+          <div>
+            <p className="text-sm font-bold">Club Náutico CANYP</p>
+            <p className="text-[11px] text-muted-foreground">Comprobante de pago</p>
+          </div>
+        </div>
+        <div className="text-right text-[11px]">
+          <p className="font-mono font-semibold">{comprobante.numero}</p>
+          <p className="text-muted-foreground">{formatFecha(comprobante.fecha)}</p>
+        </div>
+      </div>
+      <div className="py-3 text-xs">
+        <p className="text-muted-foreground">Socio</p>
+        <p className="text-sm font-semibold">{socioMap.get(comprobante.socioId)?.nombre}</p>
+        <p className="text-muted-foreground">DNI {socioMap.get(comprobante.socioId)?.dni}</p>
+      </div>
+      <table className="w-full text-sm">
+        <tbody>
+          {comprobante.items.map((i) => (
+            <tr key={i.arancelId} className="border-t border-border">
+              <td className="py-2">{i.nombre}</td>
+              <td className="py-2 text-right tabular-nums">{formatARS(i.monto)}</td>
+            </tr>
+          ))}
+          <tr className="border-t-2 border-foreground/20">
+            <td className="py-2 font-bold">Total</td>
+            <td className="py-2 text-right font-bold tabular-nums">
+              {formatARS(comprobante.total)}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      {comprobante.nota && (
+        <p className="mt-3 rounded-md bg-secondary p-2 text-xs whitespace-pre-wrap">
+          {comprobante.nota}
+        </p>
+      )}
+      <p className="mt-3 text-[11px] text-muted-foreground">Abonado con {comprobante.medio}</p>
+    </div>
   );
 }

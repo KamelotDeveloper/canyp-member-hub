@@ -22,3 +22,6 @@ class Arancel(Base):
     )
     vigenteDesde: Mapped[date] = mapped_column(Date, nullable=False)
     historico: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # Audit columns (D7): plain nullable string ids, NO DB FK.
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
+    updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)

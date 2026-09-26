@@ -17,6 +17,7 @@ class MembresiaBase(OrmConfig, BaseModel):
     detalle: str | None = None
     rol: RolMembresia | None = None
     parcelaId: str | None = None
+    arancelId: str | None = None
 
 
 class MembresiaCreate(MembresiaBase):
@@ -34,7 +35,11 @@ class MembresiaUpdate(BaseModel):
     detalle: str | None = None
     rol: RolMembresia | None = None
     parcelaId: str | None = None
+    arancelId: str | None = None
 
 
 class MembresiaResponse(MembresiaBase):
     id: str
+    # Audit columns (D7): null for rows created before multi-user auth.
+    created_by: str | None = None
+    updated_by: str | None = None

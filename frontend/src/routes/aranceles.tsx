@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { History, Plus } from "lucide-react";
+import { History, Pencil, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Select,
   SelectContent,
@@ -30,10 +40,16 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { PageHeader } from "@/components/canyp/AppShell";
+import { ExportButton } from "@/components/export";
 import { AreaBadge } from "@/components/canyp/AreaBadge";
 import { formatARS, formatFecha } from "@/lib/canyp/utils";
-import { useAranceles, useCreateArancel, useUpdateArancelMonto } from "@/lib/canyp/queries";
-import type { Area, Predio } from "@/lib/canyp/types";
+import {
+  useAranceles,
+  useCreateArancel,
+  useDeleteArancel,
+  useUpdateArancel,
+} from "@/lib/canyp/queries";
+import type { Area, CategoriaParcela, Predio } from "@/lib/canyp/types";
 
 export const Route = createFileRoute("/aranceles")({
   head: () => ({
@@ -53,11 +69,26 @@ export const Route = createFileRoute("/aranceles")({
   component: ArancelesPage,
 });
 
+/** Estado del dialog de edición: copia editable de TODOS los campos. */
+interface EditarEstado {
+  id: string;
+  nombre: string;
+  area: Area;
+  predio: Predio;
+  monto: string;
+  categoria: CategoriaParcela | null;
+  vigenteDesde: string;
+}
+
+const CATEGORIAS: CategoriaParcela[] = ["Chica", "Mediana", "Especial", "Grande"];
+
 function ArancelesPage() {
   const { data: aranceles = [], isLoading } = useAranceles();
   const createMutation = useCreateArancel();
-  const updateMontoMutation = useUpdateArancelMonto();
-  const [editar, setEditar] = useState<{ id: string; nombre: string; monto: string } | null>(null);
+  const updateMutation = useUpdateArancel();
+  const deleteMutation = useDeleteArancel();
+  const [editar, setEditar] = useState<EditarEstado | null>(null);
+  const [eliminar, setEliminar] = useState<string | null>(null);
   const [historial, setHistorial] = useState<string | null>(null);
   const [nuevoOpen, setNuevoOpen] = useState(false);
   const [nuevo, setNuevo] = useState<{ nombre: string; area: Area; predio: Predio; monto: string }>(
@@ -70,6 +101,7 @@ function ArancelesPage() {
   );
 
   const arancelHist = aranceles.find((a) => a.id === historial);
+  const arancelEliminar = aranceles.find((a) => a.id === eliminar);
 
   if (isLoading) {
     return (
@@ -88,9 +120,12 @@ function ArancelesPage() {
         title="Aranceles"
         subtitle="Montos vigentes por área. Al cargar un nuevo monto, el anterior queda como histórico."
         actions={
-          <Button onClick={() => setNuevoOpen(true)}>
-            <Plus className="mr-2 size-4" /> Nuevo ítem de arancel
-          </Button>
+          <>
+            <ExportButton resource="aranceles" label="aranceles" />
+            <Button onClick={() => setNuevoOpen(true)}>
+              <Plus className="mr-2 size-4" /> Nuevo ítem de arancel
+            </Button>
+          </>
         }
       />
 
@@ -101,6 +136,7 @@ function ArancelesPage() {
               <TableHead>Ítem</TableHead>
               <TableHead>Área</TableHead>
               <TableHead>Predio</TableHead>
+              <TableHead>Categoría</TableHead>
               <TableHead>Vigente desde</TableHead>
               <TableHead className="text-right">Monto vigente</TableHead>
               <TableHead className="text-right">Acciones</TableHead>
@@ -114,6 +150,7 @@ function ArancelesPage() {
                   <AreaBadge area={a.area} />
                 </TableCell>
                 <TableCell className="text-xs">{a.predio}</TableCell>
+                <TableCell className="text-xs">{a.categoria ?? "—"}</TableCell>
                 <TableCell className="text-xs tabular-nums">
                   {formatFecha(a.vigenteDesde)}
                 </TableCell>
@@ -129,10 +166,21 @@ function ArancelesPage() {
                       size="sm"
                       variant="outline"
                       onClick={() =>
-                        setEditar({ id: a.id, nombre: a.nombre, monto: String(a.monto) })
+                        setEditar({
+                          id: a.id,
+                          nombre: a.nombre,
+                          area: a.area,
+                          predio: a.predio,
+                          monto: String(a.monto),
+                          categoria: a.categoria ?? null,
+                          vigenteDesde: a.vigenteDesde,
+                        })
                       }
                     >
-                      Actualizar monto
+                      <Pencil className="mr-1.5 size-3.5" /> Editar
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => setEliminar(a.id)}>
+                      <Trash2 className="mr-1.5 size-3.5" /> Eliminar
                     </Button>
                   </div>
                 </TableCell>
@@ -143,44 +191,157 @@ function ArancelesPage() {
       </Card>
 
       <Dialog open={!!editar} onOpenChange={(o) => !o && setEditar(null)}>
-        <DialogContent className="sm:max-w-sm">
+        <DialogContent>
           <DialogHeader>
-            <DialogTitle>Actualizar monto</DialogTitle>
-            <DialogDescription>{editar?.nombre}</DialogDescription>
+            <DialogTitle>Editar ítem de arancel</DialogTitle>
+            <DialogDescription>
+              Editá nombre, área, predio o monto. Al cambiar el monto, el anterior queda en el
+              histórico.
+            </DialogDescription>
           </DialogHeader>
-          <div>
-            <Label>Nuevo monto</Label>
-            <Input
-              type="number"
-              className="mt-1.5"
-              value={editar?.monto ?? ""}
-              onChange={(e) => setEditar((p) => (p ? { ...p, monto: e.target.value } : p))}
-            />
-          </div>
+          {editar && (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <Label>Nombre del ítem</Label>
+                <Input
+                  className="mt-1.5"
+                  value={editar.nombre}
+                  onChange={(e) => setEditar({ ...editar, nombre: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label>Área</Label>
+                <Select
+                  value={editar.area}
+                  onValueChange={(v) => setEditar({ ...editar, area: v as Area })}
+                >
+                  <SelectTrigger className="mt-1.5">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Balseros">Balseros</SelectItem>
+                    <SelectItem value="Cabañeros">Cabañeros</SelectItem>
+                    <SelectItem value="Guardería">Guardería</SelectItem>
+                    <SelectItem value="Windsurf">Windsurf</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Predio</Label>
+                <Select
+                  value={editar.predio}
+                  onValueChange={(v) => setEditar({ ...editar, predio: v as Predio })}
+                >
+                  <SelectTrigger className="mt-1.5">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Embalse">Embalse</SelectItem>
+                    <SelectItem value="Almafuerte">Almafuerte</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Categoría (opcional)</Label>
+                <Select
+                  value={editar.categoria ?? "sin-categoria"}
+                  onValueChange={(v) =>
+                    setEditar({
+                      ...editar,
+                      categoria: v === "sin-categoria" ? null : (v as CategoriaParcela),
+                    })
+                  }
+                >
+                  <SelectTrigger className="mt-1.5">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="sin-categoria">Sin categoría</SelectItem>
+                    {CATEGORIAS.map((c) => (
+                      <SelectItem key={c} value={c}>
+                        {c}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Monto</Label>
+                <Input
+                  type="number"
+                  className="mt-1.5"
+                  value={editar.monto}
+                  onChange={(e) => setEditar({ ...editar, monto: e.target.value })}
+                />
+              </div>
+            </div>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditar(null)}>
               Cancelar
             </Button>
             <Button
+              disabled={updateMutation.isPending}
               onClick={() => {
-                if (editar) {
-                  updateMontoMutation.mutate(
-                    { id: editar.id, monto: Number(editar.monto) || 0 },
-                    {
-                      onSuccess: () =>
-                        toast.success("Monto actualizado. El anterior quedó en el histórico."),
-                      onError: () => toast.error("No se pudo actualizar el monto."),
+                if (!editar) return;
+                updateMutation.mutate(
+                  {
+                    id: editar.id,
+                    data: {
+                      nombre: editar.nombre,
+                      area: editar.area,
+                      predio: editar.predio,
+                      monto: Number(editar.monto) || 0,
+                      categoria: editar.categoria,
+                      vigenteDesde: editar.vigenteDesde,
                     },
-                  );
-                }
-                setEditar(null);
+                  },
+                  {
+                    onSuccess: () => {
+                      setEditar(null);
+                      toast.success("Arancel actualizado");
+                    },
+                    onError: () => toast.error("No se pudo actualizar el arancel."),
+                  },
+                );
               }}
             >
-              Guardar
+              Guardar cambios
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!eliminar} onOpenChange={(o) => !o && setEliminar(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar este ítem de arancel?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se va a eliminar “{arancelEliminar?.nombre}”. Esta acción no se puede deshacer.
+              Los pagos ya emitidos conservan el monto y nombre guardados en su comprobante.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleteMutation.isPending}
+              onClick={(e) => {
+                e.preventDefault();
+                if (!eliminar) return;
+                deleteMutation.mutate(eliminar, {
+                  onSuccess: () => {
+                    setEliminar(null);
+                    toast.success("Ítem de arancel eliminado");
+                  },
+                  onError: () => toast.error("No se pudo eliminar el ítem de arancel."),
+                });
+              }}
+            >
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={!!historial} onOpenChange={(o) => !o && setHistorial(null)}>
         <DialogContent className="sm:max-w-md">

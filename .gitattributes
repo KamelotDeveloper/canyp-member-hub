@@ -1,0 +1,23 @@
+# Line-ending contract for this repository.
+# All text files are stored as LF in git and materialized as LF on every OS,
+# regardless of local core.autocrlf settings. This is the team-wide source of
+# truth for line endings.
+* text=auto eol=lf
+
+# Binary files — never normalize or diff as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.xlsx binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+*.pyc binary

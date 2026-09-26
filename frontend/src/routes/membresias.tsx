@@ -1,4 +1,5 @@
 import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { Pencil, Plus, Trash2, Upload } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -12,6 +13,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Select,
   SelectContent,
@@ -30,17 +41,24 @@ import {
 import { cn } from "@/lib/utils";
 import { EstadoBadge } from "@/components/canyp/EstadoBadge";
 import { PageHeader } from "@/components/canyp/AppShell";
+import { ExportButton } from "@/components/export";
 import { UnidadesPanel } from "@/components/canyp/UnidadesPanel";
+import { SocioCombobox } from "@/components/canyp/SocioCombobox";
+import { ImportModal, type ImportColumnSpec } from "@/components/import";
 import { estadoVisual, formatFecha } from "@/lib/canyp/utils";
 import {
   useMembresias,
   useSocios,
   useUpdateMembresia,
+  useDeleteMembresia,
   useParcelas,
   useUpdateParcela,
   useCreateParcela,
+  useCreateMembresia,
+  useAranceles,
 } from "@/lib/canyp/queries";
 import type {
+  Arancel,
   Area,
   CategoriaParcela,
   Membresia,
@@ -50,6 +68,17 @@ import type {
 } from "@/lib/canyp/types";
 
 const AREAS: Area[] = ["Balseros", "Cabañeros", "Guardería", "Windsurf"];
+
+/** Editable columns shown in the membresías import preview. */
+const importColumns: ImportColumnSpec[] = [
+  { label: "DNI", field: "dni" },
+  { label: "Área", field: "area" },
+  { label: "Predio", field: "predio" },
+  { label: "Vencimiento", field: "vencimiento" },
+  { label: "Estado", field: "estado" },
+  { label: "Arancel", field: "arancel" },
+  { label: "Detalle", field: "detalle" },
+];
 
 export const Route = createFileRoute("/membresias")({
   validateSearch: (s: Record<string, unknown>): { area?: Area; filtro?: string } => ({
@@ -76,18 +105,44 @@ export const Route = createFileRoute("/membresias")({
 function MembresiasPage() {
   const search = useSearch({ from: "/membresias" });
   const navigate = useNavigate();
-  const { data: membresias = [], isLoading } = useMembresias();
+  const {
+    data: membresias = [],
+    isLoading,
+    refetch: refetchMembresias,
+  } = useMembresias();
   const { data: socios = [] } = useSocios();
   const { data: parcelas = [] } = useParcelas();
   const updateMembresia = useUpdateMembresia();
+  const deleteMembresia = useDeleteMembresia();
   const updateParcela = useUpdateParcela();
   const createParcela = useCreateParcela();
+  const createMembresia = useCreateMembresia();
+  const { data: aranceles = [] } = useAranceles();
   const [editando, setEditando] = useState<{ id: string; fecha: string } | null>(null);
+  const [editandoFull, setEditandoFull] = useState<Membresia | null>(null);
+  const [eliminando, setEliminando] = useState<Membresia | null>(null);
+  const [nuevaOpen, setNuevaOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [nueva, setNueva] = useState<{
+    socioId: string;
+    vencimiento: string;
+    detalle: string;
+    arancelId: string;
+  }>({
+    socioId: "",
+    vencimiento: new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10),
+    detalle: "",
+    arancelId: "",
+  });
 
   const socioMap = new Map(socios.map((s: Socio) => [s.id, s]));
 
   const areaActiva = search.area ?? "Balseros";
   const filtro = search.filtro ?? "todas";
+
+  const arancelesArea = aranceles.filter(
+    (a: Arancel) => a.area === areaActiva && a.predio === "Almafuerte",
+  );
 
   const lista = membresias
     .filter((m: Membresia) => m.area === areaActiva)
@@ -116,29 +171,32 @@ function MembresiasPage() {
         title="Gestión de membresías"
         subtitle="Elegí el área para trabajar sobre sus membresías."
         actions={
-          <div className="flex gap-1 rounded-md border border-border bg-card p-1">
-            {[
-              { k: "todas", l: "Todas" },
-              { k: "por_vencer", l: "Por vencer" },
-              { k: "vencidas", l: "Vencidas" },
-              { k: "alertas", l: "Alertas" },
-            ].map((f) => (
-              <button
-                key={f.k}
-                onClick={() =>
-                  navigate({ to: "/membresias", search: { area: areaActiva, filtro: f.k } })
-                }
-                className={cn(
-                  "rounded px-3 py-1.5 text-xs font-medium transition-colors",
-                  filtro === f.k
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-secondary",
-                )}
-              >
-                {f.l}
-              </button>
-            ))}
-          </div>
+          <>
+            <ExportButton resource="membresias" label="membresías" />
+            <div className="flex gap-1 rounded-md border border-border bg-card p-1">
+              {[
+                { k: "todas", l: "Todas" },
+                { k: "por_vencer", l: "Por vencer" },
+                { k: "vencidas", l: "Vencidas" },
+                { k: "alertas", l: "Alertas" },
+              ].map((f) => (
+                <button
+                  key={f.k}
+                  onClick={() =>
+                    navigate({ to: "/membresias", search: { area: areaActiva, filtro: f.k } })
+                  }
+                  className={cn(
+                    "rounded px-3 py-1.5 text-xs font-medium transition-colors",
+                    filtro === f.k
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-secondary",
+                  )}
+                >
+                  {f.l}
+                </button>
+              ))}
+            </div>
+          </>
         }
       />
 
@@ -176,7 +234,21 @@ function MembresiasPage() {
       {areaActiva === "Cabañeros" || areaActiva === "Balseros" ? (
         <UnidadesPanel area={areaActiva} filtro={filtro as UnidadFiltro} />
       ) : (
-        <Card className="overflow-hidden p-0">
+        <>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">
+              {lista.length} membresías en {areaActiva}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+                <Upload className="mr-1.5 size-4" /> Importar
+              </Button>
+              <Button size="sm" onClick={() => setNuevaOpen(true)}>
+                <Plus className="mr-1.5 size-4" /> Nueva membresía
+              </Button>
+            </div>
+          </div>
+          <Card className="overflow-hidden p-0">
           <Table>
             <TableHeader>
               <TableRow>
@@ -249,6 +321,17 @@ function MembresiasPage() {
                       >
                         Vencimiento
                       </Button>
+                      <Button size="sm" variant="outline" onClick={() => setEditandoFull(m)}>
+                        <Pencil className="mr-1.5 size-3.5" /> Editar
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => setEliminando(m)}
+                      >
+                        <Trash2 className="mr-1.5 size-3.5" /> Eliminar
+                      </Button>
                       <Button
                         size="sm"
                         onClick={() =>
@@ -274,7 +357,107 @@ function MembresiasPage() {
             </TableBody>
           </Table>
         </Card>
+        </>
       )}
+
+      <Dialog open={nuevaOpen} onOpenChange={setNuevaOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Nueva membresía — {areaActiva}</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div>
+              <Label>Socio</Label>
+              <SocioCombobox
+                className="mt-1.5"
+                placeholder="Elegí un socio..."
+                value={nueva.socioId}
+                onChange={(v) => setNueva((p) => ({ ...p, socioId: v }))}
+                socios={socios}
+              />
+            </div>
+            <div>
+              <Label>Vencimiento</Label>
+              <Input
+                type="date"
+                className="mt-1.5"
+                value={nueva.vencimiento}
+                onChange={(e) => setNueva((p) => ({ ...p, vencimiento: e.target.value }))}
+              />
+            </div>
+            <div>
+              <Label>Detalle (box, locker, tabla...)</Label>
+              <Input
+                value={nueva.detalle}
+                onChange={(e) => setNueva((p) => ({ ...p, detalle: e.target.value }))}
+                className="mt-1.5"
+              />
+            </div>
+            <div>
+              <Label>Arancel</Label>
+              <Select
+                value={nueva.arancelId}
+                onValueChange={(v) =>
+                  setNueva((p) => ({ ...p, arancelId: v === "__ninguno__" ? "" : v }))
+                }
+              >
+                <SelectTrigger className="mt-1.5">
+                  <SelectValue placeholder="Seleccionar arancel" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__ninguno__">Sin arancel</SelectItem>
+                  {arancelesArea.map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      {a.nombre} — ${a.monto.toLocaleString("es-AR")}
+                      {a.categoria ? ` (categoría: ${a.categoria})` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNuevaOpen(false)}>
+              Cancelar
+            </Button>
+            <Button
+              disabled={!nueva.socioId}
+              onClick={() => {
+                const socio = socios.find((s: Socio) => s.id === nueva.socioId);
+                if (!socio) return;
+                createMembresia.mutate(
+                  {
+                    socioId: nueva.socioId,
+                    area: areaActiva,
+                    predio: "Almafuerte",
+                    estado: "activa",
+                    vencimiento: nueva.vencimiento,
+                    detalle: nueva.detalle.trim(),
+                    ...(nueva.arancelId ? { arancelId: nueva.arancelId } : {}),
+                  },
+                  {
+                    onSuccess: () => {
+                      setNuevaOpen(false);
+                      setNueva({
+                        socioId: "",
+                        vencimiento: new Date(Date.now() + 365 * 86400000)
+                          .toISOString()
+                          .slice(0, 10),
+                        detalle: "",
+                        arancelId: "",
+                      });
+                      toast.success("Membresía creada");
+                    },
+                    onError: () => toast.error("No se pudo crear la membresía"),
+                  },
+                );
+              }}
+            >
+              Crear membresía
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!editando} onOpenChange={(o) => !o && setEditando(null)}>
         <DialogContent className="sm:max-w-sm">
@@ -315,6 +498,57 @@ function MembresiasPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {editandoFull && (
+        <EditarMembresiaDialog
+          membresia={editandoFull}
+          arancelesArea={arancelesArea}
+          onClose={() => setEditandoFull(null)}
+        />
+      )}
+
+      <AlertDialog open={!!eliminando} onOpenChange={(o) => !o && setEliminando(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Eliminar membresía</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se va a eliminar la membresía de{" "}
+              <span className="font-medium text-foreground">
+                {eliminando
+                  ? (socioMap.get(eliminando.socioId)?.nombre ?? "este socio")
+                  : ""}
+              </span>{" "}
+              ({eliminando?.area} · {eliminando?.predio}). Esta acción no se puede deshacer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                if (!eliminando) return;
+                const id = eliminando.id;
+                setEliminando(null);
+                deleteMembresia.mutate(id, {
+                  onSuccess: () => toast.success("Membresía eliminada"),
+                  onError: () => toast.error("No se pudo eliminar la membresía"),
+                });
+              }}
+            >
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <ImportModal
+        resource="membresias"
+        resourceLabel="membresías"
+        columnSpec={importColumns}
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImportComplete={() => refetchMembresias()}
+      />
     </>
   );
 }
@@ -388,5 +622,119 @@ function GuarderiaCategoriaCell({
         <SelectItem value="Grande">Grande</SelectItem>
       </SelectContent>
     </Select>
+  );
+}
+
+/**
+ * Dialog de edición completa de una membresía (Guardería/Windsurf): vencimiento,
+ * detalle, arancel asignado y estado. Recibe la membresía actual y arranca sus
+ * controles con esos valores; al guardar solo envía los campos modificados.
+ */
+function EditarMembresiaDialog({
+  membresia,
+  arancelesArea,
+  onClose,
+}: {
+  membresia: Membresia;
+  arancelesArea: Arancel[];
+  onClose: () => void;
+}) {
+  const updateMembresia = useUpdateMembresia();
+  const [vencimiento, setVencimiento] = useState(membresia.vencimiento);
+  const [detalle, setDetalle] = useState(membresia.detalle ?? "");
+  const [arancelId, setArancelId] = useState(membresia.arancelId ?? "");
+  const [estado, setEstado] = useState(membresia.estado);
+
+  function guardar() {
+    const data: Partial<Membresia> = {};
+    if (vencimiento !== membresia.vencimiento) data.vencimiento = vencimiento;
+    if (detalle !== (membresia.detalle ?? "")) data.detalle = detalle;
+    if (arancelId !== (membresia.arancelId ?? "")) data.arancelId = arancelId;
+    if (estado !== membresia.estado) data.estado = estado;
+    if (Object.keys(data).length === 0) {
+      onClose();
+      return;
+    }
+    updateMembresia.mutate(
+      { id: membresia.id, data },
+      {
+        onSuccess: () => {
+          onClose();
+          toast.success("Membresía actualizada");
+        },
+        onError: () => toast.error("No se pudo actualizar la membresía"),
+      },
+    );
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Editar membresía</DialogTitle>
+        </DialogHeader>
+        <div className="grid gap-4">
+          <div>
+            <Label>Vencimiento</Label>
+            <Input
+              type="date"
+              className="mt-1.5"
+              value={vencimiento}
+              onChange={(e) => setVencimiento(e.target.value)}
+            />
+          </div>
+          <div>
+            <Label>Detalle (box, locker, tabla...)</Label>
+            <Input
+              value={detalle}
+              onChange={(e) => setDetalle(e.target.value)}
+              className="mt-1.5"
+            />
+          </div>
+          <div>
+            <Label>Arancel</Label>
+            <Select
+              value={arancelId}
+              onValueChange={(v) => setArancelId(v === "__ninguno__" ? "" : v)}
+            >
+              <SelectTrigger className="mt-1.5">
+                <SelectValue placeholder="Seleccionar arancel" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__ninguno__">Sin arancel</SelectItem>
+                {arancelesArea.map((a) => (
+                  <SelectItem key={a.id} value={a.id}>
+                    {a.nombre} — ${a.monto.toLocaleString("es-AR")}
+                    {a.categoria ? ` (categoría: ${a.categoria})` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Estado</Label>
+            <Select value={estado} onValueChange={(v) => setEstado(v as Membresia["estado"])}>
+              <SelectTrigger className="mt-1.5">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="activa">Activa</SelectItem>
+                <SelectItem value="suspendida">Suspendida</SelectItem>
+                <SelectItem value="vencida">Vencida</SelectItem>
+                <SelectItem value="baja">Baja</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button onClick={guardar} disabled={updateMembresia.isPending}>
+            Guardar
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

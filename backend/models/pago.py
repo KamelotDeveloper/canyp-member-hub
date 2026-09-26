@@ -18,6 +18,10 @@ class Pago(Base):
     medio: Mapped[str] = mapped_column(String, nullable=False)
     total: Mapped[float] = mapped_column(Float, nullable=False)
     nota: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Audit columns (D7): plain nullable string ids, NO DB FK. Only created_by
+    # is written (pagos has no update endpoint).
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
+    updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
 
 
 class PagoItem(Base):

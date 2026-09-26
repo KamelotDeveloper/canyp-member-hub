@@ -63,6 +63,8 @@ export interface NuevaUnidadForm {
   tipo: "cabaña" | "balsa";
   categoria?: CategoriaParcela;
   vencimiento: string;
+  /** Arancel asignado explícitamente a las membresías de la unidad (opcional). */
+  arancelId?: string;
   /** Primera fila → Titular; resto → Integrantes. */
   socios: NuevaUnidadSocio[];
 }
@@ -75,7 +77,7 @@ export interface NuevaUnidadForm {
 export function buildNuevaUnidadPayload(form: NuevaUnidadForm): ImportPayload | null {
   if (!form.nombre.trim()) return null;
   if (form.socios.length === 0) return null;
-  if (!form.socios[0]!.nombre.trim() || !form.socios[0]!.dni.trim()) return null;
+  if (!form.socios[0]!.nombre.trim()) return null;
 
   const vencimiento = form.vencimiento || undefined;
   const miembros: ImportMembresia[] = form.socios.map((s, i) => {
@@ -100,6 +102,7 @@ export function buildNuevaUnidadPayload(form: NuevaUnidadForm): ImportPayload | 
     miembros,
   };
   if (form.categoria) unidad.categoria = form.categoria;
+  if (form.arancelId) unidad.arancelId = form.arancelId;
 
   return { unidades: [unidad] };
 }
@@ -146,7 +149,10 @@ export function itemsParaMembresias(
 ): PagoItemResuelto[] {
   const titular = members.find((m) => m.rol === "Titular") ?? members[0];
   if (!titular) return [];
-  const a = arancelPara(titular.area, titular.predio, categoria, aranceles);
+  const directo = titular.arancelId
+    ? aranceles.find((a) => a.id === titular.arancelId)
+    : undefined;
+  const a = directo ?? arancelPara(titular.area, titular.predio, categoria, aranceles);
   if (!a) return [];
   return [
     {
@@ -174,7 +180,10 @@ export function itemsParaMembresiasConParcelas(
   for (const m of members) {
     const parcela = m.parcelaId ? parcelas.find((p) => p.id === m.parcelaId) : undefined;
     const categoria = parcela?.categoria ?? null;
-    const a = arancelPara(m.area, m.predio, categoria, aranceles);
+    const directo = m.arancelId
+      ? aranceles.find((a) => a.id === m.arancelId)
+      : undefined;
+    const a = directo ?? arancelPara(m.area, m.predio, categoria, aranceles);
     if (a) {
       out.push({
         arancelId: a.id,

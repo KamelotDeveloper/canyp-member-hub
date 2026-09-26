@@ -1,11 +1,21 @@
 import { createFileRoute, Link, useNavigate, useParams } from "@tanstack/react-router";
-import { ArrowLeft, CreditCard, Pencil, Plus } from "lucide-react";
-import { useState } from "react";
+import { ArrowLeft, CreditCard, Pencil, Plus, Trash2, UserCheck, UserX } from "lucide-react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Dialog,
   DialogContent,
@@ -39,8 +49,11 @@ import {
   useUpdateSocio,
   useCreateMembresia,
   useUpdateMembresia,
+  useDeleteSocio,
+  useAranceles,
+  useUsuarios,
 } from "@/lib/canyp/queries";
-import type { Area, Membresia, Predio, Socio } from "@/lib/canyp/types";
+import type { Arancel, Area, Membresia, Predio, Rol, Socio, Usuario } from "@/lib/canyp/types";
 
 export const Route = createFileRoute("/socios/$socioId")({
   head: () => ({
@@ -74,20 +87,29 @@ function FichaSocio() {
   const updateSocio = useUpdateSocio();
   const createMembresia = useCreateMembresia();
   const updateMembresia = useUpdateMembresia();
+  const deleteSocio = useDeleteSocio();
+  const { data: aranceles = [] } = useAranceles();
+  const { data: usuarios = [] } = useUsuarios();
 
   const [editOpen, setEditOpen] = useState(false);
   const [memOpen, setMemOpen] = useState(false);
   const [edit, setEdit] = useState<Socio | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [bajaOpen, setBajaOpen] = useState(false);
   const [nueva, setNueva] = useState<{
     predio: Predio;
     area: Area;
     vencimiento: string;
     detalle: string;
+    arancelId: string;
+    rol: Rol | "";
   }>({
     predio: "Embalse",
     area: "Balseros",
     vencimiento: new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10),
     detalle: "",
+    arancelId: "",
+    rol: "Titular",
   });
 
   if (loadingSocio) {
@@ -110,6 +132,15 @@ function FichaSocio() {
   const membresias = allMembresias.filter((m: Membresia) => m.socioId === socio.id);
   const pagosSocio = pagos.filter((p) => p.socioId === socio.id);
 
+  const usuarioMap = useMemo(
+    () => new Map(usuarios.map((u: Usuario) => [u.id, u.username])),
+    [usuarios],
+  );
+
+  const arancelesArea = aranceles.filter(
+    (a: Arancel) => a.area === nueva.area && a.predio === nueva.predio,
+  );
+
   return (
     <>
       <Link
@@ -119,9 +150,20 @@ function FichaSocio() {
         <ArrowLeft className="size-3.5" /> Volver a socios
       </Link>
 
+      {(socio.activo === false || socio.categoria === "vitalicio") && (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          {socio.activo === false && <EstadoBadge estado="baja" />}
+          {socio.categoria === "vitalicio" && (
+            <span className="rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground">
+              Vitalicio
+            </span>
+          )}
+        </div>
+      )}
+
       <PageHeader
         title={socio.nombre}
-        subtitle={`DNI ${socio.dni} · Socio desde ${formatFecha(socio.fechaAlta)}`}
+        subtitle={`${socio.dni ? `DNI ${socio.dni} · ` : ""}Socio desde ${formatFecha(socio.fechaAlta)}`}
         actions={
           <>
             <Button
@@ -140,6 +182,33 @@ function FichaSocio() {
               onClick={() => navigate({ to: "/pagos", search: { nuevo: "1", socioId: socio.id } })}
             >
               <CreditCard className="mr-2 size-4" /> Registrar pago
+            </Button>
+            {socio.activo ? (
+              <Button variant="outline" onClick={() => setBajaOpen(true)}>
+                <UserX className="mr-2 size-4" /> Dar de baja
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                onClick={() =>
+                  updateSocio.mutate(
+                    { id: socio.id, data: { activo: true } },
+                    {
+                      onSuccess: () => toast.success("Socio reactivado"),
+                      onError: () => toast.error("Error al reactivar el socio"),
+                    },
+                  )
+                }
+              >
+                <UserCheck className="mr-2 size-4" /> Reactivar
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              className="text-destructive hover:bg-destructive hover:text-destructive-foreground"
+              onClick={() => setDeleteOpen(true)}
+            >
+              <Trash2 className="mr-2 size-4" /> Eliminar
             </Button>
           </>
         }
@@ -260,6 +329,11 @@ function FichaSocio() {
         </Card>
       </section>
 
+      <p className="mt-6 text-xs text-muted-foreground">
+        Creado por {usuarioMap.get(socio.createdBy ?? "") ?? "sin operador"} · Modificado por{" "}
+        {usuarioMap.get(socio.updatedBy ?? "") ?? "—"}
+      </p>
+
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent>
           <DialogHeader>
@@ -351,6 +425,8 @@ function FichaSocio() {
                     ...nueva,
                     predio: v as Predio,
                     area: areasPorPredio[v as Predio][0]!,
+                    rol: "Titular",
+                    arancelId: "",
                   })
                 }
               >
@@ -367,7 +443,12 @@ function FichaSocio() {
               <Label>Área</Label>
               <Select
                 value={nueva.area}
-                onValueChange={(v) => setNueva({ ...nueva, area: v as Area })}
+                onValueChange={(v) => {
+                  const area = v as Area;
+                  const rol: Rol | "" =
+                    area === "Balseros" || area === "Cabañeros" ? "Titular" : "";
+                  setNueva({ ...nueva, area, rol, arancelId: "" });
+                }}
               >
                 <SelectTrigger className="mt-1.5">
                   <SelectValue />
@@ -381,6 +462,23 @@ function FichaSocio() {
                 </SelectContent>
               </Select>
             </div>
+            {(nueva.area === "Balseros" || nueva.area === "Cabañeros") && (
+              <div>
+                <Label>Rol</Label>
+                <Select
+                  value={nueva.rol}
+                  onValueChange={(v) => setNueva({ ...nueva, rol: v as Rol })}
+                >
+                  <SelectTrigger className="mt-1.5">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Titular">Titular</SelectItem>
+                    <SelectItem value="Integrante">Integrante</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div>
               <Label>Vencimiento</Label>
               <Input
@@ -398,6 +496,28 @@ function FichaSocio() {
                 className="mt-1.5"
               />
             </div>
+            <div>
+              <Label>Arancel</Label>
+              <Select
+                value={nueva.arancelId}
+                onValueChange={(v) =>
+                  setNueva({ ...nueva, arancelId: v === "__ninguno__" ? "" : v })
+                }
+              >
+                <SelectTrigger className="mt-1.5">
+                  <SelectValue placeholder="Seleccionar arancel" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__ninguno__">Sin arancel</SelectItem>
+                  {arancelesArea.map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      {a.nombre} — ${a.monto.toLocaleString("es-AR")}
+                      {a.categoria ? ` (categoría: ${a.categoria})` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setMemOpen(false)}>
@@ -405,8 +525,15 @@ function FichaSocio() {
             </Button>
             <Button
               onClick={() => {
+                const { arancelId, rol, ...resto } = nueva;
                 createMembresia.mutate(
-                  { socioId: socio.id, estado: "activa", ...nueva },
+                  {
+                    socioId: socio.id,
+                    estado: "activa",
+                    ...resto,
+                    ...(rol ? { rol } : {}),
+                    ...(arancelId ? { arancelId } : {}),
+                  },
                   {
                     onSuccess: () => {
                       setMemOpen(false);
@@ -421,6 +548,68 @@ function FichaSocio() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Eliminar socio</AlertDialogTitle>
+            <AlertDialogDescription>
+              ¿Seguro que querés eliminar a <strong>{socio.nombre}</strong>? Se borrarán todas sus
+              membresías y pagos asociados. Si es Titular de alguna unidad, se designará un nuevo
+              Titular automáticamente.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                deleteSocio.mutate(socio.id, {
+                  onSuccess: () => {
+                    setDeleteOpen(false);
+                    toast.success(`Socio ${socio.nombre} eliminado`);
+                    navigate({ to: "/socios" });
+                  },
+                  onError: () => toast.error("Error al eliminar el socio"),
+                });
+              }}
+            >
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={bajaOpen} onOpenChange={setBajaOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Dar de baja al socio</AlertDialogTitle>
+            <AlertDialogDescription>
+              ¿Seguro que querés dar de baja a <strong>{socio.nombre}</strong>? El socio dejará de
+              estar activo pero conservará su historial de membresías y pagos.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                updateSocio.mutate(
+                  { id: socio.id, data: { activo: false } },
+                  {
+                    onSuccess: () => {
+                      setBajaOpen(false);
+                      toast.success("Socio dado de baja");
+                    },
+                    onError: () => toast.error("Error al dar de baja al socio"),
+                  },
+                );
+              }}
+            >
+              Dar de baja
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

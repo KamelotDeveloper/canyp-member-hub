@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from backend.models.enums import Area, EstadoMembresia, Predio
 from backend.schemas.common import OrmConfig
 
 
@@ -22,12 +23,44 @@ class ImportSocioRow(BaseModel):
     """
 
     nombre: str
-    dni: str
+    dni: str | None = None
     telefono: str = ""
     email: str = ""
     direccion: str = ""
     fechaAlta: date | None = None
     activo: bool = True
+    categoria: str | None = None
+
+
+class ImportMembresiaRow(BaseModel):
+    """Per-row membresias payload produced by the import engine.
+
+    ``dni`` is required and must reference an already-existing socio in the
+    padron (user decision ``Exigir DNI existente``); rows whose DNI does not
+    exist fail with a per-row error during preview. ``arancel`` is the arancel
+    nombre (optional) and is resolved to ``arancelId`` by the resource's
+    ``resolve`` hook.
+    """
+
+    dni: str
+    area: Area
+    predio: Predio
+    vencimiento: date
+    estado: EstadoMembresia = EstadoMembresia.ACTIVA
+    arancel: str | None = None
+    detalle: str | None = None
+
+
+class ImportMembresiaResolveRow(ImportMembresiaRow):
+    """Execute-side membresias row shape.
+
+    Extends ``ImportMembresiaRow`` with ``arancelId`` so the value resolved by
+    the config's ``resolve`` hook during preview survives the re-validation
+    that ``_prepare_model_data`` runs at execute time (pydantic drops undeclared
+    extra fields otherwise).
+    """
+
+    arancelId: str | None = None
 
 
 class ColumnMapping(OrmConfig, BaseModel):

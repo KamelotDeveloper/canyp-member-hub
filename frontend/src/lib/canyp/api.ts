@@ -6,8 +6,10 @@
  */
 
 import type {
+  AppSettings,
   Arancel,
   Area,
+  CategoriaParcela,
   EstadoMembresia,
   ExecuteResult,
   ImportPayload,
@@ -21,13 +23,99 @@ import type {
   PreviewResult,
   RowData,
   Socio,
+  Usuario,
 } from "./types";
 
 // ---------------------------------------------------------------------------
 // Base client
 // ---------------------------------------------------------------------------
 
-const BASE_URL = "/api";
+/**
+ * Resolve the API base for the current runtime.
+ * - Browser dev (Vite proxy): `/api`
+ * - Tauri desktop shell: the sidecar FastAPI listens on 127.0.0.1:8000.
+ *   Tauri v2 exposes `window.__TAURI_INTERNALS__`; detect it at module load
+ *   so the same bundle works in devUrl and in the packaged app.
+ */
+function resolveBaseUrl(): string {
+  const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  return inTauri ? "http://127.0.0.1:8000/api" : "/api";
+}
+
+const BASE_URL = resolveBaseUrl();
+
+/**
+ * localStorage key where the JWT is persisted after login / first-user.
+ * Read/write are client-guarded so the SSR pass (no `window`) never throws.
+ */
+export const TOKEN_KEY = "canyp.token";
+
+function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setToken(token: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    // Storage may be unavailable (private mode); auth still works in-memory.
+  }
+}
+
+export function clearToken(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Cerrar sesión: avisa al backend (open, sin guard) y descarta el token local.
+ * El endpoint no revoca el JWT en v1 (D4) — el "logout" real es eliminar el
+ * token del cliente. Se ignora cualquier error para que el cierre nunca falle.
+ */
+export async function logout(): Promise<void> {
+  try {
+    await fetch(`${BASE_URL}/auth/logout`, { method: "POST" });
+  } catch {
+    // network failure — still clear the local token below
+  }
+  clearToken();
+}
+
+/**
+ * Auth endpoints (login/first-user/status/logout) are open by design, so a 401
+ * there is a legitimate credential error — never trigger the token-clear
+ * reload. Settings is conditionally guarded (open pre-config, guarded after),
+ * so it is also excluded to avoid a reload loop while the login gate boots.
+ */
+function isAuthPath(path: string): boolean {
+  return path.startsWith("/auth/") || path === "/settings";
+}
+
+function attachAuthHeaders(init?: RequestInit): RequestInit {
+  const token = getToken();
+  if (!token) return init ?? {};
+  return {
+    ...init,
+    headers: { Authorization: `Bearer ${token}`, ...init?.headers },
+  };
+}
+
+/** On an expired/invalid token, drop it and reload so the login gate renders. */
+function handleUnauthorized(path: string): void {
+  if (isAuthPath(path)) return;
+  clearToken();
+  if (typeof window !== "undefined") window.location.reload();
+}
 
 export class ApiError extends Error {
   constructor(
@@ -41,11 +129,12 @@ export class ApiError extends Error {
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${BASE_URL}${path}`;
-  const res = await fetch(url, {
+  const res = await fetch(url, attachAuthHeaders({
     headers: { "Content-Type": "application/json", ...init?.headers },
     ...init,
-  });
+  }));
   if (!res.ok) {
+    if (res.status === 401) handleUnauthorized(path);
     const body = await res.json().catch(() => ({ detail: res.statusText }));
     throw new ApiError(res.status, body.detail ?? res.statusText);
   }
@@ -62,8 +151,9 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
  */
 export async function apiFetchRaw(path: string, init?: RequestInit): Promise<Response> {
   const url = `${BASE_URL}${path}`;
-  const res = await fetch(url, init);
+  const res = await fetch(url, attachAuthHeaders(init));
   if (!res.ok) {
+    if (res.status === 401) handleUnauthorized(path);
     const body = await res.json().catch(() => ({ detail: res.statusText }));
     throw new ApiError(res.status, body.detail ?? res.statusText);
   }
@@ -280,6 +370,26 @@ export function updateArancelMonto(id: string, monto: number): Promise<Arancel> 
   });
 }
 
+export interface UpdateArancelInput {
+  nombre?: string;
+  area?: Area;
+  predio?: Predio;
+  monto?: number;
+  categoria?: CategoriaParcela | null;
+  vigenteDesde?: string;
+}
+
+export function updateArancel(id: string, data: UpdateArancelInput): Promise<Arancel> {
+  return apiFetch<Arancel>(`/aranceles/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteArancel(id: string): Promise<Arancel> {
+  return apiFetch<Arancel>(`/aranceles/${id}`, { method: "DELETE" });
+}
+
 // ---------------------------------------------------------------------------
 // Pagos
 // ---------------------------------------------------------------------------
@@ -305,7 +415,7 @@ export function createPago(data: CreatePagoInput): Promise<Pago> {
   return apiFetch<Pago>("/pagos", {
     method: "POST",
     body: JSON.stringify({
-      id: `p${Date.now()}`,
+      // El id lo genera el backend (uuid4, seguro para modo remoto/Postgres).
       socioId: data.socioId,
       fecha: hoy,
       medio: data.medio,
@@ -337,12 +447,70 @@ export interface CreateNotificacionInput {
 export function createNotificaciones(items: CreateNotificacionInput[]): Promise<Notificacion[]> {
   return apiFetch<Notificacion[]>("/notificaciones", {
     method: "POST",
-    body: JSON.stringify(
-      items.map((item) => ({
-        id: `n${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        ...item,
-      })),
-    ),
+    // Los ids los genera el backend (uuid4, seguro para modo remoto/Postgres).
+    body: JSON.stringify(items),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Settings (data mode: local SQLite / remoto PostgreSQL)
+// ---------------------------------------------------------------------------
+
+export function getSettings(): Promise<AppSettings> {
+  return apiFetch<AppSettings>("/settings");
+}
+
+export interface UpdateSettingsInput {
+  dataMode: AppSettings["dataMode"];
+  /** Obligatoria para "remoto"; por defecto la app borra la URL al volver a local. */
+  databaseUrl?: string;
+}
+
+export function updateSettings(data: UpdateSettingsInput): Promise<AppSettings> {
+  return apiFetch<AppSettings>("/settings", {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Auth + Usuarios
+// ---------------------------------------------------------------------------
+
+/** Open endpoint (no auth): whether any user exists yet. */
+export function getAuthStatus(): Promise<{ users_exist: boolean }> {
+  return apiFetch<{ users_exist: boolean }>("/auth/status");
+}
+
+/** POST /api/auth/login → 200 {token} | 401 "Credenciales inválidas". */
+export function login(username: string, password: string): Promise<{ token: string }> {
+  return apiFetch<{ token: string }>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+/** POST /api/auth/first-user → 201 {token, user} | 409 | 422. */
+export function createFirstUser(
+  username: string,
+  password: string,
+): Promise<{ token: string; user: Usuario }> {
+  return apiFetch<{ token: string; user: Usuario }>("/auth/first-user", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+/** GET /api/usuarios (guarded). */
+export function getUsuarios(): Promise<Usuario[]> {
+  return apiFetch<Usuario[]>("/usuarios");
+}
+
+/** POST /api/usuarios (guarded). */
+export function createUsuario(username: string, password: string): Promise<Usuario> {
+  return apiFetch<Usuario>("/usuarios", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
   });
 }
 
@@ -350,8 +518,12 @@ export function createNotificaciones(items: CreateNotificacionInput[]): Promise<
 // Dashboard
 // ---------------------------------------------------------------------------
 
-export function getDashboard(): Promise<Record<string, unknown>> {
-  return apiFetch<Record<string, unknown>>("/dashboard");
+export function getDashboardStats(): Promise<Record<string, unknown>> {
+  return apiFetch<Record<string, unknown>>("/dashboard/stats");
+}
+
+export function getDashboardAlertas(): Promise<Record<string, unknown>> {
+  return apiFetch<Record<string, unknown>>("/dashboard/alertas");
 }
 
 // ---------------------------------------------------------------------------
@@ -385,4 +557,19 @@ export function executeImport(resource: string, rows: RowData[]): Promise<Execut
     method: "POST",
     body: JSON.stringify({ rows }),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Export (generic resource-based data export; CSV + XLSX)
+// ---------------------------------------------------------------------------
+
+export type ExportFormat = "csv" | "xlsx";
+
+/**
+ * Download the complete export of a resource (all rows — never paginated).
+ * Returns the raw bytes so the caller can trigger a browser download.
+ * `resource` is the slash-less plural resource name, e.g. "socios".
+ */
+export function exportResource(resource: string, format: ExportFormat = "csv"): Promise<Blob> {
+  return apiFetchRaw(`/export/${resource}?format=${format}`).then((res) => res.blob());
 }

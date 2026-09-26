@@ -1,5 +1,7 @@
 """Integration tests for /api/pagos endpoints and pago creation logic."""
 
+import re
+
 from datetime import date
 
 from backend.models.enums import Area, EstadoMembresia, Predio
@@ -9,6 +11,8 @@ from backend.models.socio import Socio
 from backend.models.arancel import Arancel
 from backend.services.numeracion import siguiente_numero_comprobante
 from backend.services.renovacion import renovar_membresias
+
+_UUID_HEX = re.compile(r"^p[0-9a-f]{32}$")
 
 
 def _seed_pago_prereqs(db):
@@ -277,6 +281,60 @@ class TestPagoCreateApi:
         m = test_db.query(Membresia).filter(Membresia.id == "m1").first()
         assert m.vencimiento > date(2025, 7, 10)
 
+    def test_create_pago_without_client_id_returns_generated_id(self, test_client, test_db):
+        """POST without an id must succeed and echo a server-generated id."""
+        _seed_pago_prereqs(test_db)
+        resp = test_client.post(
+            "/api/pagos",
+            json={
+                "socioId": "s1",
+                "fecha": "2025-07-10",
+                "medio": "efectivo",
+                "total": 15000.0,
+                "items": [
+                    {
+                        "arancelId": "a1",
+                        "membresiaId": "m1",
+                        "montoAplicado": 15000.0,
+                        "arancelNombre": "Cuota Balseros Embalse",
+                    }
+                ],
+                "membresiaIds": ["m1"],
+            },
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert _UUID_HEX.match(body["id"])
+        assert test_db.get(Pago, body["id"]) is not None
+
+    def test_create_pago_ignores_client_sent_id(self, test_client, test_db):
+        """A client-sent id must be ignored (server keeps authority)."""
+        _seed_pago_prereqs(test_db)
+        resp = test_client.post(
+            "/api/pagos",
+            json={
+                "id": "pcliente-123",
+                "socioId": "s1",
+                "fecha": "2025-07-10",
+                "medio": "efectivo",
+                "total": 15000.0,
+                "items": [
+                    {
+                        "arancelId": "a1",
+                        "membresiaId": "m1",
+                        "montoAplicado": 15000.0,
+                        "arancelNombre": "Cuota Balseros Embalse",
+                    }
+                ],
+                "membresiaIds": ["m1"],
+            },
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["id"] != "pcliente-123"
+        assert _UUID_HEX.match(body["id"])
+        assert test_db.get(Pago, "pcliente-123") is None
+
     def test_create_pago_with_membresiaIds_only(self, test_client, test_db):
         """POST with membresiaIds but no items is valid and renews membership."""
         _seed_pago_prereqs(test_db)
@@ -396,3 +454,55 @@ class TestPagoSchemaOpenApi:
         pago_create = schema.get("PagoCreate", {})
         assert "items" in pago_create.get("properties", {})
         assert "membresiaIds" in pago_create.get("properties", {})
+
+
+class TestPagoAuditColumns:
+    """Audit (D7): created_by on create; updated_by never written (no update endpoint)."""
+
+    def _post_pago(self, test_client):
+        resp = test_client.post(
+            "/api/pagos",
+            json={
+                "socioId": "s1",
+                "fecha": "2025-07-10",
+                "medio": "efectivo",
+                "total": 15000.0,
+                "items": [
+                    {
+                        "arancelId": "a1",
+                        "membresiaId": "m1",
+                        "montoAplicado": 15000.0,
+                        "arancelNombre": "Cuota Balseros Embalse",
+                    }
+                ],
+                "membresiaIds": ["m1"],
+            },
+        )
+        assert resp.status_code == 201
+        return resp
+
+    def test_create_sets_created_by(self, test_client, test_db, current_user_id):
+        _seed_pago_prereqs(test_db)
+        body = self._post_pago(test_client).json()
+        assert body["createdBy"] == current_user_id
+        assert body["updatedBy"] is None
+
+    def test_pre_feature_rows_are_null(self, test_client, test_db):
+        """Pago inserted outside the router (legacy) serializes null audit ids."""
+        _seed_pago_prereqs(test_db)
+        pago = Pago(
+            id="pLegacy",
+            numero="9999-00009999",
+            socioId="s1",
+            fecha=date(2025, 7, 1),
+            medio="efectivo",
+            total=15000.0,
+        )
+        test_db.add(pago)
+        test_db.commit()
+
+        resp = test_client.get("/api/pagos/pLegacy")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["createdBy"] is None
+        assert body["updatedBy"] is None

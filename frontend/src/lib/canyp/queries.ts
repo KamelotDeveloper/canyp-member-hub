@@ -17,17 +17,26 @@ import type {
   PreviewResult,
   RowData,
   Socio,
+  Usuario,
 } from "./types";
 
 // ---------------------------------------------------------------------------
 // QUERIES
 // ---------------------------------------------------------------------------
 
+/**
+ * Auto-refresh cadence for list/dashboard queries (ms).
+ * En modo remoto dos PCs comparten la base: refrescar cada ~15s mantiene la
+ * UI al día sin realtime. El cache de TanStack Query ya cubre el resto.
+ */
+const REFRESH_INTERVAL_MS = 15_000;
+
 /** List all socios, optionally filtered by search term */
 export function useSocios(params?: { search?: string }) {
   return useQuery({
     queryKey: ["socios", params],
     queryFn: () => api.getSocios(params),
+    refetchInterval: REFRESH_INTERVAL_MS,
   });
 }
 
@@ -45,6 +54,7 @@ export function useMembresias(filters?: { predio?: string; estado?: string; soci
   return useQuery({
     queryKey: ["membresias", filters],
     queryFn: () => api.getMembresias(filters),
+    refetchInterval: REFRESH_INTERVAL_MS,
   });
 }
 
@@ -62,6 +72,7 @@ export function useAranceles(params?: { predio?: string; area?: string }) {
   return useQuery({
     queryKey: ["aranceles", params],
     queryFn: () => api.getAranceles(params),
+    refetchInterval: REFRESH_INTERVAL_MS,
   });
 }
 
@@ -70,6 +81,7 @@ export function usePagos(socioId?: string) {
   return useQuery({
     queryKey: ["pagos", socioId],
     queryFn: () => api.getPagos(socioId ? { socioId } : undefined),
+    refetchInterval: REFRESH_INTERVAL_MS,
   });
 }
 
@@ -78,14 +90,16 @@ export function useNotificaciones(socioId?: string) {
   return useQuery({
     queryKey: ["notificaciones", socioId],
     queryFn: () => api.getNotificaciones(socioId ? { socioId } : undefined),
+    refetchInterval: REFRESH_INTERVAL_MS,
   });
 }
 
 /** Dashboard stats from the backend */
 export function useDashboardStats() {
   return useQuery({
-    queryKey: ["dashboard"],
-    queryFn: api.getDashboard,
+    queryKey: ["dashboard", "stats"],
+    queryFn: api.getDashboardStats,
+    refetchInterval: REFRESH_INTERVAL_MS,
   });
 }
 
@@ -93,7 +107,8 @@ export function useDashboardStats() {
 export function useDashboardAlertas() {
   return useQuery({
     queryKey: ["dashboard", "alertas"],
-    queryFn: api.getDashboard,
+    queryFn: api.getDashboardAlertas,
+    refetchInterval: REFRESH_INTERVAL_MS,
   });
 }
 
@@ -102,6 +117,68 @@ export function useParcelas(predio?: string) {
   return useQuery({
     queryKey: ["parcelas", predio],
     queryFn: () => api.getParcelas(predio ? { predio } : undefined),
+    refetchInterval: REFRESH_INTERVAL_MS,
+  });
+}
+
+/** Current data-mode settings (badge + wizard + Ajustes). */
+export function useSettings() {
+  return useQuery({
+    queryKey: ["settings"],
+    queryFn: api.getSettings,
+    staleTime: 30_000,
+    // Una vez configurado, GET /api/settings responde 401 sin token (D9). No
+    // reintentar: el LoginGate deriva `configured=true` de ese 401 al instante.
+    retry: false,
+  });
+}
+
+/** Save data-mode settings; refreshes the cached value immediately. */
+export function useUpdateSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: api.UpdateSettingsInput) => api.updateSettings(data),
+    onSuccess: (updated) => {
+      qc.setQueryData(["settings"], updated);
+      qc.invalidateQueries({ queryKey: ["settings"] });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Auth + Usuarios
+// ---------------------------------------------------------------------------
+
+/**
+ * Open auth status (whether any user exists). Cached hard: it only changes
+ * after the first-user bootstrap, which reloads the app anyway.
+ */
+export function useAuthStatus() {
+  return useQuery({
+    queryKey: ["auth", "status"],
+    queryFn: api.getAuthStatus,
+    staleTime: Infinity,
+  });
+}
+
+/** List usuarios (guarded). */
+export function useUsuarios() {
+  return useQuery({
+    queryKey: ["usuarios"],
+    queryFn: api.getUsuarios,
+    refetchInterval: REFRESH_INTERVAL_MS,
+  });
+}
+
+/** Create a new usuario; invalidates the usuarios cache. */
+export function useCreateUsuario() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ username, password }: { username: string; password: string }) =>
+      api.createUsuario(username, password),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["usuarios"] });
+    },
   });
 }
 
@@ -215,6 +292,7 @@ export function useDeleteParcela() {
     mutationFn: (id: string) => api.deleteParcela(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["parcelas"] });
+      qc.invalidateQueries({ queryKey: ["membresias"] });
     },
   });
 }
@@ -322,6 +400,29 @@ export function useUpdateArancelMonto() {
   });
 }
 
+/** Fully update an arancel (nombre, area, predio, monto, categoria, vigenteDesde) */
+export function useUpdateArancel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: api.UpdateArancelInput }) =>
+      api.updateArancel(id, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["aranceles"] });
+    },
+  });
+}
+
+/** Delete an arancel */
+export function useDeleteArancel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteArancel(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["aranceles"] });
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // MUTATIONS — Pagos
 // ---------------------------------------------------------------------------
@@ -364,9 +465,11 @@ export function useExecuteImport() {
       rows: RowData[];
     }): Promise<ExecuteResult> => api.executeImport(resource, rows),
     onSuccess: () => {
-      // Importing socios currently only touches the socios list; broaden to
-      // membresias if a future resource links rows to memberships.
+      // Importing membresias links rows to existing socios by DNI, so both the
+      // padron (a membership makes a socio "activo") and the memberships list
+      // change after an execute — refresh both caches.
       qc.invalidateQueries({ queryKey: ["socios"] });
+      qc.invalidateQueries({ queryKey: ["membresias"] });
     },
   });
 }

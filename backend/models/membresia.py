@@ -25,3 +25,7 @@ class Membresia(Base):
     parcelaId: Mapped[str | None] = mapped_column(
         String, ForeignKey("parcelas.id"), nullable=True
     )
+    arancelId: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Audit columns (D7): plain nullable string ids, NO DB FK.
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
+    updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)

@@ -18,6 +18,7 @@ import type { Route } from "../../../routes/__root";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { it } from "vitest";
 
 // Compile-time: the module still exports a Route object after the edit.
 type HasRoute = typeof Route extends { options: unknown } ? true : false;
@@ -32,10 +33,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const rootPath = join(here, "../../../routes/__root.tsx");
 const rootSrc = readFileSync(rootPath, "utf8");
 
-assert(!rootSrc.includes("CanypProvider"), "__root.tsx must not reference CanypProvider");
-assert(
-  rootSrc.includes("QueryClientProvider"),
-  "__root.tsx must keep QueryClientProvider for TanStack Query",
-);
+it("__root.tsx must not reference CanypProvider", () => {
+  assert(!rootSrc.includes("CanypProvider"), "__root.tsx must not reference CanypProvider");
+});
 
-console.log("root.test: OK — __root.tsx renders without CanypProvider");
+it("__root.tsx keeps QueryClientProvider for TanStack Query", () => {
+  assert(
+    rootSrc.includes("QueryClientProvider"),
+    "__root.tsx must keep QueryClientProvider for TanStack Query",
+  );
+});

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 import {
   Dialog,
   DialogContent,
@@ -7,6 +8,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { StepFileSelect } from "@/components/import/StepFileSelect";
 import { StepPreviewEdit, type ImportColumnSpec } from "@/components/import/StepPreviewEdit";
 import { StepConfirmResult } from "@/components/import/StepConfirmResult";
@@ -79,6 +81,12 @@ export function ImportModal({
           setExecuteError(null);
           setStep(1);
         },
+        onError: (err) => {
+          const msg =
+            err instanceof Error && err.message ? err.message : "No se pudo analizar el archivo";
+          setExecuteError(msg);
+          toast.error(msg);
+        },
       },
     );
   }
@@ -128,6 +136,9 @@ export function ImportModal({
             Cargá un archivo .csv o .xlsx, revisá los datos y confirmá la importación.
           </DialogDescription>
         </DialogHeader>
+
+        {/* Tooltips in StepPreviewEdit/EditableCell need a provider in scope. */}
+        <TooltipProvider delayDuration={200}>
 
         {/* Lightweight step indicator */}
         <div className="flex items-center gap-2">
@@ -201,6 +212,7 @@ export function ImportModal({
             }}
           />
         )}
+        </TooltipProvider>
       </DialogContent>
     </Dialog>
   );

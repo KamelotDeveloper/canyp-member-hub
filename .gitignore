@@ -33,12 +33,23 @@ build/
 *.db-journal
 *.db-wal
 *.db-shm
+*.db.bak-*
 
 # Frontend build
 frontend/dist/
 frontend/.lovable/
 
+# PyInstaller artifacts (backend desktop)
+build_dist/
+build_spec/
+build_work/
+
 # Non-code files (excluded from version control)
 *.mp4
 *.pdf
 cosas.txt
+prueba_import_socios.xlsx
+
+# Secretos y datos locales
+canyp-settings.json
+backups/

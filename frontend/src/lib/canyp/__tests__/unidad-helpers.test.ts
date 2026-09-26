@@ -94,6 +94,31 @@ describe("buildNuevaUnidadPayload", () => {
     // predio se deriva del tipo: una balsa va a Embalse (regla del dominio)
     expect(u.predio).toBe("Embalse");
   });
+
+  it("propagates an explicit arancelId into the unidad payload", () => {
+    const payload = buildNuevaUnidadPayload({
+      nombre: "Balsa 2",
+      tipo: "balsa",
+      vencimiento: "",
+      arancelId: "b1",
+      socios: [{ nombre: "Luis", dni: "33" }],
+    });
+    expect(payload).not.toBeNull();
+    const u = payload!.unidades[0]!;
+    expect(u.arancelId).toBe("b1");
+  });
+
+  it("omits arancelId when the form has none selected", () => {
+    const payload = buildNuevaUnidadPayload({
+      nombre: "Balsa 1",
+      tipo: "balsa",
+      vencimiento: "",
+      socios: [{ nombre: "Luis", dni: "33" }],
+    });
+    expect(payload).not.toBeNull();
+    const u = payload!.unidades[0]!;
+    expect(u.arancelId).toBeUndefined();
+  });
 });
 
 describe("predioDeTipo", () => {
@@ -239,6 +264,43 @@ describe("itemsParaMembresias", () => {
     expect(itemsParaMembresias([], aranceles)).toHaveLength(0);
     expect(itemsParaMembresias([memb("m1", "Cabañeros", "Almafuerte")], [])).toHaveLength(0);
   });
+
+  it("honors an explicit arancelId over the heuristic", () => {
+    const titular: Membresia = {
+      id: "m1",
+      socioId: "s",
+      area: "Cabañeros",
+      predio: "Almafuerte",
+      estado: "activa",
+      vencimiento: "2099-01-01",
+      arancelId: "a4",
+    };
+    const items = itemsParaMembresias(
+      [titular, memb("m2", "Cabañeros", "Almafuerte")],
+      aranceles,
+      "Grande",
+    );
+    // La heurística elegiría a5 (Grande); el arancel explícito a4 (Especial) gana.
+    expect(items).toHaveLength(1);
+    expect(items[0]!.arancelId).toBe("a4");
+    expect(items[0]!.montoAplicado).toBe(120);
+  });
+
+  it("falls back to the heuristic when the arancelId no longer exists", () => {
+    const titular: Membresia = {
+      id: "m1",
+      socioId: "s",
+      area: "Cabañeros",
+      predio: "Almafuerte",
+      estado: "activa",
+      vencimiento: "2099-01-01",
+      arancelId: "a_borrado",
+    };
+    const items = itemsParaMembresias([titular], aranceles, "Especial");
+    expect(items).toHaveLength(1);
+    expect(items[0]!.arancelId).toBe("a4");
+    expect(items[0]!.montoAplicado).toBe(120);
+  });
 });
 
 describe("itemsParaMembresiasConParcelas", () => {
@@ -303,6 +365,19 @@ describe("itemsParaMembresiasConParcelas", () => {
     expect(items[1]!.membresiaId).toBe("m2");
     expect(items[1]!.arancelId).toBe("c3"); // Grande
     expect(items[1]!.montoAplicado).toBe(140);
+  });
+
+  it("honors an explicit arancelId per membership over its parcela categoria", () => {
+    // p1 es Especial (heurística → c2); el arancel explícito c3 (Grande) gana.
+    const items = itemsParaMembresiasConParcelas(
+      [{ ...membCon("m1", "p1"), arancelId: "c3" }],
+      catAranceles,
+      catParcelas,
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]!.membresiaId).toBe("m1");
+    expect(items[0]!.arancelId).toBe("c3");
+    expect(items[0]!.montoAplicado).toBe(140);
   });
 });
 

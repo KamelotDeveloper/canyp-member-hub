@@ -10,10 +10,13 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AjustesRouteImport } from './routes/ajustes'
 import { Route as ArancelesRouteImport } from './routes/aranceles'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as MembresiasRouteImport } from './routes/membresias'
 import { Route as NotificacionesRouteImport } from './routes/notificaciones'
 import { Route as PagosRouteImport } from './routes/pagos'
+import { Route as UsuariosRouteImport } from './routes/usuarios'
 import { Route as SociosIndexRouteImport } from './routes/socios.index'
 import { Route as SociosSocioIdRouteImport } from './routes/socios.$socioId'
 
@@ -22,9 +25,19 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AjustesRoute = AjustesRouteImport.update({
+  id: '/ajustes',
+  path: '/ajustes',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ArancelesRoute = ArancelesRouteImport.update({
   id: '/aranceles',
   path: '/aranceles',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MembresiasRoute = MembresiasRouteImport.update({
@@ -42,6 +55,11 @@ const PagosRoute = PagosRouteImport.update({
   path: '/pagos',
   getParentRoute: () => rootRouteImport,
 } as any)
+const UsuariosRoute = UsuariosRouteImport.update({
+  id: '/usuarios',
+  path: '/usuarios',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SociosIndexRoute = SociosIndexRouteImport.update({
   id: '/socios/',
   path: '/socios/',
@@ -55,29 +73,38 @@ const SociosSocioIdRoute = SociosSocioIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/ajustes': typeof AjustesRoute
   '/aranceles': typeof ArancelesRoute
+  '/login': typeof LoginRoute
   '/membresias': typeof MembresiasRoute
   '/notificaciones': typeof NotificacionesRoute
   '/pagos': typeof PagosRoute
+  '/usuarios': typeof UsuariosRoute
   '/socios/$socioId': typeof SociosSocioIdRoute
   '/socios/': typeof SociosIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/ajustes': typeof AjustesRoute
   '/aranceles': typeof ArancelesRoute
+  '/login': typeof LoginRoute
   '/membresias': typeof MembresiasRoute
   '/notificaciones': typeof NotificacionesRoute
   '/pagos': typeof PagosRoute
+  '/usuarios': typeof UsuariosRoute
   '/socios/$socioId': typeof SociosSocioIdRoute
   '/socios': typeof SociosIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/ajustes': typeof AjustesRoute
   '/aranceles': typeof ArancelesRoute
+  '/login': typeof LoginRoute
   '/membresias': typeof MembresiasRoute
   '/notificaciones': typeof NotificacionesRoute
   '/pagos': typeof PagosRoute
+  '/usuarios': typeof UsuariosRoute
   '/socios/$socioId': typeof SociosSocioIdRoute
   '/socios/': typeof SociosIndexRoute
 }
@@ -85,38 +112,50 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/ajustes'
     | '/aranceles'
+    | '/login'
     | '/membresias'
     | '/notificaciones'
     | '/pagos'
+    | '/usuarios'
     | '/socios/$socioId'
     | '/socios/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/ajustes'
     | '/aranceles'
+    | '/login'
     | '/membresias'
     | '/notificaciones'
     | '/pagos'
+    | '/usuarios'
     | '/socios/$socioId'
     | '/socios'
   id:
     | '__root__'
     | '/'
+    | '/ajustes'
     | '/aranceles'
+    | '/login'
     | '/membresias'
     | '/notificaciones'
     | '/pagos'
+    | '/usuarios'
     | '/socios/$socioId'
     | '/socios/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AjustesRoute: typeof AjustesRoute
   ArancelesRoute: typeof ArancelesRoute
+  LoginRoute: typeof LoginRoute
   MembresiasRoute: typeof MembresiasRoute
   NotificacionesRoute: typeof NotificacionesRoute
   PagosRoute: typeof PagosRoute
+  UsuariosRoute: typeof UsuariosRoute
   SociosSocioIdRoute: typeof SociosSocioIdRoute
   SociosIndexRoute: typeof SociosIndexRoute
 }
@@ -130,11 +169,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/ajustes': {
+      id: '/ajustes'
+      path: '/ajustes'
+      fullPath: '/ajustes'
+      preLoaderRoute: typeof AjustesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/aranceles': {
       id: '/aranceles'
       path: '/aranceles'
       fullPath: '/aranceles'
       preLoaderRoute: typeof ArancelesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/membresias': {
@@ -158,6 +211,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PagosRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/usuarios': {
+      id: '/usuarios'
+      path: '/usuarios'
+      fullPath: '/usuarios'
+      preLoaderRoute: typeof UsuariosRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/socios/': {
       id: '/socios/'
       path: '/socios'
@@ -177,10 +237,13 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AjustesRoute: AjustesRoute,
   ArancelesRoute: ArancelesRoute,
+  LoginRoute: LoginRoute,
   MembresiasRoute: MembresiasRoute,
   NotificacionesRoute: NotificacionesRoute,
   PagosRoute: PagosRoute,
+  UsuariosRoute: UsuariosRoute,
   SociosSocioIdRoute: SociosSocioIdRoute,
   SociosIndexRoute: SociosIndexRoute,
 }

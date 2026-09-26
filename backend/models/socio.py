@@ -13,9 +13,14 @@ class Socio(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     nombre: Mapped[str] = mapped_column(String, nullable=False)
-    dni: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    dni: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     telefono: Mapped[str] = mapped_column(String, nullable=False, default="")
     email: Mapped[str] = mapped_column(String, nullable=False, default="")
     direccion: Mapped[str] = mapped_column(String, nullable=False, default="")
     fechaAlta: Mapped[date] = mapped_column(Date, nullable=False, default=date.today)
     activo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Categoria: free lowercase string ("activo" | "vitalicio"), optional.
+    categoria: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Audit columns (D7): plain nullable string ids, NO DB FK.
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
+    updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)

@@ -15,6 +15,7 @@ from backend.models.notificacion import Notificacion
 from backend.models.parcela import Parcela
 from backend.models.pago import Pago, PagoItem
 from backend.models.socio import Socio
+from backend.models.usuario import Usuario
 
 __all__ = [
     "Area",
@@ -31,4 +32,5 @@ __all__ = [
     "Pago",
     "PagoItem",
     "Socio",
+    "Usuario",
 ]

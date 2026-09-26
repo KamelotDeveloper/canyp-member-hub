@@ -14,6 +14,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { it } from "vitest";
 
 function assert(cond: boolean, msg: string) {
   if (!cond) throw new Error(`cleanup.test failed: ${msg}`);
@@ -23,9 +24,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 const libCanyp = join(here, "..");
 const storePath = join(libCanyp, "store.tsx");
 const dataPath = join(libCanyp, "data.ts");
-
-assert(!existsSync(storePath), "store.tsx must be deleted");
-assert(!existsSync(dataPath), "data.ts must be deleted");
 
 // Walk src/ and collect every file that still imports from canyp/store or canyp/data.
 const srcRoot = join(libCanyp, "..", ".."); // src/
@@ -47,9 +45,14 @@ function walk(dir: string) {
 }
 walk(srcRoot);
 
-assert(
-  badImports.length === 0,
-  `no imports from canyp/store or canyp/data allowed, found in: ${badImports.join(", ")}`,
-);
+it("store.tsx and data.ts are deleted", () => {
+  assert(!existsSync(storePath), "store.tsx must be deleted");
+  assert(!existsSync(dataPath), "data.ts must be deleted");
+});
 
-console.log("cleanup.test: OK — store/data deleted, no stale imports remain");
+it("no source file imports from canyp/store or canyp/data", () => {
+  assert(
+    badImports.length === 0,
+    `no imports from canyp/store or canyp/data allowed, found in: ${badImports.join(", ")}`,
+  );
+});

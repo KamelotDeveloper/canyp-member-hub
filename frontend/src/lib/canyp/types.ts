@@ -2,6 +2,23 @@ export type Predio = "Embalse" | "Almafuerte";
 export type Area = "Balseros" | "Cabañeros" | "Guardería" | "Windsurf";
 export type EstadoMembresia = "activa" | "suspendida" | "vencida" | "baja";
 
+/** Modo de datos de la app: "local" (SQLite) o "remoto" (PostgreSQL/Supabase). */
+export type DataMode = "local" | "remoto";
+
+export interface AppSettings {
+  dataMode: DataMode;
+  databaseUrl: string;
+  /** Falso hasta que el wizard de primer uso (o Ajustes) guardó una elección. */
+  configured: boolean;
+}
+
+/** Usuario del sistema (autenticación). Nunca expone password_hash. */
+export interface Usuario {
+  id: string;
+  username: string;
+  created_at: string;
+}
+
 /** Rol de un miembro dentro de una unidad compartida (cabaña/balsa). */
 export type Rol = "Titular" | "Integrante";
 
@@ -17,6 +34,11 @@ export interface Socio {
   direccion: string;
   fechaAlta: string;
   activo: boolean;
+  /** Categoría libre ("activo" | "vitalicio"); null cuando no se definió. */
+  categoria?: string | null;
+  /** Usuario que creó el registro; null en importes masivos (sin operador). */
+  createdBy?: string | null;
+  updatedBy?: string | null;
 }
 
 export interface Membresia {
@@ -31,6 +53,10 @@ export interface Membresia {
   rol?: Rol;
   /** Parcela / cabaña compartida (área Cabañeros) */
   parcelaId?: string;
+  /** Arancel asignado explícitamente (null = resolver por heurística area+predio+categoria). */
+  arancelId?: string;
+  createdBy?: string | null;
+  updatedBy?: string | null;
 }
 
 export interface Arancel {
@@ -43,6 +69,8 @@ export interface Arancel {
   categoria?: CategoriaParcela;
   vigenteDesde: string;
   historico: { monto: number; vigenteDesde: string }[];
+  createdBy?: string | null;
+  updatedBy?: string | null;
 }
 
 export interface PagoItem {
@@ -71,6 +99,8 @@ export interface Pago {
   items: PagoItem[];
   total: number;
   membresiaIds: string[];
+  createdBy?: string | null;
+  updatedBy?: string | null;
 }
 
 export interface Notificacion {
@@ -134,6 +164,7 @@ export interface ImportParcela {
   tipo: "cabaña" | "balsa" | "guardería";
   categoria?: CategoriaParcela;
   predio: Predio;
+  arancelId?: string;
   miembros: ImportMembresia[];
 }
 
