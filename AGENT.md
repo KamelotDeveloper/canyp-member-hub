@@ -76,7 +76,7 @@ qué se hizo; el commit lo maneja Giuliano manualmente.
 ```
 Socio: id, nombre, dni (único), telefono, email, direccion, fechaAlta, activo
 Membresia: id, socioId, area, predio, estado, vencimiento, detalle
-Arancel: id, nombre, area, predio, monto, vigenteDesde, historico[]
+Arancel: id, nombre, area, predio, monto, categoria, concepto, vigenteDesde, historico[]
 Pago: id, numero, socioId, fecha, medio, items[], total, membresiaIds[]
 PagoItem: id, pagoId, arancelId, membresiaId, montoAplicado
 Notificacion: id, socioId, canal, fecha, motivo, mensaje

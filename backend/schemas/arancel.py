@@ -19,6 +19,9 @@ class ArancelBase(OrmConfig, BaseModel):
     predio: Predio
     monto: float
     categoria: CategoriaParcela | None = None
+    # Charge concept this row prices. Defaults to AREA, exactly like the column,
+    # so an admin who omits it gets the safe one instead of a 422 (D4).
+    concepto: ConceptoCobro = ConceptoCobro.AREA
     vigenteDesde: date
     historico: list[ArancelHistorial] = []
 
@@ -35,17 +38,16 @@ class ArancelUpdate(BaseModel):
     predio: Predio | None = None
     monto: float | None = None
     categoria: CategoriaParcela | None = None
+    # Writable on purpose (D4): create and update share the same validation
+    # semantics, so an admin can retag a row without a second code path. An
+    # explicit `null` is refused by the router with 422 — the column is NOT NULL.
+    concepto: ConceptoCobro | None = None
     vigenteDesde: date | None = None
     historico: list[ArancelHistorial] | None = None
 
 
 class ArancelResponse(ArancelBase):
     id: str
-    # Read-only exposure of the catalog concept (CBM-01). The frontend needs it
-    # to know which row prices the cuota social and which one prices a servicio
-    # charge, and MUST NOT infer it from the row's name. Output-only on purpose:
-    # `ArancelCreate`/`ArancelUpdate` are unchanged, so this adds no write path.
-    concepto: ConceptoCobro | None = None
     # Audit columns (D7): null for rows created before multi-user auth.
     created_by: str | None = None
     updated_by: str | None = None
