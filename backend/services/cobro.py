@@ -4,7 +4,7 @@ CBM-04, CS-03, CS-05, PAG-01 and design decisions D3/D4. The operator ticks the
 concepts that apply; the SERVER decides how many items exist, what each one is
 worth, what the receipt totals, and which memberships renew.
 
-The four rules this service exists to enforce:
+The five rules this service exists to enforce:
 
 1. **One item per ticked concept** (CBM-04). A balsa with 4 members is ONE
    area line, not four — the area arancel is fixed per unit (CS-03). Two
@@ -28,6 +28,13 @@ The four rules this service exists to enforce:
 4. **Windsurf is never double-charged** (CS-05). A Windsurf membership IS its
    cuota social, so it is classified as CUOTA_SOCIAL for charging purposes: it
    can never anchor an area line, and it renews when cuota social is ticked.
+5. **A utility costs what its PLACE costs** (D2/D3). The SERVICIO line is priced
+   from the anchor membership's own ``area``+``predio``, never from a global
+   "the club's service price": two units in the same receipt pay two different
+   amounts. ``montoAplicado`` still wins for that one receipt and never writes
+   back to ``aranceles.monto`` (ReQ-010). When a submitted ``arancelId`` cannot
+   price the line, the place's own row does and the reason is published in
+   ``avisos`` (D8) — the line is charged, never dropped (decision #671).
 
 Amounts are frozen here at creation (AGENT.md rule 4): later arancel edits never
 rewrite an existing ``PagoItem``.
@@ -50,6 +57,7 @@ from backend.models.membresia import Membresia
 from backend.models.parcela import Parcela
 from backend.services.cuota_social import cuota_de
 from backend.services.resolucion import (
+    arancel_mismatch,
     precio_cuota_social,
     precio_servicio,
     resolver_arancel_concepto,
@@ -75,11 +83,18 @@ class ItemResuelto:
 
 @dataclass(frozen=True)
 class CobroResuelto:
-    """The whole charge: its lines, its total and the memberships that renew."""
+    """The whole charge: its lines, its total, the memberships that renew and
+    the notices the operator has to see.
+
+    ``avisos`` is the observable half of D8/ReQ-011: it lists, in charge order,
+    every requested ``arancelId`` this charge had to replace with the place's own
+    row. Empty on a charge where every requested id matched.
+    """
 
     items: tuple[ItemResuelto, ...]
     total: float
     membresias_a_renovar: tuple[str, ...]
+    avisos: tuple[str, ...] = ()
 
 
 def concepto_socio_de(m: Membresia) -> ConceptoMembresia:
@@ -198,28 +213,46 @@ def _anchor_servicio(
 ) -> Membresia | None:
     """Anchor for the servicio line: the membership of the unit being charged.
 
-    Utilities are billed PER UNIT, so the line hangs on the unit — the same
-    anchor an area line would take — and its factor stays 1 whatever the head
-    count. When the charge carries no unit at all (a socio with only a cuota
-    social membership, CS-06) the line falls back to the member being charged,
-    which keeps ``PagoItem.membresiaId`` satisfiable. Either way the anchor is
-    bookkeeping: SERVICIO has no ``ConceptoMembresia`` counterpart, so it renews
-    nothing.
+    Utilities are billed PER UNIT and PER PLACE, so this anchor now carries the
+    place the line is priced from, not just a membership to hang the
+    ``PagoItem`` on: ``_item_servicio`` reads its ``area``+``predio`` to resolve
+    the catalog row (D2/D3). It is the same anchor an area line would take and
+    the factor stays 1 whatever the head count. When the charge carries no unit
+    at all (a socio with only a cuota social membership, CS-06) the line falls
+    back to the member being charged, which has no place to price from — so the
+    line is dropped rather than priced from a global fallback (ReQ-009). Either
+    way the anchor is bookkeeping: SERVICIO has no ``ConceptoMembresia``
+    counterpart, so it renews nothing.
     """
     return _anchor_area(db, submitted, item) or _anchor_nea(db, submitted, item, socio_id)
 
 
 def _item_area(
-    db: Session, concepto: ConceptoCobro, anchor: Membresia, item, cliente_arancel_id: str | None
+    db: Session,
+    concepto: ConceptoCobro,
+    anchor: Membresia,
+    item,
+    cliente_arancel_id: str | None,
+    avisos: list[str],
 ) -> ItemResuelto | None:
     """Price an AREA line: catalog amount, factor 1.0, never multiplied.
 
     The unit's own explicit ``Membresia.arancelId`` beats the id the client
     named, because that assignment is the domain's and the client is not
-    authority (D3). ``None`` means the area has no arancel in the catalog: the
-    line is not chargeable and is dropped rather than invented.
+    authority (D3). Whichever id was used, it only prices the line when it
+    belongs to the anchor's place AND carries this concept: a re-tagged or
+    out-of-place assignment is replaced by the place's real row and the reason
+    is appended to ``avisos`` (D8, ReQ-011) — the line is charged at the right
+    price, never dropped, because dropping it would hand out a free renewal
+    (decision #671).
+
+    ``None`` means the place has no arancel in the catalog at all: the line is
+    not chargeable and is dropped rather than invented.
     """
     arancel_id = anchor.arancelId or cliente_arancel_id
+    motivo = arancel_mismatch(db, arancel_id, anchor.area, anchor.predio, concepto)
+    if motivo is not None:
+        avisos.append(motivo)
     arancel = resolver_monto(
         db,
         anchor.area,
@@ -292,19 +325,39 @@ def _item_recargo(db: Session, item, anchor: Membresia) -> ItemResuelto:
     )
 
 
-def _item_servicio(db: Session, item, anchor: Membresia) -> ItemResuelto | None:
-    """Price the per-unit servicio/luz line from the catalog (decision #646).
+def _item_servicio(
+    db: Session, item, anchor: Membresia, avisos: list[str]
+) -> ItemResuelto | None:
+    """Price the per-unit servicio/luz line from the unit's OWN place (D2/D3).
 
-    The amount is the catalog row's ``monto`` — admin-editable, never derived
-    from the area or the member count — which the operator may adjust for THIS
-    charge by sending a different ``montoAplicado`` (a metered reading, a partial
-    period). Like the recargo, the adjusted figure is validated, is written only
-    to the item, and never overwrites ``aranceles.monto``.
+    The catalog row is the one carrying the anchor membership's ``area``+
+    ``predio``: two places of the same club bill different amounts, so there is
+    no global service price to fall back on. ``montoAplicado`` is the operator's
+    per-charge adjustment (a metered reading, a partial period) and it wins over
+    ``monto`` for THIS receipt: it is frozen on the item and never overwrites
+    ``aranceles.monto``, which stays the admin's to edit (ReQ-010).
 
-    ``None`` means the catalog has no SERVICIO row at all: the line is not
-    chargeable and is dropped rather than priced from thin air.
+    ``item.arancelId`` is honored when it IS a SERVICIO row of this same place —
+    that is what lets two apartes of one place be ticked as two independent
+    lines. When it is not, the place's own row wins and ``arancel_mismatch``
+    explains the substitution in ``avisos`` (D8): charged, never dropped.
+
+    ``None`` means this place has no service row, or the anchor has no place at
+    all: the line is not chargeable and is dropped rather than priced from thin
+    air (ReQ-003/009).
     """
-    arancel = precio_servicio(db)
+    motivo = arancel_mismatch(
+        db, item.arancelId, anchor.area, anchor.predio, ConceptoCobro.SERVICIO
+    )
+    if motivo is not None:
+        avisos.append(motivo)
+    arancel = precio_servicio(
+        db,
+        anchor.area,
+        anchor.predio,
+        _categoria_de(db, anchor),
+        arancel_id=item.arancelId,
+    )
     if arancel is None:
         return None
     monto = arancel.monto if item.montoAplicado is None else item.montoAplicado
@@ -361,6 +414,10 @@ def resolver_cobro(
     and nothing to renew — the 422 the spec requires for an empty charge
     (PAG-01). A single concept whose catalog row is missing is dropped, not
     fatal, so a partially-catalogued charge still registers what it can.
+
+    The returned ``avisos`` are the operator-visible half of D8: they name every
+    submitted ``arancelId`` this charge had to replace with the place's own row.
+    A charge that resolves exactly what was asked for returns an empty tuple.
     """
     submitted_ids = list(dict.fromkeys(membresia_ids or []))
     resueltos = resolver_items(
@@ -374,7 +431,12 @@ def resolver_cobro(
 def resolver_items(
     db: Session, *, socio_id: str, items: list, submitted_ids: list[str]
 ) -> CobroResuelto:
-    """Core resolution, split out so the empty-charge guard stays readable."""
+    """Core resolution, split out so the empty-charge guard stays readable.
+
+    ``avisos`` is collected in item order and de-duplicated: the same bad
+    ``arancelId`` submitted on two lines is ONE problem for the operator to fix,
+    not two identical warnings.
+    """
     submitted: list[Membresia] = []
     if submitted_ids:
         filas = db.query(Membresia).filter(Membresia.id.in_(submitted_ids)).all()
@@ -383,6 +445,7 @@ def resolver_items(
 
     unidades = _unidad(db, submitted)
     vistos: set[tuple[ConceptoCobro, str]] = set()
+    avisos: list[str] = []
     lineas: list[ItemResuelto] = []
     ticks: set[ConceptoMembresia] = set()
 
@@ -406,12 +469,12 @@ def resolver_items(
             anchor = _anchor_servicio(db, submitted, item, socio_id)
             if anchor is None:
                 raise CobroVacioError("El cobro no tiene una membresía a la que imputarse")
-            linea = _item_servicio(db, item, anchor)
+            linea = _item_servicio(db, item, anchor, avisos)
         elif concepto is ConceptoCobro.AREA:
             anchor = _anchor_area(db, submitted, item)
             if anchor is None:
                 continue
-            linea = _item_area(db, concepto, anchor, item, item.arancelId)
+            linea = _item_area(db, concepto, anchor, item, item.arancelId, avisos)
         else:
             anchor = _anchor_nea(db, submitted, item, socio_id)
             if anchor is None:
@@ -441,4 +504,5 @@ def resolver_items(
         items=tuple(lineas),
         total=sum(linea.monto for linea in lineas),
         membresias_a_renovar=tuple(_renovables(submitted_ids, {m.id: m for m in submitted}, ticks)),
+        avisos=tuple(dict.fromkeys(avisos)),
     )

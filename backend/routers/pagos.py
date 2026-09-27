@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend.models.pago import Pago, PagoItem
 from backend.models.usuario import Usuario
-from backend.schemas.pago import PagoCreate, PagoResponse, PagoUpdate
+from backend.schemas.pago import PagoCreate, PagoCreateResponse, PagoUpdate
 from backend.security import get_current_user
 from backend.services.cobro import CobroVacioError, resolver_cobro
 from backend.services.numeracion import siguiente_numero_comprobante
@@ -82,7 +82,7 @@ def get_pago(pago_id: str, db: Session = Depends(get_db)):
     return _pago_response(db, pago)
 
 
-@router.post("", response_model=dict, status_code=201)
+@router.post("", response_model=PagoCreateResponse, status_code=201)
 def create_pago(
     data: PagoCreate,
     db: Session = Depends(get_db),
@@ -95,6 +95,12 @@ def create_pago(
     further: the item set, every amount, the total AND the renewal set are
     resolved by ``services.cobro``. The client sends which concepts apply; the
     server owns the arithmetic (D3, D4).
+
+    ``avisos`` rides only on this answer (D8): it lists the submitted
+    ``arancelId``s the server had to replace with the unit's own place price, so
+    a re-tagged or out-of-place assignment is visible on the spot instead of
+    becoming a silent re-price. The receipt is stored either way — ReQ-011 never
+    drops a line.
     """
     submitted_ids = list(data.membresiaIds or []) or [
         item.membresiaId for item in (data.items or [])
@@ -146,4 +152,4 @@ def create_pago(
     if cobro.membresias_a_renovar:
         renovar_membresias(db, list(cobro.membresias_a_renovar), pago.fecha)
 
-    return _pago_response(db, pago)
+    return {**_pago_response(db, pago), "avisos": list(cobro.avisos)}

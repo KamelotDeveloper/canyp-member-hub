@@ -3,6 +3,7 @@ import { Plus, Printer } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -36,12 +37,15 @@ import { ExportButton } from "@/components/export";
 import { SocioCombobox } from "@/components/canyp/SocioCombobox";
 import { formatARS, formatFecha } from "@/lib/canyp/utils";
 import {
-  conceptosDisponibles,
+  arancelesDisponibles,
   conceptoDeMembresia,
   esMembresiaCobrable,
-  itemsPorConcepto,
+  formatearAvisosCobro,
+  itemsPorArancel,
   lineaAPagoItem,
+  membresiaDeLugar,
   totalEstimado,
+  type LugarCobrable,
 } from "@/lib/canyp/unidad-helpers";
 import {
   useSocios,
@@ -52,19 +56,25 @@ import {
   useParcelas,
   useUsuarios,
 } from "@/lib/canyp/queries";
-import type { Membresia, Pago, Socio, Usuario, ConceptoCobro } from "@/lib/canyp/types";
+import type { Arancel, ConceptoCobro, Membresia, Pago, Socio, Usuario } from "@/lib/canyp/types";
 
 /** Fecha de hoy en ISO corto, el default del cobro (PAG-02). */
 function hoyIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-/** Etiqueta de un concepto de cobro, tal como la nombra el dominio. */
-function labelConcepto(c: ConceptoCobro): string {
-  if (c === "cuota social") return "Cuota social";
-  if (c === "recargo") return "Recargo";
-  if (c === "servicio") return "Servicio";
-  return "Cuota de área";
+/** Concepto de una fila de catálogo; sin `concepto` servido, una fila es de área. */
+function conceptoDeArancel(a: Arancel): ConceptoCobro {
+  return a.concepto ?? "area";
+}
+
+/** Texto auxiliar de una fila: qué precio tiene y quién lo fija. */
+function ayudaArancel(a: Arancel): string {
+  const concepto = conceptoDeArancel(a);
+  if (concepto === "recargo") return "Importe que defina el operador";
+  if (concepto === "servicio") return "Precio de catálogo, ajustable por cobro";
+  if (concepto === "cuota social") return "Precio de un socio, por socio";
+  return "Cuota del área del socio";
 }
 
 export const Route = createFileRoute("/pagos")({
@@ -113,9 +123,8 @@ function PagosPage() {
 
   const [open, setOpen] = useState(false);
   const [socioId, setSocioId] = useState<string>("");
-  const [marcas, setMarcas] = useState<ConceptoCobro[]>([]);
-  const [recargo, setRecargo] = useState("");
-  const [servicio, setServicio] = useState("");
+  const [marcas, setMarcas] = useState<Set<string>>(new Set());
+  const [ajustes, setAjustes] = useState<Record<string, string>>({});
   const [fecha, setFecha] = useState(hoyIso);
   const [medio, setMedio] = useState("Transferencia");
   const [nota, setNota] = useState("");
@@ -128,7 +137,8 @@ function PagosPage() {
     if (search.nuevo === "1") {
       setOpen(true);
       setSocioId(search.socioId ?? "");
-      setMarcas([]);
+      setMarcas(new Set());
+      setAjustes({});
       navigate({ to: "/pagos", search: {}, replace: true });
     }
   }, [search.nuevo, search.socioId, navigate]);
@@ -141,48 +151,78 @@ function PagosPage() {
     [membresias, socioId],
   );
 
-  // Qué se puede cobrar a este socio (CS-05: Windsurf sólo cuota social).
-  const disponibles = useMemo(
-    () => conceptosDisponibles(membresiasSocio, aranceles),
-    [membresiasSocio, aranceles],
-  );
+  // Un lugar por unidad del socio, anclado en SU membresía de área (ReQ-004): una
+  // balsa y una cabaña del mismo socio son dos lugares con precios propios.
+  const lugares = useMemo<LugarCobrable[]>(() => {
+    const vistos = new Set<string>();
+    const out: LugarCobrable[] = [];
+    for (const m of membresiasSocio) {
+      if (conceptoDeMembresia(m) !== "area" || !m.area || !m.predio || m.area === "Windsurf") {
+        continue;
+      }
+      const clave = `${m.area}|${m.predio}`;
+      if (vistos.has(clave)) continue;
+      vistos.add(clave);
+      const categoria =
+        (m.parcelaId ? parcelas.find((p) => p.id === m.parcelaId)?.categoria : undefined) ?? null;
+      const ancla = membresiaDeLugar(membresiasSocio, {
+        area: m.area,
+        predio: m.predio,
+        categoria,
+      });
+      if (!ancla) continue;
+      out.push({ area: m.area, predio: m.predio, categoria, membresiaId: ancla.id });
+    }
+    return out;
+  }, [membresiasSocio, parcelas]);
 
-  // Los anclos: una membresía por concepto, elegidas por el concepto que
-  // SERVIRON, no por adivinar desde el área.
+  // Anclas de las líneas sin lugar: la cuota social del socio y el carrier de
+  // recargo. Las de área/servicio salen del lugar de cada fila (ReQ-004).
   const anclas = useMemo(() => {
     const cuota = membresiasSocio.find((m) => conceptoDeMembresia(m) === "cuota social");
     const area = membresiasSocio.find(
       (m) => conceptoDeMembresia(m) === "area" && m.area !== "Windsurf",
     );
-    return { cuota: cuota?.id, area: cuota?.id ?? area?.id };
+    return { cuota: cuota?.id, area: area?.id ?? cuota?.id };
   }, [membresiasSocio]);
 
-  // Una sola línea por concepto, compuesta contra el catálogo (PAG-01).
+  // Filas del catálogo que este cobro puede tikear (ReQ-001). La cuota social
+  // sólo se ofrece si el socio la tiene; Windsurf (sin unidad) cobra sólo cuota
+  // social (CS-05), como antes de recablear.
+  const disponibles = useMemo(() => {
+    const soloWindsurf = lugares.length === 0 && membresiasSocio.some((m) => m.area === "Windsurf");
+    return arancelesDisponibles(aranceles, lugares).filter((a) => {
+      const concepto = conceptoDeArancel(a);
+      if (concepto === "cuota social") return Boolean(anclas.cuota);
+      if (soloWindsurf) return false;
+      return true;
+    });
+  }, [aranceles, lugares, anclas.cuota, membresiasSocio]);
+
+  // Aviso ReQ-003: el socio tiene unidad(es) pero ninguna fila de servicio.
+  const hayServicio = useMemo(
+    () => disponibles.some((a) => conceptoDeArancel(a) === "servicio"),
+    [disponibles],
+  );
+
+  const ajustesNum = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [id, valor] of Object.entries(ajustes)) {
+      const n = Number(valor);
+      if (valor.trim() !== "" && Number.isFinite(n)) out[id] = n;
+    }
+    return out;
+  }, [ajustes]);
+
+  // Una línea por arancel tickeado, compuesta contra el catálogo (PAG-01).
   const lineas = useMemo(
     () =>
-      itemsPorConcepto(marcas, {
+      itemsPorArancel(aranceles, lugares, marcas, {
         anclas,
         miembros: membresiasSocio.filter((m) => conceptoDeMembresia(m) === "area").length || 1,
-        aranceles,
-        ...(anclas.area
-          ? (() => {
-              const m = membresiasSocio.find((x) => x.id === anclas.area);
-              const parcela = m?.parcelaId ? parcelas.find((p) => p.id === m.parcelaId) : undefined;
-              return m?.area && m.predio
-                ? {
-                    lugar: {
-                      area: m.area,
-                      predio: m.predio,
-                      categoria: parcela?.categoria ?? null,
-                    },
-                  }
-                : {};
-            })()
-          : {}),
-        ...(recargo ? { recargo: Number(recargo) } : {}),
-        ...(servicio ? { servicio: Number(servicio) } : {}),
+        ajustes: ajustesNum,
       }),
-    [marcas, anclas, membresiasSocio, parcelas, aranceles, recargo, servicio],
+    [aranceles, lugares, marcas, anclas, membresiasSocio, ajustesNum],
   );
 
   const total = totalEstimado(lineas);
@@ -201,7 +241,7 @@ function PagosPage() {
 
   function registrar() {
     if (!socioId || lineas.length === 0) {
-      toast.error("Elegí un socio y al menos un concepto");
+      toast.error("Elegí un socio y al menos un arancel");
       return;
     }
     createPago.mutate(
@@ -222,16 +262,27 @@ function PagosPage() {
           toast.success(
             `Pago registrado: ${pago.items.map((i) => i.nombre).join(" + ")} · ${formatARS(pago.total)}`,
           );
+          // ReQ-011: si el servidor reemplazó un arancel mal asignado, lo avisa
+          // acá. El cobro ya se registró; el toast es warning, no error.
+          const aviso = formatearAvisosCobro(pago.avisos);
+          if (aviso) toast.warning("Cobro registrado con avisos", { description: aviso });
         },
         onError: () => toast.error("Error al registrar el pago"),
       },
     );
   }
 
-  function alternar(concepto: ConceptoCobro) {
-    setMarcas((prev) =>
-      prev.includes(concepto) ? prev.filter((c) => c !== concepto) : [...prev, concepto],
-    );
+  function alternar(arancelId: string) {
+    setMarcas((prev) => {
+      const next = new Set(prev);
+      if (next.has(arancelId)) next.delete(arancelId);
+      else next.add(arancelId);
+      return next;
+    });
+  }
+
+  function ajustar(arancelId: string, valor: string) {
+    setAjustes((prev) => ({ ...prev, [arancelId]: valor }));
   }
 
   return (
@@ -245,9 +296,8 @@ function PagosPage() {
             <Button
               onClick={() => {
                 setSocioId("");
-                setMarcas([]);
-                setRecargo("");
-                setServicio("");
+                setMarcas(new Set());
+                setAjustes({});
                 setOpen(true);
               }}
             >
@@ -360,9 +410,8 @@ function PagosPage() {
                 value={socioId}
                 onChange={(v) => {
                   setSocioId(v);
-                  setMarcas([]);
-                  setRecargo("");
-                  setServicio("");
+                  setMarcas(new Set());
+                  setAjustes({});
                 }}
                 socios={socios}
               />
@@ -370,61 +419,44 @@ function PagosPage() {
 
             {socioId && disponibles.length > 0 && (
               <div>
-                <Label>Conceptos a cobrar</Label>
+                <Label>Aranceles a cobrar</Label>
                 <ul className="mt-1.5 space-y-2">
-                  {disponibles.map((c) => (
-                    <li
-                      key={c}
-                      className="flex items-center gap-3 rounded-md border border-border p-3"
-                    >
-                      <Checkbox checked={marcas.includes(c)} onCheckedChange={() => alternar(c)} />
-                      <div className="flex-1">
-                        <p className="text-sm font-medium">{labelConcepto(c)}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {c === "recargo"
-                            ? "Importe que defina el operador"
-                            : c === "servicio"
-                              ? "Precio de catálogo, ajustable por cobro"
-                              : c === "cuota social"
-                                ? "Precio de un socio, por socio"
-                                : "Cuota del área del socio"}
-                        </p>
-                      </div>
-                    </li>
-                  ))}
+                  {disponibles.map((a) => {
+                    const concepto = conceptoDeArancel(a);
+                    const editable = concepto === "servicio" || concepto === "recargo";
+                    return (
+                      <li
+                        key={a.id}
+                        className="flex items-center gap-3 rounded-md border border-border p-3"
+                      >
+                        <Checkbox
+                          checked={marcas.has(a.id)}
+                          onCheckedChange={() => alternar(a.id)}
+                        />
+                        <div className="flex-1">
+                          <p className="text-sm font-medium">{a.nombre}</p>
+                          <p className="text-xs text-muted-foreground">{ayudaArancel(a)}</p>
+                        </div>
+                        {editable && marcas.has(a.id) && (
+                          <Input
+                            type="number"
+                            min={0}
+                            step={100}
+                            className="w-[110px]"
+                            aria-label={`Importe de ${a.nombre}`}
+                            value={ajustes[a.id] ?? ""}
+                            onChange={(e) => ajustar(a.id, e.target.value)}
+                            placeholder={String(a.monto || "")}
+                          />
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
-                {marcas.includes("servicio") && (
-                  <div className="mt-2">
-                    <Label htmlFor="pago-servicio" className="text-xs">
-                      Importe del servicio
-                    </Label>
-                    <Input
-                      id="pago-servicio"
-                      type="number"
-                      min={0}
-                      step={100}
-                      className="mt-1.5"
-                      value={servicio}
-                      onChange={(e) => setServicio(e.target.value)}
-                    />
-                  </div>
-                )}
-                {marcas.includes("recargo") && (
-                  <div className="mt-2">
-                    <Label htmlFor="pago-recargo" className="text-xs">
-                      Importe del recargo
-                    </Label>
-                    <Input
-                      id="pago-recargo"
-                      type="number"
-                      min={0}
-                      step={100}
-                      className="mt-1.5"
-                      value={recargo}
-                      onChange={(e) => setRecargo(e.target.value)}
-                      placeholder="0"
-                    />
-                  </div>
+                {lugares.length > 0 && !hayServicio && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Sin arancel de servicio para esta área.
+                  </p>
                 )}
               </div>
             )}
@@ -440,7 +472,7 @@ function PagosPage() {
                 <p className="text-xs font-semibold tracking-wide uppercase">Ítems a cobrar</p>
                 <ul className="mt-2 space-y-1 text-sm">
                   {lineas.map((l) => (
-                    <li key={l.concepto} className="flex justify-between">
+                    <li key={l.arancelId} className="flex justify-between">
                       <span>
                         {l.arancelNombre}
                         {l.factor > 1 && (
@@ -516,7 +548,9 @@ function PagosPage() {
             <DialogTitle>Comprobante emitido</DialogTitle>
             <DialogDescription>Revisá el detalle y usá Imprimir para emitirlo.</DialogDescription>
           </DialogHeader>
-          {comprobante && <ComprobanteView comprobante={comprobante} socioMap={socioMap} />}
+          {comprobante && (
+            <ComprobanteView comprobante={comprobante} socioMap={socioMap} aranceles={aranceles} />
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setComprobante(null)}>
               Cerrar
@@ -536,7 +570,7 @@ function PagosPage() {
       {comprobante &&
         createPortal(
           <div className="print-root">
-            <ComprobanteView comprobante={comprobante} socioMap={socioMap} />
+            <ComprobanteView comprobante={comprobante} socioMap={socioMap} aranceles={aranceles} />
           </div>,
           document.body,
         )}
@@ -548,9 +582,12 @@ function PagosPage() {
 function ComprobanteView({
   comprobante,
   socioMap,
+  aranceles,
 }: {
   comprobante: Pago;
   socioMap: Map<string, Socio>;
+  /** Catálogo vigente: sirve para marcar un nombre congelado que ya no existe. */
+  aranceles: Arancel[];
 }) {
   return (
     <div className="print-area rounded-lg border border-border bg-card p-5">
@@ -578,12 +615,30 @@ function ComprobanteView({
       </div>
       <table className="w-full text-sm">
         <tbody>
-          {comprobante.items.map((i) => (
-            <tr key={i.arancelId} className="border-t border-border">
-              <td className="py-2">{i.nombre}</td>
-              <td className="py-2 text-right tabular-nums">{formatARS(i.monto)}</td>
-            </tr>
-          ))}
+          {comprobante.items.map((i) => {
+            // ReQ-016: el nombre viaja congelado en el ítem y NO se reescribe. Si
+            // el catálogo ya no lo usa (fila renombrada o dada de baja), se
+            // muestra tal cual y se marca como histórico para que sea legible.
+            const vigente = aranceles.find((a) => a.id === i.arancelId);
+            const historico = !vigente || vigente.nombre !== i.nombre;
+            return (
+              <tr key={i.arancelId} className="border-t border-border">
+                <td className="py-2">
+                  {i.nombre}
+                  {historico && (
+                    <Badge
+                      variant="secondary"
+                      className="ml-2 align-middle text-[10px]"
+                      title="Nombre congelado en el comprobante; el catálogo ya no lo usa."
+                    >
+                      Histórico
+                    </Badge>
+                  )}
+                </td>
+                <td className="py-2 text-right tabular-nums">{formatARS(i.monto)}</td>
+              </tr>
+            );
+          })}
           <tr className="border-t-2 border-foreground/20">
             <td className="py-2 font-bold">Total</td>
             <td className="py-2 text-right font-bold tabular-nums">

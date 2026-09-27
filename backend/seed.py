@@ -154,13 +154,26 @@ def _build_aranceles():
     catalog. Its area/predio are placeholders only — PR 5 resolves the recargo
     by `concepto`, never by area+predio, and no charge logic lives here.
 
-    `a16` is the opposite case: a SERVICIO price that IS in the catalog, so an
-    admin edits it like any other arancel and the charge only reads it
-    (decision #646).
+    SERVICIO rows are PLACES, not concepts (D7 / ReQ-002): one per real place
+    of the club, `categoria` NULL on all of them. That NULL is what makes one row
+    price every unit of its place — a balsa's parcel has no `categoria`, and a
+    cabaña's carries one (Chica/Mediana/Especial/Grande), so `categoria IS NULL`
+    is the catch-all branch `precio_servicio` falls back to for every parcel size
+    instead of pricing only the sizes a row was invented for.
+
+    The three SERVICIO amounts below are DEMO values ("+ valores a configurar
+    por admin") that the club admin configures in the catalog. They are NOT
+    inferred from the amarre amount (ReQ-105), and the operator can override
+    them per charge via `montoAplicado` (ReQ-010). They live in this docstring
+    because `Arancel` has no `descripcion` column, and adding one would be a
+    schema change this seed does not get to make.
     """
     t = _today()
     return [
-        {"id": "a1", "nombre": "Amarre y Servicios",          "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "monto": 18500.0,  "vigenteDesde": t - timedelta(days=90), "historico": [{"monto": 15000.0, "vigenteDesde": str(t - timedelta(days=365))}]},
+        # ── Amarre: the mooring fee, on its own row. It used to be the merged
+        #    "Amarre y Servicios" (D6); old receipts still carry that name and
+        #    keep it frozen (ReQ-016).
+        {"id": "a1", "nombre": "Amarre",                        "area": Area.BALSEROS,    "predio": Predio.EMBALSE,    "monto": 18500.0,  "vigenteDesde": t - timedelta(days=90), "historico": [{"monto": 15000.0, "vigenteDesde": str(t - timedelta(days=365))}]},
         {"id": "a7", "nombre": "Cuota",                        "area": Area.WINDSURF,    "predio": Predio.ALMAFUERTE, "monto": 19000.0,  "vigenteDesde": t - timedelta(days=15), "historico": []},
         # ── Almafuerte per-categoría aranceles (RQ13/RQ16: resolver_monto finds rows) ──
         {"id": "a8",  "nombre": "Parcela",                     "area": Area.CABANEROS,   "predio": Predio.ALMAFUERTE, "categoria": CategoriaParcela.CHICA,    "monto": 15000.0, "vigenteDesde": t - timedelta(days=90), "historico": []},
@@ -176,18 +189,27 @@ def _build_aranceles():
         #    recargo carrier its area/predio are placeholders — the resolver
         #    finds it by `concepto` only, never by area+predio.
         {"id": "a15", "nombre": "Cuota social",                "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "monto": 10000.0,  "vigenteDesde": t - timedelta(days=30), "historico": [], "concepto": ConceptoCobro.CUOTA_SOCIAL},
-        # ── Servicio/luz: a REAL catalog price, per unit and admin-editable
-        #    (decision #646). Unlike the recargo carrier this row carries an
-        #    amount, so a charge takes the catalog `monto` (which the operator
-        #    may adjust for one charge) and never multiplies it by the member
-        #    count. Placeholder area/predio, like the other concept rows: the
-        #    resolver finds it by `concepto` only.
-        {"id": "a16", "nombre": "Servicio (luz, agua)",        "area": Area.GUARDERIA,   "predio": Predio.ALMAFUERTE, "monto": 5000.0,   "vigenteDesde": t - timedelta(days=30), "historico": [], "concepto": ConceptoCobro.SERVICIO},
+        # ── Servicio/luz: a REAL catalog price per PLACE, admin-editable
+        #    (decision #646, D7). Unlike the recargo carrier these rows carry
+        #    an amount, so a charge takes the catalog `monto` (which the
+        #    operator may adjust for one charge) and never multiplies it by the
+        #    member count. `categoria` is omitted (= NULL) on all three: the
+        #    catch-all branch is the one every parcel size of the place lands
+        #    on. The old global `a16` placeholder is gone — with per-place
+        #    resolution it collided with real Guardería/Almafuerte (D6).
+        {"id": "a_serv_balseros",  "nombre": "Servicio",     "area": Area.BALSEROS,  "predio": Predio.EMBALSE,    "monto": 5000.0,  "vigenteDesde": t - timedelta(days=30), "historico": [], "concepto": ConceptoCobro.SERVICIO},
+        {"id": "a_serv_cabaneros", "nombre": "Servicio",     "area": Area.CABANEROS, "predio": Predio.ALMAFUERTE, "monto": 4000.0,  "vigenteDesde": t - timedelta(days=30), "historico": [], "concepto": ConceptoCobro.SERVICIO},
+        {"id": "a_serv_guarderia", "nombre": "Servicio",     "area": Area.GUARDERIA, "predio": Predio.ALMAFUERTE, "monto": 2500.0,  "vigenteDesde": t - timedelta(days=30), "historico": [], "concepto": ConceptoCobro.SERVICIO},
     ]
 
 
 def _build_pagos():
-    """4 pagos with items, sequential numbers, recent dates."""
+    """4 pagos with items, sequential numbers, recent dates.
+
+    ``pi1``/``pi4`` keep the frozen ``"Amarre y Servicios"`` name on purpose:
+    ``pago_items.arancelNombre`` is a receipt, not a catalog mirror, and the
+    catalog no longer carries that name since the split (ReQ-016).
+    """
     t = _today()
     return [
         {

@@ -2,7 +2,7 @@
 
 from datetime import date
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from backend.models.enums import ConceptoCobro
 from backend.schemas.common import OrmConfig
@@ -34,6 +34,22 @@ class PagoItemCreate(PagoItemBase):
 class PagoItemResponse(PagoItemBase):
     id: str
     pagoId: str
+
+
+class PagoItemComprobante(BaseModel):
+    """A receipt line as the API serves it back: the frozen name, amount and why.
+
+    Not an ORM projection — ``PagoItem`` stores ``arancelNombre``/``montoAplicado``,
+    while the receipt reads them as ``nombre``/``monto`` and adds the resolved
+    ``concepto``+``factor`` that explain the amount (PAG-01). Plain ``BaseModel``
+    on purpose: there is no row to read attributes from.
+    """
+
+    arancelId: str
+    nombre: str
+    monto: float
+    concepto: ConceptoCobro | None = None
+    factor: float
 
 
 class PagoBase(OrmConfig, BaseModel):
@@ -81,3 +97,28 @@ class PagoResponse(PagoBase):
     # Audit columns (D7): null for rows created before multi-user auth.
     created_by: str | None = None
     updated_by: str | None = None
+
+
+class PagoCreateResponse(BaseModel):
+    """The contract of ``POST /api/pagos``: the stored receipt plus ``avisos``.
+
+    Everything a later ``GET`` returns, and one thing it cannot: the avisos are
+    a property of the RESOLUTION, not of the row, so they exist only in the
+    answer to the charge that produced them. A line whose submitted
+    ``arancelId`` could not price it was re-resolved against the unit's own
+    place, and this is where the operator is told (D8, ReQ-011) — the money
+    moved at the right price, the mismatch did not stay silent.
+    """
+
+    id: str
+    numero: str
+    socioId: str
+    fecha: date
+    medio: str
+    total: float
+    nota: str | None = None
+    items: list[PagoItemComprobante] = Field(default_factory=list)
+    membresiaIds: list[str] = Field(default_factory=list)
+    createdBy: str | None = None
+    updatedBy: str | None = None
+    avisos: list[str] = Field(default_factory=list)

@@ -8,10 +8,14 @@
  *   `ImportPayload` so the backend creates Parcela + socios + membresías
  *   transactionally (RQ 6 / RQ 12). First socio row is the Titular; the rest
  *   are Integrantes.
- * - `itemsPorConcepto` composes ONE payment line per ticked concept (área,
- *   cuota social, servicio, recargo). It replaced the single-item resolvers
- *   `itemsParaMembresias`/`itemsParaMembresiasConParcelas`, which could only
- *   ever bill one arancel for the whole charge (PR 7).
+ * - `itemsPorArancel` composes ONE payment line per ticked `arancelId` (ReQ-001
+ *   / ReQ-012). Keying by the catalog row instead of the concept is what lets
+ *   two apartes of the same place be two independent lines.
+ * - `arancelesDisponibles` lists the catalog rows a charge may tick for a set of
+ *   places, and `membresiaDeLugar` finds the membership that anchors a place so
+ *   every line imputes to its own unit, never the titular's (ReQ-004).
+ * - `formatearAvisosCobro` turns the server's resolution warnings (D8, ReQ-011)
+ *   into the one line the cobro dialogs show the operator.
  *
  * Every amount this module produces is a client ESTIMATE: the server re-resolves
  * each line against the catalog and is the only authority over the total.
@@ -116,6 +120,28 @@ export function buildNuevaUnidadPayload(form: NuevaUnidadForm): ImportPayload | 
 }
 
 /**
+ * Lugar físico de una membresía: la pareja área+predio y, para `area`, la
+ * categoría de la parcela.
+ *
+ * `area` y `servicio` se resuelven por LUGAR (ReQ-002): dos lugares del club
+ * llevan precios distintos. `cuota social` y `recargo` ignoran el lugar y se
+ * resuelven por concepto (ReQ-101).
+ */
+export interface LugarCobro {
+  area: Area;
+  predio: Predio;
+  categoria: CategoriaParcela | null;
+}
+
+/**
+ * Un lugar cobrable junto con la membresía que lo ancla (ReQ-004): cada línea de
+ * área/servicio se imputa al lugar de SU membresía, nunca al del titular.
+ */
+export interface LugarCobrable extends LugarCobro {
+  membresiaId: string;
+}
+
+/**
  * Anclas de las líneas de cobro. `PagoItem.membresiaId` es NOT NULL, así que
  * cada concepto necesita una membresía a la que imputarse (CBM-03).
  *
@@ -130,7 +156,12 @@ export interface AnclasCobro {
   cuota?: string | undefined;
 }
 
-/** Una línea de cobro compuesta en el cliente (PAG-01: estimación, NO autoridad). */
+/**
+ * Una línea de cobro compuesta en el cliente (PAG-01: estimación, NO autoridad).
+ *
+ * La identidad de la línea es `arancelId`, no `concepto` (ReQ-012): dos filas
+ * del mismo concepto son dos líneas distintas. `concepto` viaja sólo como pista.
+ */
 export interface LineaCobro {
   concepto: ConceptoCobro;
   arancelId: string;
@@ -144,20 +175,6 @@ export interface LineaCobro {
   montoAplicado?: number;
 }
 
-export interface OpcionesItemsPorConcepto {
-  anclas: AnclasCobro;
-  /** Miembros de la unidad gestionada → multiplicador de la cuota social. */
-  miembros: number;
-  /** Catálogo completo, tal como lo sirve `GET /api/aranceles`. */
-  aranceles: Arancel[];
-  /** Área+predio+categoría que priced la línea de área; sin unidad no hay línea de área. */
-  lugar?: { area: Area; predio: Predio; categoria: CategoriaParcela | null };
-  /** Importe tipeado por el operador para el recargo (CBM-03). */
-  recargo?: number;
-  /** Ajuste del importe de servicio para ESTE cobro (PAG-03). */
-  servicio?: number;
-}
-
 /**
  * Concepto de un arancel. Una fila sin `concepto` es una fila de área: ese es
  * el default de la columna en la base (`ConceptoCobro.AREA`) y todas las filas
@@ -168,30 +185,55 @@ function conceptoDeArancel(a: Arancel): ConceptoCobro {
 }
 
 /**
- * Devuelve la fila de catálogo que priced un concepto, replicando la
- * resolución del servidor (`resolucion.py`):
+ * Devuelve la fila de catálogo que priced un concepto, replicando la resolución
+ * del servidor (`resolucion.py`) con la **regla dual** (ReQ-008):
  *
- * - `area` → arancel de la categoría exacta de la unidad y, si no hay, el
- *   catch-all (`categoria` null) del mismo área+predio.
- * - cualquier otro concepto → la fila etiquetada con ese concepto, ignorando
- *   área y predio (esas filas guardan valores placeholder porque las columnas
- *   son NOT NULL). Ante varias, gana la de menor id, igual que en el servidor.
+ * - `area` y `servicio` se resuelven por LUGAR (área+predio; la categoría sólo
+ *   aplica a `area`, y el resto cae al catch-all `categoria` null). Dos lugares
+ *   del club llevan precios distintos, así que una fila global cobraría de más o
+ *   de menos (ReQ-002).
+ * - `cuota social` y `recargo` se resuelven por CONCEPTO, ignorando área y
+ *   predio (guardan un placeholder porque esas columnas son NOT NULL). Ante
+ *   varias, gana la de menor id, igual que el servidor.
  *
- * Nunca devuelve nada por coincidencia de texto: el concepto es la clave.
+ * Un `servicio` sin `lugar` NO resuelve nada: PR6 borró el fallback global
+ * histórico al recablear al último consumidor. Mantenerlo vivo reintroducía el
+ * bug reportado — un único precio de servicio para todos los lugares (D2).
  */
 export function arancelPorConcepto(
   aranceles: Arancel[],
   concepto: ConceptoCobro,
-  lugar?: { area: Area; predio: Predio; categoria: CategoriaParcela | null },
+  lugar?: LugarCobro,
 ): Arancel | undefined {
-  if (concepto !== "area") {
-    return primeraPorId((a) => conceptoDeArancel(a) === concepto && a.categoria == null, aranceles);
+  if (concepto === "area") return arancelDeArea(aranceles, lugar);
+  if (concepto === "servicio") {
+    return lugar ? arancelDeLugar(aranceles, concepto, lugar, false) : undefined;
   }
+  return primeraPorId((a) => conceptoDeArancel(a) === concepto && a.categoria == null, aranceles);
+}
+
+/** Fila `area` de un lugar: la categoría exacta si existe, si no el catch-all. */
+function arancelDeArea(aranceles: Arancel[], lugar?: LugarCobro): Arancel | undefined {
   if (!lugar) return undefined;
-  if (lugar.categoria) {
+  return arancelDeLugar(aranceles, "area", lugar, true);
+}
+
+/**
+ * Primera fila de un concepto para un lugar, por id ascendente. Con
+ * `categoriaExacta` intenta primero la categoría del lugar y cae al catch-all
+ * (`categoria` null); los conceptos que no usan categoría van directo al
+ * catch-all.
+ */
+function arancelDeLugar(
+  aranceles: Arancel[],
+  concepto: ConceptoCobro,
+  lugar: LugarCobro,
+  categoriaExacta: boolean,
+): Arancel | undefined {
+  if (categoriaExacta && lugar.categoria) {
     const exacta = aranceles.find(
       (a) =>
-        conceptoDeArancel(a) === "area" &&
+        conceptoDeArancel(a) === concepto &&
         a.area === lugar.area &&
         a.predio === lugar.predio &&
         a.categoria === lugar.categoria,
@@ -200,7 +242,7 @@ export function arancelPorConcepto(
   }
   return primeraPorId(
     (a) =>
-      conceptoDeArancel(a) === "area" &&
+      conceptoDeArancel(a) === concepto &&
       a.area === lugar.area &&
       a.predio === lugar.predio &&
       a.categoria == null,
@@ -208,89 +250,43 @@ export function arancelPorConcepto(
   );
 }
 
+/** TODAS las filas `servicio` de un lugar, por id ascendente (N apartes → N líneas). */
+function arancelesDeServicio(aranceles: Arancel[], lugar: LugarCobro): Arancel[] {
+  return aranceles
+    .filter(
+      (a) =>
+        conceptoDeArancel(a) === "servicio" &&
+        a.area === lugar.area &&
+        a.predio === lugar.predio &&
+        a.categoria == null,
+    )
+    .sort((x, y) => (x.id < y.id ? -1 : 1));
+}
+
 /** Primera fila que cumple el predicado, por id ascendente (determinismo). */
 function primeraPorId(match: (a: Arancel) => boolean, aranceles: Arancel[]): Arancel | undefined {
   return [...aranceles].filter(match).sort((x, y) => (x.id < y.id ? -1 : 1))[0];
 }
 
-/**
- * Compone UN ítem por cada concepto marcado por el operador (CBM-02).
- *
- * El cliente propone el desglose y el `montoAplicado` viaja como PISTA: el
- * servidor re-resuelve cada línea contra el catálogo y es la única autoridad
- * del total (PAG-01). Lo que se replica acá es la FORMA de la línea, para que
- * el total que ve el operador sea el mismo que va a cobrar el servidor:
- *
- * - `area` → monto de catálogo, factor 1 (una balsa no se multiplica por
- *   integrantes). Sin arancel de área la línea se cae, igual que el servidor.
- * - `cuota social` → precio de UN miembro × cantidad de miembros de la unidad.
- * - `servicio` → precio de catálogo (o el ajuste del operador para este cobro),
- *   factor 1: los servicios se cobran por unidad, no por integrante.
- * - `recargo` → el importe tipeado. Sin importe mayor a 0 la línea se cae, en
- *   lugar de dejar que el servidor la rechace con un 422.
- *
- * Una línea sin ancla o sin fila de catálogo no se emite; devolver un array
- * vacío es justamente lo que deja el botón de confirmar deshabilitado.
- */
-export function itemsPorConcepto(
-  conceptos: readonly ConceptoCobro[],
-  o: OpcionesItemsPorConcepto,
-): LineaCobro[] {
-  const lineas: LineaCobro[] = [];
-  for (const concepto of conceptos) {
-    const membresiaId = concepto === "cuota social" ? o.anclas.cuota : o.anclas.area;
-    if (!membresiaId) continue;
-    const arancel = arancelPorConcepto(o.aranceles, concepto, o.lugar);
-    if (!arancel) continue;
-
-    if (concepto === "recargo") {
-      const monto = o.recargo ?? 0;
-      if (monto <= 0) continue;
-      lineas.push({
-        concepto,
-        arancelId: arancel.id,
-        arancelNombre: arancel.nombre,
-        membresiaId,
-        monto,
-        factor: 1,
-        montoAplicado: monto,
-      });
-      continue;
-    }
-
-    if (concepto === "servicio") {
-      const monto = o.servicio ?? arancel.monto;
-      if (monto <= 0) continue;
-      lineas.push({
-        concepto,
-        arancelId: arancel.id,
-        arancelNombre: arancel.nombre,
-        membresiaId,
-        monto,
-        factor: 1,
-        // El importe de catálogo no necesita viajar: el servidor ya lo usa
-        // cuando el ítem no trae montoAplicado. Sólo se manda si se ajustó.
-        ...(monto !== arancel.monto ? { montoAplicado: monto } : {}),
-      });
-      continue;
-    }
-
-    const factor = concepto === "cuota social" ? Math.max(1, o.miembros) : 1;
-    lineas.push({
-      concepto,
-      arancelId: arancel.id,
-      arancelNombre: arancel.nombre,
-      membresiaId,
-      monto: arancel.monto * factor,
-      factor,
-    });
-  }
-  return lineas;
-}
-
 /** Total estimado de las líneas compuestas; el servidor recalcula el suyo. */
 export function totalEstimado(lineas: LineaCobro[]): number {
   return lineas.reduce((s, l) => s + l.monto, 0);
+}
+
+/**
+ * Texto legible de los avisos de resolución de un cobro (D8, ReQ-011).
+ *
+ * El backend es el único que redacta el motivo (un `arancelId` re-etiquetado o
+ * fuera de lugar que se cobró al precio correcto): acá solo se descartan los
+ * vacíos y se unen para mostrarlos en un único aviso al operador. Devuelve
+ * `null` cuando no hay nada que avisar, para que el llamador no abra un toast
+ * vacío. Nunca afirma un importe: el total y el desglose son los que resuelve
+ * el servidor.
+ */
+export function formatearAvisosCobro(avisos?: readonly string[] | null): string | null {
+  const limpios = (avisos ?? []).map((a) => a.trim()).filter((a) => a.length > 0);
+  if (limpios.length === 0) return null;
+  return limpios.join(" · ");
 }
 
 /**
@@ -313,35 +309,175 @@ export function lineaAPagoItem(l: LineaCobro): PagoItemInput {
 }
 
 /**
- * Conceptos que se pueden ofrecer para un socio (PAG-01 / CS-05).
+ * Aranceles que un cobro puede tikear para un conjunto de lugares (ReQ-001).
  *
- * - `cuota social` solo si el socio tiene la membresía: sin ella el servidor
- *   rechaza el cobro con un 422, así que no se ofrece.
- * - `area` solo si hay una membresía de área que no sea Windsurf.
- * - `servicio` y `recargo` solo si el catálogo tiene la fila que los priced,
- *   para no ofrecer un tick que no puede cobrarse.
- * - Un socio de Windsurf (sin otra área) cobra CUOTA SOCIAL y nada más.
+ * Devuelve, sin duplicados y en orden estable:
+ * - para cada lugar: su fila `area` (categoría exacta o catch-all) y TODAS sus
+ *   filas `servicio` (N apartes del mismo lugar → N filas tickeables);
+ * - las filas `cuota social` y el carrier `recargo`, que no dependen del lugar
+ *   (ReQ-101). El llamador decide si ofrecer la cuota según la membresía del
+ *   socio; acá sólo se lista lo que el catálogo puede cobrar.
+ *
+ * Un lugar sin fila `servicio` no aporta línea de servicio (ReQ-003): no hay
+ * nada que ofrecer y el diálogo muestra el aviso.
  */
-export function conceptosDisponibles(
-  membresias: Membresia[],
+export function arancelesDisponibles(
   aranceles: Arancel[],
-): ConceptoCobro[] {
-  const hayCuota = membresias.some((m) => conceptoDeMembresia(m) === "cuota social");
-  const hayArea = membresias.some(
-    (m) => conceptoDeMembresia(m) === "area" && m.area !== "Windsurf",
-  );
-  // El área identifica a Windsurf, no el concepto: una membresía de Windsurf ES
-  // una cuota social (CS-05), así que buscar sólo por concepto no la distingue
-  // de un socio que sólo tiene cuota social (CS-06).
-  const soloWindsurf = !hayArea && membresias.some((m) => m.area === "Windsurf");
+  lugares: readonly LugarCobro[],
+): Arancel[] {
+  const vistos = new Set<string>();
+  const out: Arancel[] = [];
+  const agregar = (a: Arancel | undefined) => {
+    if (!a || vistos.has(a.id)) return;
+    vistos.add(a.id);
+    out.push(a);
+  };
+  for (const lugar of lugares) {
+    agregar(arancelDeArea(aranceles, lugar));
+    for (const servicio of arancelesDeServicio(aranceles, lugar)) agregar(servicio);
+  }
+  agregar(arancelPorConcepto(aranceles, "cuota social"));
+  agregar(arancelPorConcepto(aranceles, "recargo"));
+  return out;
+}
 
-  const disponibles: ConceptoCobro[] = [];
-  if (hayCuota) disponibles.push("cuota social");
-  if (hayArea) disponibles.push("area");
-  if (soloWindsurf) return disponibles;
-  if (arancelPorConcepto(aranceles, "servicio")) disponibles.push("servicio");
-  if (arancelPorConcepto(aranceles, "recargo")) disponibles.push("recargo");
-  return disponibles;
+/**
+ * Membresía que ancla un lugar: la de concepto área en ese área+predio
+ * (ReQ-004). Prefiere al Titular y desempata por id ascendente, igual que el
+ * servidor. Una membresía de cuota social (sin área) nunca ancla un lugar.
+ */
+export function membresiaDeLugar(
+  membresias: readonly Membresia[],
+  lugar: LugarCobro,
+): Membresia | undefined {
+  const delLugar = membresias
+    .filter(
+      (m) =>
+        conceptoDeMembresia(m) === "area" && m.area === lugar.area && m.predio === lugar.predio,
+    )
+    .sort((x, y) => (x.id < y.id ? -1 : 1));
+  return delLugar.find((m) => m.rol === "Titular") ?? delLugar[0];
+}
+
+export interface OpcionesItemsPorArancel {
+  /** Ancla de las líneas sin lugar (cuota social y recargo); `PagoItem` exige una. */
+  anclas: AnclasCobro;
+  /** Miembros de la unidad → multiplicador de la cuota social (CS-03). */
+  miembros: number;
+  /** Ajuste de importe por arancelId: el recargo (siempre) y los servicios (ReQ-010). */
+  ajustes?: Readonly<Record<string, number>> | undefined;
+}
+
+/**
+ * Compone UNA línea por cada `arancelId` tickeado por el operador (ReQ-001 /
+ * ReQ-012).
+ *
+ * La identidad es la fila de catálogo, no el concepto: tickear dos apartes de
+ * servicio del mismo lugar emite DOS líneas, cada una con su monto, algo que la
+ * composición por concepto no podía representar. Nada tickeado → cero líneas, y
+ * ese array vacío es lo que deja el botón de confirmar deshabilitado.
+ *
+ * Cada línea de área/servicio resuelve su ancla por el lugar de SU fila
+ * (ReQ-004). El monto y el total son una estimación: el servidor re-resuelve y
+ * es la única autoridad (PAG-01).
+ *
+ * - `area` → monto de catálogo, factor 1.
+ * - `servicio` → monto de catálogo o el `ajuste` de este cobro, factor 1.
+ * - `cuota social` → precio de UN miembro × miembros de la unidad.
+ * - `recargo` → el importe tipeado (`ajuste`); sin importe mayor a 0 no se emite.
+ */
+export function itemsPorArancel(
+  aranceles: Arancel[],
+  lugares: readonly LugarCobrable[],
+  marcas: ReadonlySet<string>,
+  opciones: OpcionesItemsPorArancel,
+): LineaCobro[] {
+  const lineas: LineaCobro[] = [];
+  for (const arancelId of marcas) {
+    const arancel = aranceles.find((a) => a.id === arancelId);
+    if (!arancel) continue;
+    const concepto = conceptoDeArancel(arancel);
+
+    if (concepto === "area") {
+      const membresiaId =
+        lugarCobrableDeArancel(arancel, lugares)?.membresiaId ?? opciones.anclas.area;
+      if (!membresiaId) continue;
+      lineas.push({
+        concepto,
+        arancelId: arancel.id,
+        arancelNombre: arancel.nombre,
+        membresiaId,
+        monto: arancel.monto,
+        factor: 1,
+      });
+      continue;
+    }
+
+    if (concepto === "servicio") {
+      const membresiaId =
+        lugarCobrableDeArancel(arancel, lugares)?.membresiaId ?? opciones.anclas.area;
+      if (!membresiaId) continue;
+      const monto = opciones.ajustes?.[arancel.id] ?? arancel.monto;
+      if (monto <= 0) continue;
+      lineas.push({
+        concepto,
+        arancelId: arancel.id,
+        arancelNombre: arancel.nombre,
+        membresiaId,
+        monto,
+        factor: 1,
+        // El importe de catálogo no necesita viajar: el servidor ya lo usa
+        // cuando el ítem no trae montoAplicado. Sólo se manda si se ajustó.
+        ...(monto !== arancel.monto ? { montoAplicado: monto } : {}),
+      });
+      continue;
+    }
+
+    if (concepto === "cuota social") {
+      const membresiaId = opciones.anclas.cuota;
+      if (!membresiaId) continue;
+      const factor = Math.max(1, opciones.miembros);
+      lineas.push({
+        concepto,
+        arancelId: arancel.id,
+        arancelNombre: arancel.nombre,
+        membresiaId,
+        monto: arancel.monto * factor,
+        factor,
+      });
+      continue;
+    }
+
+    // recargo: el catálogo sólo presta el carrier; el importe lo carga el operador.
+    const membresiaId = opciones.anclas.area;
+    if (!membresiaId) continue;
+    const monto = opciones.ajustes?.[arancel.id] ?? 0;
+    if (monto <= 0) continue;
+    lineas.push({
+      concepto,
+      arancelId: arancel.id,
+      arancelNombre: arancel.nombre,
+      membresiaId,
+      monto,
+      factor: 1,
+      montoAplicado: monto,
+    });
+  }
+  return lineas;
+}
+
+/** Lugar cobrable al que pertenece una fila del catálogo (su ancla, ReQ-004). */
+function lugarCobrableDeArancel(
+  arancel: Arancel,
+  lugares: readonly LugarCobrable[],
+): LugarCobrable | undefined {
+  const usaCategoria = conceptoDeArancel(arancel) === "area";
+  return lugares.find(
+    (l) =>
+      l.area === arancel.area &&
+      l.predio === arancel.predio &&
+      (!usaCategoria || arancel.categoria == null || l.categoria === arancel.categoria),
+  );
 }
 
 /** Concepto de una membresía; sin `concepto` servido, un área es un área. */
