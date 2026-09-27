@@ -4,26 +4,32 @@
  * - `buildNuevaUnidadPayload` → RQ 6 / RQ 12: turns the "Nueva unidad" form
  *   into an ImportPayload (first socio = Titular, rest = Integrantes), so the
  *   backend creates the real Parcela + socios + membresías transactionally.
- * - `itemsPorConcepto` → CBM-02: one payment line per ticked concept, replacing
- *   the single-item resolvers that could only ever bill one arancel.
- * - `arancelPorConcepto` / `conceptosDisponibles` → CBM-01 / CS-05: which catalog
- *   row prices a concept, and which concepts a socio can be charged for.
+ * - `itemsPorArancel` → ReQ-001 / ReQ-012: one payment line per ticked
+ *   `arancelId`, keyed by catalog row (two apartes of a place = two lines).
+ * - `arancelesDisponibles` / `membresiaDeLugar` / `arancelPorConcepto` →
+ *   ReQ-002 / ReQ-003 / ReQ-004: which catalog rows a place may tick, which
+ *   membership anchors a place, and the dual place/concept resolution rule.
  */
 
 import { describe, expect, it } from "vitest";
 import {
   arancelPorConcepto,
+  arancelesDisponibles,
   buildNuevaUnidadPayload,
   conceptoDeMembresia,
-  conceptosDisponibles,
   esMembresiaCobrable,
   estadoCriticoDe,
   estadoSocioPorParcela,
   filtrarUnidades,
+  itemsPorArancel,
   itemsPorConcepto,
   lineaAPagoItem,
+  membresiaDeLugar,
   predioDeTipo,
   totalEstimado,
+  type LugarCobrable,
+  type LugarCobro,
+  type OpcionesItemsPorArancel,
 } from "../unidad-helpers";
 import type {
   Arancel,
@@ -167,24 +173,28 @@ describe("esMembresiaCobrable", () => {
   });
 });
 
-describe("itemsPorConcepto (CBM-02)", () => {
+describe("itemsPorArancel (ReQ-001 / ReQ-012)", () => {
   const ANCLAS = { area: "m-area", cuota: "m-cuota" };
-  const BALSA = { area: "Balseros", predio: "Embalse", categoria: null } as const;
-  const CABAÑA_ESP = { area: "Cabañeros", predio: "Almafuerte", categoria: "Especial" } as const;
+
+  /** Dos lugares reales: una balsa y una cabaña especial, cada uno con su ancla. */
+  const LUGARES: LugarCobrable[] = [
+    { area: "Balseros", predio: "Embalse", categoria: null, membresiaId: "m-area" },
+    { area: "Cabañeros", predio: "Almafuerte", categoria: "Especial", membresiaId: "m-cab" },
+  ];
 
   /**
    * Catálogo con las cuatro clases de fila que existen en el dominio: precio de
-   * área (por unidad o categoría), precio de CUOTA SOCIAL (por socio), precio de
-   * SERVICIO (catálogo real) y el carrier de RECARGO (monto 0). Las tres últimas
-   * guardan área/predio placeholder porque esas columnas son NOT NULL.
+   * área, CUOTA SOCIAL (por socio), SERVICIO (ahora POR LUGAR, dos apartes del
+   * mismo lugar) y el carrier de RECARGO (monto 0). Los conceptos por lugar
+   * llevan su área/predio real; cuota social y recargo guardan un placeholder.
    */
   const CATALOGO: Arancel[] = [
     {
       id: "a_balsa",
-      nombre: "Cuota Balsa",
+      nombre: "Amarre",
       area: "Balseros",
       predio: "Embalse",
-      monto: 130000,
+      monto: 18500,
       vigenteDesde: "2020-01-01",
       historico: [],
       concepto: "area",
@@ -201,31 +211,31 @@ describe("itemsPorConcepto (CBM-02)", () => {
       concepto: "area",
     },
     {
-      id: "a_cab_gen",
-      nombre: "Cuota Cabañeros",
-      area: "Cabañeros",
-      predio: "Almafuerte",
-      monto: 100,
-      vigenteDesde: "2020-01-01",
-      historico: [],
-      concepto: "area",
-    },
-    {
       id: "p_cuota",
       nombre: "Cuota social",
-      area: "Balseros",
-      predio: "Embalse",
+      area: "Guardería",
+      predio: "Almafuerte",
       monto: 12000,
       vigenteDesde: "2020-01-01",
       historico: [],
       concepto: "cuota social",
     },
     {
-      id: "p_servicio",
-      nombre: "Servicio de luz",
+      id: "p_serv_luz",
+      nombre: "Servicio (luz)",
       area: "Balseros",
       predio: "Embalse",
-      monto: 7300,
+      monto: 5000,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+      concepto: "servicio",
+    },
+    {
+      id: "p_serv_agua",
+      nombre: "Servicio (agua)",
+      area: "Balseros",
+      predio: "Embalse",
+      monto: 3000,
       vigenteDesde: "2020-01-01",
       historico: [],
       concepto: "servicio",
@@ -233,8 +243,8 @@ describe("itemsPorConcepto (CBM-02)", () => {
     {
       id: "p_recargo",
       nombre: "Recargo",
-      area: "Balseros",
-      predio: "Embalse",
+      area: "Guardería",
+      predio: "Almafuerte",
       monto: 0,
       vigenteDesde: "2020-01-01",
       historico: [],
@@ -243,15 +253,15 @@ describe("itemsPorConcepto (CBM-02)", () => {
   ];
 
   /** Balsa de 4 integrantes: cuota ×4 y área por unidad (CS-03, PAG-01). */
-  const CUATRO = { anclas: ANCLAS, miembros: 4, lugar: BALSA, aranceles: CATALOGO };
+  const CUATRO: OpcionesItemsPorArancel = { anclas: ANCLAS, miembros: 4 };
 
-  it("compone una línea por concepto marcado (CBM-02)", () => {
-    const lineas = itemsPorConcepto(["area", "cuota social"], CUATRO);
-    expect(lineas.map((l) => l.concepto)).toEqual(["area", "cuota social"]);
+  it("compone una línea por arancelId tickeado (ReQ-012)", () => {
+    const lineas = itemsPorArancel(CATALOGO, LUGARES, new Set(["a_balsa", "p_cuota"]), CUATRO);
+    expect(lineas.map((l) => l.arancelId)).toEqual(["a_balsa", "p_cuota"]);
   });
 
   it("multiplica la cuota social por los miembros de la unidad (CS-03)", () => {
-    const cuota = itemsPorConcepto(["cuota social"], CUATRO)[0]!;
+    const cuota = itemsPorArancel(CATALOGO, LUGARES, new Set(["p_cuota"]), CUATRO)[0]!;
     expect(cuota.factor).toBe(4);
     expect(cuota.monto).toBe(48000); // 12.000 × 4
     expect(cuota.arancelId).toBe("p_cuota");
@@ -259,17 +269,56 @@ describe("itemsPorConcepto (CBM-02)", () => {
   });
 
   it("el área NO se multiplica por integrantes: una balsa es importe fijo", () => {
-    const area = itemsPorConcepto(["area"], CUATRO)[0]!;
+    const area = itemsPorArancel(CATALOGO, LUGARES, new Set(["a_balsa"]), CUATRO)[0]!;
     expect(area.factor).toBe(1);
-    expect(area.monto).toBe(130000);
+    expect(area.monto).toBe(18500);
+    expect(area.membresiaId).toBe("m-area");
   });
 
   it("nada marcado compone cero líneas (deja el confirmar deshabilitado)", () => {
-    expect(itemsPorConcepto([], CUATRO)).toHaveLength(0);
+    expect(itemsPorArancel(CATALOGO, LUGARES, new Set(), CUATRO)).toHaveLength(0);
+  });
+
+  it("dos apartes SERVICIO del mismo lugar emiten DOS líneas (ReQ-001)", () => {
+    const lineas = itemsPorArancel(
+      CATALOGO,
+      LUGARES,
+      new Set(["p_serv_luz", "p_serv_agua"]),
+      CUATRO,
+    );
+    expect(lineas).toHaveLength(2);
+    expect(lineas.map((l) => l.arancelId)).toEqual(["p_serv_luz", "p_serv_agua"]);
+    expect(lineas.map((l) => l.monto)).toEqual([5000, 3000]);
+    // Ambas se imputan al lugar de la balsa: la misma membresía ancla.
+    expect(lineas.every((l) => l.membresiaId === "m-area")).toBe(true);
+  });
+
+  it("un arancelId que no está en el catálogo no emite línea", () => {
+    expect(itemsPorArancel(CATALOGO, LUGARES, new Set(["no_existe"]), CUATRO)).toHaveLength(0);
+  });
+
+  it("el servicio toma el precio de catálogo y no se multiplica por miembros", () => {
+    const servicio = itemsPorArancel(CATALOGO, LUGARES, new Set(["p_serv_luz"]), CUATRO)[0]!;
+    expect(servicio.monto).toBe(5000);
+    expect(servicio.factor).toBe(1);
+    // Sin ajuste, el montoAplicado no viaja: el servidor ya usa el catálogo.
+    expect(servicio.montoAplicado).toBeUndefined();
+  });
+
+  it("un servicio ajustado manda el importe solo para este cobro (ReQ-010)", () => {
+    const servicio = itemsPorArancel(CATALOGO, LUGARES, new Set(["p_serv_luz"]), {
+      ...CUATRO,
+      ajustes: { p_serv_luz: 7300 },
+    })[0]!;
+    expect(servicio.monto).toBe(7300);
+    expect(servicio.montoAplicado).toBe(7300);
   });
 
   it("el recargo usa el importe tipeado y el arancel carrier", () => {
-    const [recargo] = itemsPorConcepto(["recargo"], { ...CUATRO, recargo: 10000 });
+    const [recargo] = itemsPorArancel(CATALOGO, LUGARES, new Set(["p_recargo"]), {
+      ...CUATRO,
+      ajustes: { p_recargo: 10000 },
+    });
     expect(recargo!.arancelId).toBe("p_recargo");
     expect(recargo!.monto).toBe(10000);
     expect(recargo!.montoAplicado).toBe(10000);
@@ -277,54 +326,29 @@ describe("itemsPorConcepto (CBM-02)", () => {
   });
 
   it("un recargo sin importe no compone línea en vez de dejar que el servidor rechace", () => {
-    expect(itemsPorConcepto(["recargo"], CUATRO)).toHaveLength(0);
-    expect(itemsPorConcepto(["recargo"], { ...CUATRO, recargo: 0 })).toHaveLength(0);
-  });
-
-  it("el servicio toma el precio de catálogo y no se multiplica por miembros", () => {
-    const servicio = itemsPorConcepto(["servicio"], CUATRO)[0]!;
-    expect(servicio.monto).toBe(7300);
-    expect(servicio.factor).toBe(1);
-    // Sin ajuste, el montoAplicado no viaja: el servidor ya usa el catálogo.
-    expect(servicio.montoAplicado).toBeUndefined();
-  });
-
-  it("un servicio ajustado manda el importe solo para este cobro", () => {
-    const servicio = itemsPorConcepto(["servicio"], { ...CUATRO, servicio: 9500 })[0]!;
-    expect(servicio.monto).toBe(9500);
-    expect(servicio.montoAplicado).toBe(9500);
+    expect(itemsPorArancel(CATALOGO, LUGARES, new Set(["p_recargo"]), CUATRO)).toHaveLength(0);
   });
 
   it("una línea sin ancla no se emite", () => {
     expect(
-      itemsPorConcepto(["cuota social"], { ...CUATRO, anclas: { area: "m-area" } }),
+      itemsPorArancel(CATALOGO, LUGARES, new Set(["p_cuota"]), {
+        ...CUATRO,
+        anclas: { area: "m-area" },
+      }),
     ).toHaveLength(0);
   });
 
-  it("una línea sin fila de catálogo se cae y el resto del cobro sigue", () => {
-    const sinServicio = CATALOGO.filter((a) => a.concepto !== "servicio");
-    const lineas = itemsPorConcepto(["servicio", "area"], { ...CUATRO, aranceles: sinServicio });
-    expect(lineas.map((l) => l.concepto)).toEqual(["area"]);
-  });
-
-  it("el área resuelve la categoría exacta y, si no, el catch-all", () => {
-    const exacta = itemsPorConcepto(["area"], { ...CUATRO, lugar: CABAÑA_ESP })[0]!;
-    expect(exacta.arancelId).toBe("a_cab_esp");
-    expect(exacta.monto).toBe(120);
-
-    const catchAll = itemsPorConcepto(["area"], {
-      ...CUATRO,
-      lugar: { area: "Cabañeros", predio: "Almafuerte", categoria: "Grande" },
-    })[0]!;
-    expect(catchAll.arancelId).toBe("a_cab_gen");
-  });
-
   it("totalEstimado suma las líneas compuestas", () => {
-    const lineas = itemsPorConcepto(["area", "cuota social", "recargo"], {
-      ...CUATRO,
-      recargo: 5000,
-    });
-    expect(totalEstimado(lineas)).toBe(130000 + 48000 + 5000);
+    const lineas = itemsPorArancel(
+      CATALOGO,
+      LUGARES,
+      new Set(["a_balsa", "p_cuota", "p_recargo"]),
+      {
+        ...CUATRO,
+        ajustes: { p_recargo: 5000 },
+      },
+    );
+    expect(totalEstimado(lineas)).toBe(18500 + 48000 + 5000);
   });
 });
 
@@ -412,14 +436,14 @@ describe("lineaAPagoItem (debt 5a: montoAplicado solo para recargo/servicio ajus
   });
 });
 
-describe("arancelPorConcepto (CBM-01)", () => {
+describe("arancelPorConcepto (ReQ-002 / ReQ-008)", () => {
   const BASE: Arancel[] = [
     {
       id: "a_balsa",
-      nombre: "Cuota Balsa",
+      nombre: "Amarre",
       area: "Balseros",
       predio: "Embalse",
-      monto: 130000,
+      monto: 18500,
       vigenteDesde: "2020-01-01",
       historico: [],
       concepto: "area",
@@ -427,29 +451,56 @@ describe("arancelPorConcepto (CBM-01)", () => {
     {
       id: "p_cuota",
       nombre: "Cuota social",
-      area: "Balseros",
-      predio: "Embalse",
+      area: "Guardería",
+      predio: "Almafuerte",
       monto: 12000,
       vigenteDesde: "2020-01-01",
       historico: [],
       concepto: "cuota social",
     },
+    {
+      id: "p_serv_balseros",
+      nombre: "Servicio Balseros",
+      area: "Balseros",
+      predio: "Embalse",
+      monto: 5000,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+      concepto: "servicio",
+    },
+    {
+      id: "p_serv_cabaneros",
+      nombre: "Servicio Cabañeros",
+      area: "Cabañeros",
+      predio: "Almafuerte",
+      monto: 3000,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+      concepto: "servicio",
+    },
   ];
+  const BALSEROS: LugarCobro = { area: "Balseros", predio: "Embalse", categoria: null };
+  const CABANEROS: LugarCobro = { area: "Cabañeros", predio: "Almafuerte", categoria: null };
 
   it("encuentra la cuota social POR CONCEPTO, no por su área placeholder", () => {
-    // El placeholder de la fila coincide con un área real: buscarla por
-    // área+predio devolvería la cuota de la balsa. El concepto es la clave.
     const cuota = arancelPorConcepto(BASE, "cuota social");
     expect(cuota?.id).toBe("p_cuota");
     expect(cuota?.monto).toBe(12000);
   });
 
+  it("resuelve el servicio por LUGAR: cada área cobra el suyo (ReQ-002)", () => {
+    expect(arancelPorConcepto(BASE, "servicio", BALSEROS)?.id).toBe("p_serv_balseros");
+    expect(arancelPorConcepto(BASE, "servicio", CABANEROS)?.id).toBe("p_serv_cabaneros");
+  });
+
+  it("el área se resuelve por lugar y exige uno", () => {
+    expect(arancelPorConcepto(BASE, "area", BALSEROS)?.id).toBe("a_balsa");
+    expect(arancelPorConcepto(BASE, "area")).toBeUndefined();
+  });
+
   it("una fila sin concepto cuenta como área (default de la columna)", () => {
     const legacy: Arancel[] = [{ ...BASE[0]!, id: "a_legacy", concepto: undefined }];
-    expect(
-      arancelPorConcepto(legacy, "area", { area: "Balseros", predio: "Embalse", categoria: null })
-        ?.id,
-    ).toBe("a_legacy");
+    expect(arancelPorConcepto(legacy, "area", BALSEROS)?.id).toBe("a_legacy");
   });
 
   it("desempata por id ascendente, igual que el servidor", () => {
@@ -460,13 +511,133 @@ describe("arancelPorConcepto (CBM-01)", () => {
     expect(arancelPorConcepto(dos, "cuota social")?.id).toBe("p_aaa");
   });
 
-  it("sin fila para el concepto devuelve undefined", () => {
-    expect(arancelPorConcepto(BASE, "servicio")).toBeUndefined();
-    expect(arancelPorConcepto(BASE, "area")).toBeUndefined();
+  it("sin fila de servicio para el lugar devuelve undefined (ReQ-003)", () => {
+    const guarderia: LugarCobro = { area: "Guardería", predio: "Almafuerte", categoria: null };
+    expect(arancelPorConcepto(BASE, "servicio", guarderia)).toBeUndefined();
   });
 });
 
-describe("conceptosDisponibles (CS-05)", () => {
+describe("arancelesDisponibles (ReQ-001 / ReQ-003)", () => {
+  const CATALOGO: Arancel[] = [
+    {
+      id: "a_balsa",
+      nombre: "Amarre",
+      area: "Balseros",
+      predio: "Embalse",
+      monto: 18500,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+      concepto: "area",
+    },
+    {
+      id: "a_cab_esp",
+      nombre: "Cabaña Especial",
+      area: "Cabañeros",
+      predio: "Almafuerte",
+      categoria: "Especial",
+      monto: 120,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+      concepto: "area",
+    },
+    {
+      id: "a_cab_gen",
+      nombre: "Cuota Cabañeros",
+      area: "Cabañeros",
+      predio: "Almafuerte",
+      monto: 100,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+      concepto: "area",
+    },
+    {
+      id: "p_serv_luz",
+      nombre: "Servicio (luz)",
+      area: "Balseros",
+      predio: "Embalse",
+      monto: 5000,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+      concepto: "servicio",
+    },
+    {
+      id: "p_serv_agua",
+      nombre: "Servicio (agua)",
+      area: "Balseros",
+      predio: "Embalse",
+      monto: 3000,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+      concepto: "servicio",
+    },
+    {
+      id: "p_cuota",
+      nombre: "Cuota social",
+      area: "Guardería",
+      predio: "Almafuerte",
+      monto: 12000,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+      concepto: "cuota social",
+    },
+    {
+      id: "p_recargo",
+      nombre: "Recargo",
+      area: "Guardería",
+      predio: "Almafuerte",
+      monto: 0,
+      vigenteDesde: "2020-01-01",
+      historico: [],
+      concepto: "recargo",
+    },
+  ];
+  const BALSEROS: LugarCobro = { area: "Balseros", predio: "Embalse", categoria: null };
+
+  it("lista área + TODOS los servicios del lugar + cuota social y recargo (ReQ-001)", () => {
+    const ids = arancelesDisponibles(CATALOGO, [BALSEROS]).map((a) => a.id);
+    expect(ids).toContain("a_balsa");
+    expect(ids).toContain("p_serv_luz");
+    expect(ids).toContain("p_serv_agua");
+    expect(ids).toContain("p_cuota");
+    expect(ids).toContain("p_recargo");
+  });
+
+  it("un lugar sin fila SERVICIO no aporta línea de servicio (ReQ-003)", () => {
+    const guarderia: LugarCobro = { area: "Guardería", predio: "Almafuerte", categoria: null };
+    const ids = arancelesDisponibles(CATALOGO, [guarderia]).map((a) => a.id);
+    expect(ids.some((id) => id.startsWith("p_serv_"))).toBe(false);
+  });
+
+  it("no duplica filas cuando el mismo lugar llega repetido", () => {
+    const ids = arancelesDisponibles(CATALOGO, [BALSEROS, BALSEROS]).map((a) => a.id);
+    expect(ids.filter((id) => id === "p_serv_luz")).toHaveLength(1);
+    expect(ids.filter((id) => id === "p_serv_agua")).toHaveLength(1);
+    expect(ids.filter((id) => id === "a_balsa")).toHaveLength(1);
+  });
+
+  it("la categoría exacta distingue la fila de área y cae al catch-all", () => {
+    const esp: LugarCobro = { area: "Cabañeros", predio: "Almafuerte", categoria: "Especial" };
+    const grande: LugarCobro = { area: "Cabañeros", predio: "Almafuerte", categoria: "Grande" };
+
+    const deEsp = arancelesDisponibles(CATALOGO, [esp]).map((a) => a.id);
+    expect(deEsp).toContain("a_cab_esp");
+    expect(deEsp).not.toContain("a_cab_gen");
+
+    const deGrande = arancelesDisponibles(CATALOGO, [grande]).map((a) => a.id);
+    expect(deGrande).toContain("a_cab_gen");
+    expect(deGrande).not.toContain("a_cab_esp");
+  });
+
+  it("sin lugares sólo lista los carriers de concepto (cuota social y recargo)", () => {
+    expect(
+      arancelesDisponibles(CATALOGO, [])
+        .map((a) => a.id)
+        .sort(),
+    ).toEqual(["p_cuota", "p_recargo"]);
+  });
+});
+
+describe("membresiaDeLugar (ReQ-004)", () => {
   function memb(over: Partial<Membresia> & { id: string }): Membresia {
     return {
       socioId: "s1",
@@ -479,70 +650,23 @@ describe("conceptosDisponibles (CS-05)", () => {
     };
   }
 
-  const CATALOGO: Arancel[] = [
-    {
-      id: "p_cuota",
-      nombre: "Cuota social",
-      area: "Balseros",
-      predio: "Embalse",
-      monto: 12000,
-      vigenteDesde: "2020-01-01",
-      historico: [],
-      concepto: "cuota social",
-    },
-    {
-      id: "p_servicio",
-      nombre: "Servicio",
-      area: "Balseros",
-      predio: "Embalse",
-      monto: 7300,
-      vigenteDesde: "2020-01-01",
-      historico: [],
-      concepto: "servicio",
-    },
-    {
-      id: "p_recargo",
-      nombre: "Recargo",
-      area: "Balseros",
-      predio: "Embalse",
-      monto: 0,
-      vigenteDesde: "2020-01-01",
-      historico: [],
-      concepto: "recargo",
-    },
-  ];
+  const LUGAR: LugarCobro = { area: "Balseros", predio: "Embalse", categoria: null };
 
-  it("un socio de Windsurf cobra CUOTA SOCIAL y nada más", () => {
-    const miembros = [
-      memb({ id: "m-w", area: "Windsurf", predio: "Almafuerte", concepto: "cuota social" }),
+  it("devuelve la membresía de área que ancla el lugar", () => {
+    expect(membresiaDeLugar([memb({ id: "m-balsa" })], LUGAR)?.id).toBe("m-balsa");
+  });
+
+  it("prefiere al Titular del lugar por sobre un integrante", () => {
+    const memberships = [
+      memb({ id: "m-int", rol: "Integrante" }),
+      memb({ id: "m-tit", rol: "Titular" }),
     ];
-    expect(conceptosDisponibles(miembros, CATALOGO)).toEqual(["cuota social"]);
+    expect(membresiaDeLugar(memberships, LUGAR)?.id).toBe("m-tit");
   });
 
-  it("no ofrece cuota social si el socio no tiene esa membresía", () => {
-    // El servidor rechaza con 422 una cuota sin membresía que la ancle.
-    expect(conceptosDisponibles([memb({ id: "m-a" })], CATALOGO)).toEqual([
-      "area",
-      "servicio",
-      "recargo",
-    ]);
-  });
-
-  it("no ofrece servicio ni recargo sin fila de catálogo que los pricen", () => {
-    expect(conceptosDisponibles([memb({ id: "m-a" })], [])).toEqual(["area"]);
-  });
-
-  it("un socio normal ve área, cuota social, servicio y recargo", () => {
-    const miembros = [
-      memb({ id: "m-a" }),
-      memb({ id: "m-c", area: "Balseros", concepto: "cuota social" }),
-    ];
-    expect(conceptosDisponibles(miembros, CATALOGO)).toEqual([
-      "cuota social",
-      "area",
-      "servicio",
-      "recargo",
-    ]);
+  it("una membresía de cuota social (sin área) nunca ancla un lugar", () => {
+    const cuota = memb({ id: "m-cuota", area: null, predio: null, concepto: "cuota social" });
+    expect(membresiaDeLugar([cuota], LUGAR)).toBeUndefined();
   });
 
   it("conceptoDeMembresia: sin concepto servido, una membresía es de área", () => {
