@@ -64,6 +64,7 @@ import {
   arancelesDisponibles,
   buildNuevaUnidadPayload,
   conceptoDeMembresia,
+  formatearAvisosCobro,
   itemsPorArancel,
   lineaAPagoItem,
   membresiaDeLugar,
@@ -1201,6 +1202,10 @@ export function CobrarUnidadDialog({
         toast.success(
           `Unidad cobrada: ${pago.items.map((i) => i.nombre).join(" + ")} · ${formatARS(pago.total)}`,
         );
+        // ReQ-011: el servidor avisa si tuvo que reemplazar un arancel mal
+        // asignado. El cobro ya se registró; el toast es warning, no error.
+        const aviso = formatearAvisosCobro(pago.avisos);
+        if (aviso) toast.warning("Cobro registrado con avisos", { description: aviso });
         navigate({ to: "/pagos" });
       },
       onError: () => toast.error("Error al cobrar la unidad"),

@@ -40,6 +40,7 @@ import {
   arancelesDisponibles,
   conceptoDeMembresia,
   esMembresiaCobrable,
+  formatearAvisosCobro,
   itemsPorArancel,
   lineaAPagoItem,
   membresiaDeLugar,
@@ -261,6 +262,10 @@ function PagosPage() {
           toast.success(
             `Pago registrado: ${pago.items.map((i) => i.nombre).join(" + ")} · ${formatARS(pago.total)}`,
           );
+          // ReQ-011: si el servidor reemplazó un arancel mal asignado, lo avisa
+          // acá. El cobro ya se registró; el toast es warning, no error.
+          const aviso = formatearAvisosCobro(pago.avisos);
+          if (aviso) toast.warning("Cobro registrado con avisos", { description: aviso });
         },
         onError: () => toast.error("Error al registrar el pago"),
       },

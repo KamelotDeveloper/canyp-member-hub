@@ -21,6 +21,7 @@ import {
   estadoCriticoDe,
   estadoSocioPorParcela,
   filtrarUnidades,
+  formatearAvisosCobro,
   itemsPorArancel,
   lineaAPagoItem,
   membresiaDeLugar,
@@ -801,5 +802,22 @@ describe("estadoSocioPorParcela (D5)", () => {
 
   it("devuelve un Map vacío sin parcelas", () => {
     expect(estadoSocioPorParcela([]).size).toBe(0);
+  });
+});
+
+describe("formatearAvisosCobro (ReQ-011)", () => {
+  it("une los avisos del backend en un único texto legible", () => {
+    expect(formatearAvisosCobro(["motivo uno", "motivo dos"])).toBe("motivo uno · motivo dos");
+  });
+
+  it("devuelve null sin avisos: undefined o array vacío", () => {
+    expect(formatearAvisosCobro(undefined)).toBeNull();
+    expect(formatearAvisosCobro(null)).toBeNull();
+    expect(formatearAvisosCobro([])).toBeNull();
+  });
+
+  it("ignora avisos en blanco y recorta el texto", () => {
+    expect(formatearAvisosCobro(["  motivo  ", "   "])).toBe("motivo");
+    expect(formatearAvisosCobro(["  ", ""])).toBeNull();
   });
 });

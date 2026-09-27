@@ -14,6 +14,8 @@
  * - `arancelesDisponibles` lists the catalog rows a charge may tick for a set of
  *   places, and `membresiaDeLugar` finds the membership that anchors a place so
  *   every line imputes to its own unit, never the titular's (ReQ-004).
+ * - `formatearAvisosCobro` turns the server's resolution warnings (D8, ReQ-011)
+ *   into the one line the cobro dialogs show the operator.
  *
  * Every amount this module produces is a client ESTIMATE: the server re-resolves
  * each line against the catalog and is the only authority over the total.
@@ -269,6 +271,22 @@ function primeraPorId(match: (a: Arancel) => boolean, aranceles: Arancel[]): Ara
 /** Total estimado de las líneas compuestas; el servidor recalcula el suyo. */
 export function totalEstimado(lineas: LineaCobro[]): number {
   return lineas.reduce((s, l) => s + l.monto, 0);
+}
+
+/**
+ * Texto legible de los avisos de resolución de un cobro (D8, ReQ-011).
+ *
+ * El backend es el único que redacta el motivo (un `arancelId` re-etiquetado o
+ * fuera de lugar que se cobró al precio correcto): acá solo se descartan los
+ * vacíos y se unen para mostrarlos en un único aviso al operador. Devuelve
+ * `null` cuando no hay nada que avisar, para que el llamador no abra un toast
+ * vacío. Nunca afirma un importe: el total y el desglose son los que resuelve
+ * el servidor.
+ */
+export function formatearAvisosCobro(avisos?: readonly string[] | null): string | null {
+  const limpios = (avisos ?? []).map((a) => a.trim()).filter((a) => a.length > 0);
+  if (limpios.length === 0) return null;
+  return limpios.join(" · ");
 }
 
 /**
