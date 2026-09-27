@@ -9,7 +9,8 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       save_export,
       get_backend_port,
-      whatsapp_desktop_available
+      whatsapp_desktop_available,
+      open_logs_folder
     ])
     .setup(|app| {
       #[cfg(all(desktop, not(debug_assertions)))]
@@ -80,6 +81,38 @@ fn save_export(filename: String, data: String) -> Result<String, String> {
   let path = dir.join(&filename);
   std::fs::write(&path, &bytes).map_err(|e| format!("write error: {e}"))?;
   Ok(path.to_string_lossy().to_string())
+}
+
+/// Open the CANYP logs folder (`%LOCALAPPDATA%\ar.com.canyp.gestion\logs`) in the
+/// OS file explorer, so a user can attach the `CANYP Gestion.log` to a support
+/// report. Returns Ok(path) on success or an Err with the reason when it cannot
+/// be opened (e.g. Windows-only command).
+#[tauri::command]
+fn open_logs_folder() -> Result<String, String> {
+  #[cfg(target_os = "windows")]
+  {
+    use std::process::Command;
+    let local =
+      std::env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA no está definida".to_string())?;
+    let dir = std::path::Path::new(&local)
+      .join("ar.com.canyp.gestion")
+      .join("logs");
+    // Create the folder first so the button always works, even on a fresh
+    // install where the log file does not exist yet.
+    std::fs::create_dir_all(&dir).map_err(|e| format!("no se pudo crear la carpeta: {e}"))?;
+    let status = Command::new("explorer")
+      .arg(dir.to_string_lossy().to_string())
+      .status()
+      .map_err(|e| format!("no se pudo abrir la carpeta: {e}"))?;
+    if !status.success() {
+      return Err("explorer falló al abrir la carpeta".to_string());
+    }
+    return Ok(dir.to_string_lossy().to_string());
+  }
+  #[cfg(not(target_os = "windows"))]
+  {
+    Err("abrir la carpeta de logs solo está soportado en Windows".to_string())
+  }
 }
 
 /// Start the FastAPI sidecar and register a killer for the app exit.

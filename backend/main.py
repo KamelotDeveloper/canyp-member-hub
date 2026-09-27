@@ -1,6 +1,7 @@
 """CANYP Gestión — FastAPI application."""
 
 from contextlib import asynccontextmanager
+import logging
 import threading
 
 from fastapi import Depends, FastAPI
@@ -25,6 +26,8 @@ from backend.routers import (
 )
 from backend.security import get_current_user
 
+logger = logging.getLogger("canyp.startup")
+
 
 def _run_migrations_in_background() -> None:
     try:
@@ -32,7 +35,10 @@ def _run_migrations_in_background() -> None:
 
         run_column_migrations(engine)
     except Exception:
-        pass
+        # Registra el error con traceback completo (cae en el log del sidecar /
+        # Tauri) en lugar de tragarlo. La app sigue sirviendo, pero ahora queda
+        # rastro de QUÉ falló para poder diagnosticarlo.
+        logger.exception("Error aplicando migraciones de columnas en background")
 
 
 @asynccontextmanager
@@ -60,7 +66,7 @@ async def lifespan(app: FastAPI):
 
             run_backup_if_needed(engine)
         except Exception:
-            pass
+            logger.exception("Error ejecutando el backup en background")
 
     threading.Thread(target=_backup_in_background, daemon=True).start()
     yield
