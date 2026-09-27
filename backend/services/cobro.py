@@ -21,10 +21,15 @@ The six rules this service exists to enforce:
    adjust for one charge. Both are validated and then summed by the server like
    any other line. What the server never delegates is *which arancel* prices a
    line and *what the receipt adds up to*.
-3. **The renewal set is an intersection** (D4): only the submitted
-   ``membresiaIds`` whose own membership concept was ticked renew. A recargo or
-   servicio line therefore cannot silently renew an area membership, and ticking
-   the area does not renew an untouched cuota social.
+3. **The renewal set is an intersection** (D4), with ONE server-owned exception:
+   only the submitted ``membresiaIds`` whose own membership concept was ticked
+   renew. A recargo or servicio line therefore cannot silently renew an area
+   membership, and ticking the area does not renew an untouched cuota social.
+   The exception is the cuota social itself: because it is billed per UNPAID
+   member (rule 6), exactly those members' cuota rows renew even when the client
+   did not submit them — the unit dialog only submits area memberships, so the
+   renewal set is derived server-side to keep charged == renewed. A member whose
+   cuota is up to date is not billed and is not renewed.
 4. **Windsurf is never double-charged** (CS-05). A Windsurf membership IS its
    cuota social, so it is classified as CUOTA_SOCIAL for charging purposes: it
    can never anchor an area line, and it renews when cuota social is ticked.
@@ -155,6 +160,32 @@ def _cuota_impaga(cuota: Vigencia | None, hoy: date) -> bool:
     return cuota is None or cuota.parada or cuota.vencida(hoy)
 
 
+def _socios_de_cuota(unidad: list[Membresia], socio_id: str) -> list[str]:
+    """The socios a cuota social line bills: the unit's members, or the solo socio.
+
+    A unit charge bills the unit (CS-03); a solo charge with no area membership
+    (a cuota-social-only or Windsurf socio, CS-06) bills the charged socio once.
+    Shared by the multiplier and the renewal set so both read the same people.
+    """
+    return [m.socioId for m in unidad] if unidad else [socio_id]
+
+
+def _socios_impagos(
+    inputs: dict[str, InputsSocio], socios: list[str], hoy: date
+) -> list[str]:
+    """The socios that still OWE the cuota, in order and de-duplicated.
+
+    The single source of truth for "who is charged": the vigencia rule lives in
+    :func:`_cuota_impaga`, so the multiplier and the renewal set can never
+    disagree about who owes.
+    """
+    return [
+        sid
+        for sid in dict.fromkeys(socios)
+        if _cuota_impaga(inputs.get(sid, InputsSocio(None, None)).cuota, hoy)
+    ]
+
+
 def _cuota_factor(
     db: Session, socio_id: str, unidad: list[Membresia], hoy: date
 ) -> int:
@@ -168,13 +199,33 @@ def _cuota_factor(
     ``0`` means everybody involved is already paid: the caller emits no cuota
     line, so the operator cannot double-charge a settled member.
     """
-    socios = [m.socioId for m in unidad] if unidad else [socio_id]
-    inputs = inputs_socio(db, socios)
-    return sum(
-        1
-        for sid in dict.fromkeys(socios)
-        if _cuota_impaga(inputs.get(sid, InputsSocio(None, None)).cuota, hoy)
-    )
+    socios = _socios_de_cuota(unidad, socio_id)
+    return len(_socios_impagos(inputs_socio(db, socios), socios, hoy))
+
+
+def _cuotas_a_renovar(
+    db: Session, socio_id: str, unidad: list[Membresia], hoy: date
+) -> list[str]:
+    """The cuota memberships of the SAME impago members the multiplier bills.
+
+    The charge and the renewal are two halves of one rule: the cuota social is
+    billed per impago member, so exactly those members' cuota rows must renew.
+    Otherwise the money is collected and the ``vencimiento`` stays put, and the
+    next charge bills the same member again — a double charge. A member whose
+    cuota is up to date is not in the set, so their date is never touched.
+
+    The set is derived server-side, never from the submitted ``membresiaIds``:
+    the unit dialog submits only area memberships, so a client that forgets the
+    cuotas cannot leave them charged but not renewed. A legacy impago socio with
+    NO cuota row has nothing to renew; the missing row is a pre-existing data
+    gap, not something this resolver invents.
+    """
+    socios = _socios_de_cuota(unidad, socio_id)
+    return [
+        cuota.id
+        for sid in _socios_impagos(inputs_socio(db, socios), socios, hoy)
+        if (cuota := cuota_de(db, sid)) is not None
+    ]
 
 
 def _concepto_de(db: Session, item) -> ConceptoCobro:
@@ -507,6 +558,7 @@ def resolver_items(
     avisos: list[str] = []
     lineas: list[ItemResuelto] = []
     ticks: set[ConceptoMembresia] = set()
+    cuotas_extra: list[str] = []
 
     if not items:
         # A charge with no items submits memberships and nothing else: nothing
@@ -524,6 +576,11 @@ def resolver_items(
                     "El socio no tiene membresía de cuota social para cobrar"
                 )
             linea = _item_cuota(db, anchor, _cuota_factor(db, socio_id, unidades, hoy))
+            if linea is not None:
+                # The cuota is billed per impago member, so those SAME members'
+                # cuota rows renew even when the client forgot to submit them:
+                # charged == renewed, never a charge that grants no coverage.
+                cuotas_extra.extend(_cuotas_a_renovar(db, socio_id, unidades, hoy))
         elif concepto is ConceptoCobro.SERVICIO:
             anchor = _anchor_servicio(db, submitted, item, socio_id)
             if anchor is None:
@@ -562,6 +619,15 @@ def resolver_items(
     return CobroResuelto(
         items=tuple(lineas),
         total=sum(linea.monto for linea in lineas),
-        membresias_a_renovar=tuple(_renovables(submitted_ids, {m.id: m for m in submitted}, ticks)),
+        membresias_a_renovar=tuple(
+            dict.fromkeys(
+                [
+                    *_renovables(
+                        submitted_ids, {m.id: m for m in submitted}, ticks
+                    ),
+                    *cuotas_extra,
+                ]
+            )
+        ),
         avisos=tuple(dict.fromkeys(avisos)),
     )
