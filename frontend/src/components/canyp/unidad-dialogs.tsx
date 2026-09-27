@@ -65,9 +65,11 @@ import {
   buildNuevaUnidadPayload,
   conceptoDeMembresia,
   formatearAvisosCobro,
+  hoyLocalISO,
   itemsPorArancel,
   lineaAPagoItem,
   membresiaDeLugar,
+  miembrosCuotaImpaga,
   predioDeTipo,
   totalEstimado,
   type LugarCobrable,
@@ -1102,6 +1104,16 @@ export function CobrarUnidadDialog({
   );
 
   /**
+   * Integrantes que DEBEN la cuota: el multiplicador de su línea. Un socio ya
+   * pago no se cobra de nuevo (regla del dueño); el servidor re-resuelve lo
+   * mismo, así que esta estimación tiene que coincidir con el cobro final.
+   */
+  const cuotaImpaga = useMemo(
+    () => miembrosCuotaImpaga(grupo.members, membresias, hoyLocalISO()),
+    [grupo.members, membresias],
+  );
+
+  /**
    * Lugar de la unidad, derivado de SU membresía de área — nunca del titular
    * (ReQ-004): el titular puede no tener área (cuota social) y el bug viejo
    * tomaba su pareja area+predio como si fuera la de la unidad.
@@ -1125,13 +1137,14 @@ export function CobrarUnidadDialog({
 
   // Filas que este cobro puede tikear: el área del lugar, TODOS sus apartes de
   // servicio y los carriers por concepto (ReQ-001). La cuota social sólo se
-  // ofrece si el titular la tiene: sin ella el servidor rechaza (422).
+  // ofrece si el titular la tiene (sin ella el servidor rechaza, 422) Y queda
+  // alguien impago: con toda la unidad al día no hay nada que cobrar.
   const disponibles = useMemo(
     () =>
       arancelesDisponibles(aranceles, lugar ? [lugar] : []).filter((a) =>
-        conceptoDeArancel(a) === "cuota social" ? Boolean(cuotaTitular) : true,
+        conceptoDeArancel(a) === "cuota social" ? Boolean(cuotaTitular) && cuotaImpaga > 0 : true,
       ),
-    [aranceles, lugar, cuotaTitular],
+    [aranceles, lugar, cuotaTitular, cuotaImpaga],
   );
 
   // Aviso ReQ-003: un lugar sin fila de servicio no calla, lo dice.
@@ -1153,10 +1166,10 @@ export function CobrarUnidadDialog({
     () =>
       itemsPorArancel(aranceles, lugar ? [lugar] : [], marcas, {
         anclas: { area: lugar?.membresiaId, cuota: cuotaTitular?.id },
-        miembros: grupo.members.length,
+        miembrosImpagos: cuotaImpaga,
         ajustes: ajustesNum,
       }),
-    [aranceles, lugar, marcas, cuotaTitular, grupo.members.length, ajustesNum],
+    [aranceles, lugar, marcas, cuotaTitular, cuotaImpaga, ajustesNum],
   );
 
   const total = totalEstimado(lineas);
@@ -1254,7 +1267,7 @@ export function CobrarUnidadDialog({
                     <div className="flex-1">
                       <p className="text-sm font-medium">{a.nombre}</p>
                       <p className="text-xs text-muted-foreground">
-                        {detalleArancel(a, grupo.members.length)}
+                        {detalleArancel(a, cuotaImpaga)}
                       </p>
                     </div>
                     {editable && marcas.has(a.id) && (
@@ -1369,9 +1382,10 @@ function conceptoDeArancel(a: Arancel): ConceptoCobro {
  * Texto auxiliar de una fila de catálogo: cuánto costaría y por qué se multiplica.
  * Es sólo la estimación del cliente; el servidor re-resuelve cada línea (PAG-01).
  */
-function detalleArancel(a: Arancel, miembros: number): string {
+function detalleArancel(a: Arancel, impagos: number): string {
   const concepto = conceptoDeArancel(a);
-  if (concepto === "cuota social") return `${formatARS(a.monto)} × ${miembros} miembros`;
+  if (concepto === "cuota social")
+    return `${formatARS(a.monto)} × ${impagos} impago${impagos === 1 ? "" : "s"}`;
   if (concepto === "servicio") return `Catálogo ${formatARS(a.monto)} (ajustable)`;
   if (concepto === "recargo") return "Importe que defina el operador";
   return formatARS(a.monto);

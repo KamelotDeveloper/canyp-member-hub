@@ -2,7 +2,7 @@
 
 import re
 
-from datetime import date
+from datetime import date, timedelta
 from itertools import combinations
 
 import pytest
@@ -1064,7 +1064,14 @@ class TestCobroMultiConceptMatriz:
         assert set(_venc(test_db, ids["areas"] + ids["cuotas"]).values()) == {VENC_COBRADO}
 
     def test_el_multiplicador_es_la_unidad_que_viaja_con_el_comprobante(self, test_client, test_db):
-        """The factor counts the unit's members the operator actually submitted."""
+        """The factor counts the unit's members the operator actually submitted.
+
+        Only the submitted area memberships scope the unit, so the cuota social
+        is charged for those 2 members. Charged == renewed: those same 2 cuota
+        rows renew even though the client sent only area memberships — the
+        production dialog shape — and the 2 members left behind are neither
+        scaled nor renewed.
+        """
         ids = _seed_unidad(test_db, miembros=4)
         # 2 of the 4 members of the parcel travel with the receipt: the cuota social
         # is charged for those 2, and the 2 left behind are neither scaled nor renewed.
@@ -1077,7 +1084,26 @@ class TestCobroMultiConceptMatriz:
         assert (cuota["monto"], cuota["factor"]) == (CUOTA_UNIT_PRICE * 2, 2.0)
         test_db.expire_all()
         venc = _venc(test_db, ids["areas"] + ids["cuotas"])
-        assert {mid for mid, v in venc.items() if v == VENC_COBRADO} == {"ma0", "ma1"}
+        assert {mid for mid, v in venc.items() if v == VENC_COBRADO} == {
+            "ma0",
+            "ma1",
+            "mc0",
+            "mc1",
+        }
+
+    def test_solo_areas_un_servicio_no_renueva_area_ni_cuota(self, test_client, test_db):
+        """D4 sigue en pie con el payload de producción: un servicio no renueva nada.
+
+        El fix deriva la renovación de la cuota SOLO cuando se cobra su línea; un
+        servicio (o recargo) tildado sobre áreas enviadas no cobra cuota, así que
+        no puede renovar ni la cuota ni el área.
+        """
+        ids = _seed_unidad(test_db, miembros=2)
+        resp = _post_cobro(test_client, [LINEAS["servicio"][0]], ids["areas"])
+        assert resp.status_code == 201
+        assert [i["concepto"] for i in resp.json()["items"]] == ["servicio"]
+        test_db.expire_all()
+        assert set(_venc(test_db, ids["areas"] + ids["cuotas"]).values()) == {VENC_PASADO}
 
     def test_dos_unidades_dan_dos_lineas_de_area(self, test_client, test_db):
         """CBM-04: line identity is (concepto, arancel), so two parcels, two lines."""
@@ -1903,3 +1929,213 @@ class TestPagoAuditColumns:
         body = resp.json()
         assert body["createdBy"] is None
         assert body["updatedBy"] is None
+
+
+# ---------------------------------------------------------------------------
+# Cuota social per UNPAID member — the owner's rule.
+#
+# The cuota is charged per socio, so a member who already has it paid must NOT
+# be charged again: a unit of 4 with 1 paid is billed 3. "Unpaid" is the badge's
+# own rule (no row / stopped / vencida); a paid member's date is left alone.
+# ---------------------------------------------------------------------------
+
+AL_DIA = date.today() + timedelta(days=30)
+
+
+class TestCuotaSocialSoloCobraImpagos:
+    """The unit multiplier counts UNPAID members, not heads (CS-03 + owner)."""
+
+    def _marcar_al_dia(self, db, cuota_id: str) -> None:
+        """Give a cuota row a FUTURE date, i.e. the socio already paid it."""
+        db.get(Membresia, cuota_id).vencimiento = AL_DIA
+        db.commit()
+
+    def test_un_integrante_al_dia_no_se_cobra(self, test_client, test_db):
+        """4 members, 1 paid -> the cuota line bills 3, and the paid one is untouched."""
+        ids = _seed_unidad(test_db, miembros=4)
+        self._marcar_al_dia(test_db, "mc1")  # socio s2 already paid
+
+        resp = _post_cobro(
+            test_client,
+            [LINEAS["area"][0], LINEAS["cuota social"][0]],
+            ids["areas"] + ids["cuotas"],
+        )
+        assert resp.status_code == 201
+        por_concepto = {i["concepto"]: i for i in resp.json()["items"]}
+        assert (por_concepto["cuota social"]["monto"], por_concepto["cuota social"]["factor"]) == (
+            CUOTA_UNIT_PRICE * 3,
+            3.0,
+        )
+        assert resp.json()["total"] == BALSA_ARANCEL + CUOTA_UNIT_PRICE * 3
+
+        # The paid member's date is neither advanced nor shortened; the other
+        # three were impagos and did renew to the charge window.
+        test_db.expire_all()
+        assert test_db.get(Membresia, "mc1").vencimiento == AL_DIA
+        assert test_db.get(Membresia, "mc0").vencimiento == VENC_COBRADO
+        assert test_db.get(Membresia, "mc2").vencimiento == VENC_COBRADO
+        assert test_db.get(Membresia, "mc3").vencimiento == VENC_COBRADO
+
+    # ── REGRESIÓN: la cuota social se renueva aunque el cliente no la mande ──
+
+    def test_cobro_de_unidad_solo_con_areas_igual_renueva_las_cuotas(self, test_client, test_db):
+        """REGRESIÓN: el diálogo de unidad manda SOLO áreas y la cuota igual se renueva.
+
+        El multiplicador ya contaba a los impagos, pero el set de renovación era
+        "lo enviado ∩ conceptos tildados": como las cuotas NO viajaban en
+        ``membresiaIds``, se cobraba la cuota y su ``vencimiento`` no avanzaba,
+        así que el socio seguía impago y la próxima vez se le cobraba de nuevo
+        (doble cobro). El servidor ahora deriva la renovación de la cuota de la
+        MISMA fuente que el multiplicador: cobrado == renovado.
+        """
+        ids = _seed_unidad(test_db, miembros=4)
+
+        resp = _post_cobro(test_client, [LINEAS["cuota social"][0]], ids["areas"])
+        assert resp.status_code == 201
+        assert resp.json()["items"][0]["factor"] == 4.0
+
+        test_db.expire_all()
+        # Las 4 cuotas cobradas avanzan al ciclo de la ventana.
+        assert set(_venc(test_db, ids["cuotas"]).values()) == {VENC_COBRADO}
+        # Las áreas viajaron pero NO se tildaron: no se tocan (D4).
+        assert set(_venc(test_db, ids["areas"]).values()) == {VENC_PASADO}
+
+    def test_solo_areas_un_al_dia_renueva_exactamente_los_impagos(self, test_client, test_db):
+        """1 al día + 3 impagos, mandando solo áreas: se renuevan exactamente 3."""
+        ids = _seed_unidad(test_db, miembros=4)
+        self._marcar_al_dia(test_db, "mc1")  # socio s2 ya pagó
+
+        resp = _post_cobro(test_client, [LINEAS["cuota social"][0]], ids["areas"])
+        assert resp.status_code == 201
+        assert resp.json()["items"][0]["factor"] == 3.0
+
+        test_db.expire_all()
+        venc = _venc(test_db, ids["cuotas"])
+        assert {mid for mid, v in venc.items() if v == VENC_COBRADO} == {
+            "mc0",
+            "mc2",
+            "mc3",
+        }
+        assert venc["mc1"] == AL_DIA
+
+    def test_todos_al_dia_con_solo_areas_no_renueva_cuota(self, test_client, test_db):
+        """Con toda la unidad al día no hay línea de cuota ni renovación de cuota."""
+        ids = _seed_unidad(test_db)
+        for cid in ids["cuotas"]:
+            self._marcar_al_dia(test_db, cid)
+
+        resp = _post_cobro(
+            test_client,
+            [LINEAS["area"][0], LINEAS["cuota social"][0]],
+            ids["areas"],
+        )
+        assert resp.status_code == 201
+        assert [i["concepto"] for i in resp.json()["items"]] == ["area"]
+
+        test_db.expire_all()
+        assert set(_venc(test_db, ids["cuotas"]).values()) == {AL_DIA}
+        assert set(_venc(test_db, ids["areas"]).values()) == {VENC_COBRADO}
+
+    def test_todos_al_dia_no_produce_linea_de_cuota(self, test_client, test_db):
+        """A fully-settled unit has nothing to charge: the cuota line is dropped."""
+        ids = _seed_unidad(test_db)
+        for cid in ids["cuotas"]:
+            self._marcar_al_dia(test_db, cid)
+
+        resp = _post_cobro(
+            test_client,
+            [LINEAS["area"][0], LINEAS["cuota social"][0]],
+            ids["areas"] + ids["cuotas"],
+        )
+        assert resp.status_code == 201
+        assert [i["concepto"] for i in resp.json()["items"]] == ["area"]
+        assert resp.json()["total"] == BALSA_ARANCEL
+
+    def test_todos_al_dia_y_solo_cuota_es_422(self, test_client, test_db):
+        """Ticking only the cuota on a settled unit bills nothing: empty charge."""
+        ids = _seed_unidad(test_db)
+        for cid in ids["cuotas"]:
+            self._marcar_al_dia(test_db, cid)
+
+        resp = _post_cobro(
+            test_client, [LINEAS["cuota social"][0]], ids["areas"] + ids["cuotas"]
+        )
+        assert resp.status_code == 422
+        assert test_db.query(Pago).count() == 0
+        test_db.expire_all()
+        assert set(_venc(test_db, ids["cuotas"]).values()) == {AL_DIA}
+
+    def test_una_cuota_parada_cuenta_como_impaga(self, test_client, test_db):
+        """suspendida is 🔴 even with a future date: the member is still charged."""
+        ids = _seed_unidad(test_db, miembros=2)
+        parada = test_db.get(Membresia, "mc1")
+        parada.vencimiento = AL_DIA
+        parada.estado = EstadoMembresia.SUSPENDIDA
+        test_db.commit()
+
+        resp = _post_cobro(
+            test_client, [LINEAS["cuota social"][0]], ids["areas"] + ids["cuotas"]
+        )
+        assert resp.status_code == 201
+        assert resp.json()["items"][0]["factor"] == 2.0
+
+
+class TestCobroPorSocioCuotaAlDia:
+    """Charging ONE socio (/pagos): the cuota is billed x1, and only if owed."""
+
+    def _solo(self, db, vencimiento: date) -> list[str]:
+        """A cuota-social-only socio with the given cuota date (CS-06)."""
+        db.add(Socio(id="s1", nombre="Ana", dni="30111111", fechaAlta=date(2024, 1, 1)))
+        db.add(
+            Arancel(
+                id=CUOTA_PRICE_ID,
+                nombre="Cuota social",
+                area=Area.GUARDERIA,
+                predio=Predio.ALMAFUERTE,
+                monto=CUOTA_UNIT_PRICE,
+                vigenteDesde=date(2025, 1, 1),
+                historico=[],
+                concepto=ConceptoCobro.CUOTA_SOCIAL,
+            )
+        )
+        db.flush()
+        db.add(
+            Membresia(
+                id="mc0",
+                socioId="s1",
+                area=None,
+                predio=None,
+                estado=EstadoMembresia.ACTIVA,
+                vencimiento=vencimiento,
+                concepto=ConceptoMembresia.CUOTA_SOCIAL,
+            )
+        )
+        db.commit()
+        return ["mc0"]
+
+    def test_socio_al_dia_no_paga_cuota(self, test_client, test_db):
+        """A socio whose cuota is up to date cannot be charged for it again."""
+        ids = self._solo(test_db, AL_DIA)
+        resp = _post_cobro(
+            test_client, [{"arancelId": CUOTA_PRICE_ID, "membresiaId": "mc0"}], ids
+        )
+        assert resp.status_code == 422
+        assert test_db.query(Pago).count() == 0
+        test_db.expire_all()
+        assert test_db.get(Membresia, "mc0").vencimiento == AL_DIA
+
+    def test_socio_vencido_paga_cuota_una_vez(self, test_client, test_db):
+        """An expired cuota is billed once (x1), not once per area membership."""
+        ids = self._solo(test_db, VENC_PASADO)
+        resp = _post_cobro(
+            test_client, [{"arancelId": CUOTA_PRICE_ID, "membresiaId": "mc0"}], ids
+        )
+        assert resp.status_code == 201
+        item = resp.json()["items"][0]
+        assert (item["concepto"], item["monto"], item["factor"]) == (
+            "cuota social",
+            CUOTA_UNIT_PRICE,
+            1.0,
+        )
+        test_db.expire_all()
+        assert test_db.get(Membresia, "mc0").vencimiento == VENC_COBRADO
