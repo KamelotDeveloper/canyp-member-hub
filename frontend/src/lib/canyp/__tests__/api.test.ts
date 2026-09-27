@@ -12,7 +12,9 @@ import {
   apiFetchMultipart,
   apiFetchRaw,
   buildUnitPago,
+  createArancel,
   createPago,
+  deleteArancel,
   deleteMembresia,
   executeImport,
   getImportTemplate,
@@ -23,6 +25,7 @@ import {
   previewImport,
   setBatchEstado,
   setBatchVencimiento,
+  updateArancel,
   updateMembresiaVencimiento,
   updateSettings,
 } from "../api";
@@ -487,6 +490,110 @@ describe("unidades compartidas API (PR 3)", () => {
     });
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(init.body as string).fecha).toBe(new Date().toISOString().slice(0, 10));
+  });
+});
+
+describe("catálogo de aranceles API (PR4)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("createArancel POSTs concepto + categoria junto con la tupla (ReQ-005)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: "a_new" }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createArancel({
+      nombre: "Servicio (luz)",
+      area: "Guardería",
+      predio: "Almafuerte",
+      monto: 2500,
+      concepto: "servicio",
+      categoria: null,
+      vigenteDesde: "2026-09-27",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/aranceles");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      nombre: "Servicio (luz)",
+      area: "Guardería",
+      predio: "Almafuerte",
+      monto: 2500,
+      concepto: "servicio",
+      categoria: null,
+      vigenteDesde: "2026-09-27",
+      historico: [],
+    });
+  });
+
+  it("updateArancel PUTs el re-tag de concepto (el 409 lo decide el backend)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: "a1" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateArancel("a1", { concepto: "cuota social", area: "Guardería" });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/aranceles/a1");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({
+      concepto: "cuota social",
+      area: "Guardería",
+    });
+  });
+
+  it("createArancel propaga el detail del 409 de tupla duplicada (ReQ-006)", async () => {
+    const detail =
+      "Ya existe un arancel con area=Balseros, predio=Embalse, categoria=—, concepto=servicio (id=a_serv_balseros)";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ detail }), {
+          status: 409,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(
+      createArancel({
+        nombre: "Servicio",
+        area: "Balseros",
+        predio: "Embalse",
+        monto: 5000,
+        concepto: "servicio",
+        vigenteDesde: "2026-09-27",
+      }),
+    ).rejects.toMatchObject({ name: "ApiError", status: 409, message: detail });
+  });
+
+  it("deleteArancel propaga el detail del 409 con los conteos bloqueantes (ReQ-007)", async () => {
+    const detail = "No se puede eliminar el arancel a1: 2 pago_items (pi1, pi4); 1 membresias (m1)";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ detail }), {
+          status: 409,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(deleteArancel("a1")).rejects.toMatchObject({
+      name: "ApiError",
+      status: 409,
+      message: detail,
+    });
   });
 });
 

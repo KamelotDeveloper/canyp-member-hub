@@ -42,14 +42,27 @@ import {
 import { PageHeader } from "@/components/canyp/AppShell";
 import { ExportButton } from "@/components/export";
 import { AreaBadge } from "@/components/canyp/AreaBadge";
+import { ConceptoBadge } from "@/components/canyp/ConceptoBadge";
 import { formatARS, formatFecha } from "@/lib/canyp/utils";
+import {
+  ARANCEL_FORM_VACIO,
+  CONCEPTO_AYUDA,
+  CONCEPTO_LABELS,
+  CONCEPTOS,
+  esPorLugar,
+  formDeArancel,
+  mensajeDeError,
+  payloadArancel,
+  usaCategoria,
+  type ArancelForm,
+} from "@/lib/canyp/arancel-helpers";
 import {
   useAranceles,
   useCreateArancel,
   useDeleteArancel,
   useUpdateArancel,
 } from "@/lib/canyp/queries";
-import type { Area, CategoriaParcela, Predio } from "@/lib/canyp/types";
+import type { Area, CategoriaParcela, ConceptoCobro, Predio } from "@/lib/canyp/types";
 
 export const Route = createFileRoute("/aranceles")({
   head: () => ({
@@ -69,20 +82,192 @@ export const Route = createFileRoute("/aranceles")({
   component: ArancelesPage,
 });
 
-/** Estado del dialog de edición: copia editable de TODOS los campos. */
-interface EditarEstado {
-  id: string;
-  nombre: string;
-  area: Area;
-  predio: Predio;
-  monto: string;
-  categoria: CategoriaParcela | null;
-  vigenteDesde: string;
-}
+/** Estado del dialog de edición: la fila completa, editable (ReQ-005). */
+type EditarEstado = ArancelForm & { id: string; vigenteDesde: string };
 
 const CATEGORIAS: CategoriaParcela[] = ["Chica", "Mediana", "Especial", "Grande"];
+const AREAS: Area[] = ["Balseros", "Cabañeros", "Guardería", "Windsurf"];
+const PREDIOS: Predio[] = ["Embalse", "Almafuerte"];
 
-function ArancelesPage() {
+/**
+ * Selects del catálogo.
+ *
+ * Son los mismos campos en el alta y en la edición, así que viven una vez: la
+ * diferencia entre ambos formularios NO es qué campos existen sino cuáles aplican
+ * al concepto elegido (`esPorLugar` / `usaCategoria`).
+ */
+function ConceptoSelect({
+  id,
+  value,
+  onChange,
+}: {
+  id: string;
+  value: ConceptoCobro;
+  onChange: (v: ConceptoCobro) => void;
+}) {
+  return (
+    <Select value={value} onValueChange={(v) => onChange(v as ConceptoCobro)}>
+      <SelectTrigger id={id} className="mt-1.5">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {CONCEPTOS.map((c) => (
+          <SelectItem key={c} value={c}>
+            {CONCEPTO_LABELS[c]}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function AreaSelect({
+  id,
+  value,
+  onChange,
+}: {
+  id: string;
+  value: Area;
+  onChange: (v: Area) => void;
+}) {
+  return (
+    <Select value={value} onValueChange={(v) => onChange(v as Area)}>
+      <SelectTrigger id={id} className="mt-1.5">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {AREAS.map((a) => (
+          <SelectItem key={a} value={a}>
+            {a}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function PredioSelect({
+  id,
+  value,
+  onChange,
+}: {
+  id: string;
+  value: Predio;
+  onChange: (v: Predio) => void;
+}) {
+  return (
+    <Select value={value} onValueChange={(v) => onChange(v as Predio)}>
+      <SelectTrigger id={id} className="mt-1.5">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {PREDIOS.map((p) => (
+          <SelectItem key={p} value={p}>
+            {p}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function CategoriaSelect({
+  id,
+  value,
+  onChange,
+}: {
+  id: string;
+  value: CategoriaParcela | null;
+  onChange: (v: CategoriaParcela | null) => void;
+}) {
+  return (
+    <Select
+      value={value ?? "sin-categoria"}
+      onValueChange={(v) => onChange(v === "sin-categoria" ? null : (v as CategoriaParcela))}
+    >
+      <SelectTrigger id={id} className="mt-1.5">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="sin-categoria">Sin categoría</SelectItem>
+        {CATEGORIAS.map((c) => (
+          <SelectItem key={c} value={c}>
+            {c}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/**
+ * Los campos de lugar y categoría que el concepto elegido necesita.
+ *
+ * `idPrefix` mantiene los `id` únicos entre el alta y la edición: los `Label`
+ * apuntan con `htmlFor` a su control, así que el lector de pantalla anuncia
+ * qué está por completar y no sólo un texto suelto al lado.
+ */
+function CamposDeConcepto({
+  form,
+  set,
+  idPrefix,
+}: {
+  form: ArancelForm;
+  /** Parche del form: el alta y la edición comparten los mismos campos. */
+  set: (patch: Partial<ArancelForm>) => void;
+  idPrefix: string;
+}) {
+  return (
+    <>
+      <div>
+        <Label htmlFor={`${idPrefix}-concepto`}>Concepto</Label>
+        <ConceptoSelect
+          id={`${idPrefix}-concepto`}
+          value={form.concepto}
+          onChange={(concepto) => set({ concepto })}
+        />
+        <p className="mt-1.5 text-xs text-muted-foreground">{CONCEPTO_AYUDA[form.concepto]}</p>
+      </div>
+      {esPorLugar(form.concepto) ? (
+        <>
+          <div>
+            <Label htmlFor={`${idPrefix}-area`}>Área</Label>
+            <AreaSelect
+              id={`${idPrefix}-area`}
+              value={form.area}
+              onChange={(area) => set({ area })}
+            />
+          </div>
+          <div>
+            <Label htmlFor={`${idPrefix}-predio`}>Predio</Label>
+            <PredioSelect
+              id={`${idPrefix}-predio`}
+              value={form.predio}
+              onChange={(predio) => set({ predio })}
+            />
+          </div>
+        </>
+      ) : (
+        <div className="sm:col-span-3 text-xs text-muted-foreground">
+          Este concepto se resuelve por concepto, no por lugar: el área y el predio del ítem no
+          definen su precio.
+        </div>
+      )}
+      {usaCategoria(form.concepto) && (
+        <div>
+          <Label htmlFor={`${idPrefix}-categoria`}>Categoría (opcional)</Label>
+          <CategoriaSelect
+            id={`${idPrefix}-categoria`}
+            value={form.categoria}
+            onChange={(categoria) => set({ categoria })}
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+export function ArancelesPage() {
   const { data: aranceles = [], isLoading } = useAranceles();
   const createMutation = useCreateArancel();
   const updateMutation = useUpdateArancel();
@@ -91,14 +276,7 @@ function ArancelesPage() {
   const [eliminar, setEliminar] = useState<string | null>(null);
   const [historial, setHistorial] = useState<string | null>(null);
   const [nuevoOpen, setNuevoOpen] = useState(false);
-  const [nuevo, setNuevo] = useState<{ nombre: string; area: Area; predio: Predio; monto: string }>(
-    {
-      nombre: "",
-      area: "Balseros",
-      predio: "Embalse",
-      monto: "",
-    },
-  );
+  const [nuevo, setNuevo] = useState<ArancelForm>(ARANCEL_FORM_VACIO);
 
   const arancelHist = aranceles.find((a) => a.id === historial);
   const arancelEliminar = aranceles.find((a) => a.id === eliminar);
@@ -134,6 +312,7 @@ function ArancelesPage() {
           <TableHeader>
             <TableRow>
               <TableHead>Ítem</TableHead>
+              <TableHead>Concepto</TableHead>
               <TableHead>Área</TableHead>
               <TableHead>Predio</TableHead>
               <TableHead>Categoría</TableHead>
@@ -146,6 +325,9 @@ function ArancelesPage() {
             {aranceles.map((a) => (
               <TableRow key={a.id}>
                 <TableCell className="font-medium">{a.nombre}</TableCell>
+                <TableCell className="text-xs">
+                  <ConceptoBadge concepto={a.concepto} />
+                </TableCell>
                 <TableCell className="text-xs">
                   <AreaBadge area={a.area} />
                 </TableCell>
@@ -162,21 +344,7 @@ function ArancelesPage() {
                     <Button size="sm" variant="ghost" onClick={() => setHistorial(a.id)}>
                       <History className="mr-1.5 size-3.5" /> Histórico ({a.historico.length})
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() =>
-                        setEditar({
-                          id: a.id,
-                          nombre: a.nombre,
-                          area: a.area,
-                          predio: a.predio,
-                          monto: String(a.monto),
-                          categoria: a.categoria ?? null,
-                          vigenteDesde: a.vigenteDesde,
-                        })
-                      }
-                    >
+                    <Button size="sm" variant="outline" onClick={() => setEditar(formDeArancel(a))}>
                       <Pencil className="mr-1.5 size-3.5" /> Editar
                     </Button>
                     <Button size="sm" variant="outline" onClick={() => setEliminar(a.id)}>
@@ -195,79 +363,31 @@ function ArancelesPage() {
           <DialogHeader>
             <DialogTitle>Editar ítem de arancel</DialogTitle>
             <DialogDescription>
-              Editá nombre, área, predio o monto. Al cambiar el monto, el anterior queda en el
-              histórico.
+              Editá nombre, concepto, área, predio o monto. Al cambiar el monto, el anterior queda
+              en el histórico. Si el concepto nuevo deja la tupla repetida, el catálogo lo rechaza y
+              te dice contra qué ítem choca.
             </DialogDescription>
           </DialogHeader>
           {editar && (
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="sm:col-span-2">
-                <Label>Nombre del ítem</Label>
+                <Label htmlFor="editar-nombre">Nombre del ítem</Label>
                 <Input
+                  id="editar-nombre"
                   className="mt-1.5"
                   value={editar.nombre}
                   onChange={(e) => setEditar({ ...editar, nombre: e.target.value })}
                 />
               </div>
+              <CamposDeConcepto
+                form={editar}
+                set={(patch) => setEditar({ ...editar, ...patch })}
+                idPrefix="editar"
+              />
               <div>
-                <Label>Área</Label>
-                <Select
-                  value={editar.area}
-                  onValueChange={(v) => setEditar({ ...editar, area: v as Area })}
-                >
-                  <SelectTrigger className="mt-1.5">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="Balseros">Balseros</SelectItem>
-                    <SelectItem value="Cabañeros">Cabañeros</SelectItem>
-                    <SelectItem value="Guardería">Guardería</SelectItem>
-                    <SelectItem value="Windsurf">Windsurf</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Predio</Label>
-                <Select
-                  value={editar.predio}
-                  onValueChange={(v) => setEditar({ ...editar, predio: v as Predio })}
-                >
-                  <SelectTrigger className="mt-1.5">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="Embalse">Embalse</SelectItem>
-                    <SelectItem value="Almafuerte">Almafuerte</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Categoría (opcional)</Label>
-                <Select
-                  value={editar.categoria ?? "sin-categoria"}
-                  onValueChange={(v) =>
-                    setEditar({
-                      ...editar,
-                      categoria: v === "sin-categoria" ? null : (v as CategoriaParcela),
-                    })
-                  }
-                >
-                  <SelectTrigger className="mt-1.5">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="sin-categoria">Sin categoría</SelectItem>
-                    {CATEGORIAS.map((c) => (
-                      <SelectItem key={c} value={c}>
-                        {c}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Monto</Label>
+                <Label htmlFor="editar-monto">Monto</Label>
                 <Input
+                  id="editar-monto"
                   type="number"
                   className="mt-1.5"
                   value={editar.monto}
@@ -285,23 +405,16 @@ function ArancelesPage() {
               onClick={() => {
                 if (!editar) return;
                 updateMutation.mutate(
-                  {
-                    id: editar.id,
-                    data: {
-                      nombre: editar.nombre,
-                      area: editar.area,
-                      predio: editar.predio,
-                      monto: Number(editar.monto) || 0,
-                      categoria: editar.categoria,
-                      vigenteDesde: editar.vigenteDesde,
-                    },
-                  },
+                  { id: editar.id, data: payloadArancel(editar, editar.vigenteDesde) },
                   {
                     onSuccess: () => {
                       setEditar(null);
                       toast.success("Arancel actualizado");
                     },
-                    onError: () => toast.error("No se pudo actualizar el arancel."),
+                    // El 409 de tupla duplicada se muestra entero y el form queda
+                    // abierto para corregir la tupla (ReQ-006).
+                    onError: (e) =>
+                      toast.error(mensajeDeError(e, "No se pudo actualizar el arancel.")),
                   },
                 );
               }}
@@ -318,7 +431,9 @@ function ArancelesPage() {
             <AlertDialogTitle>¿Eliminar este ítem de arancel?</AlertDialogTitle>
             <AlertDialogDescription>
               Se va a eliminar “{arancelEliminar?.nombre}”. Esta acción no se puede deshacer. Los
-              pagos ya emitidos conservan el monto y nombre guardados en su comprobante.
+              pagos ya emitidos conservan el monto y nombre guardados en su comprobante. Si el ítem
+              sigue referenciado por pagos o membresías, el catálogo lo rechaza y dice qué lo
+              bloquea.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -333,7 +448,10 @@ function ArancelesPage() {
                     setEliminar(null);
                     toast.success("Ítem de arancel eliminado");
                   },
-                  onError: () => toast.error("No se pudo eliminar el ítem de arancel."),
+                  // 409 con los conteos de pagos/membresías que bloquean el borrado:
+                  // el diálogo queda abierto y la tabla no se toca (ReQ-007).
+                  onError: (e) =>
+                    toast.error(mensajeDeError(e, "No se pudo eliminar el ítem de arancel.")),
                 });
               }}
             >
@@ -375,51 +493,30 @@ function ArancelesPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Nuevo ítem de arancel</DialogTitle>
+            <DialogDescription>
+              El concepto define a qué ítem del cobro puede servir este precio. Elegí el correcto:
+              dos filas con el mismo nombre y distinto concepto cobran distinto.
+            </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="sm:col-span-2">
-              <Label>Nombre del ítem</Label>
+              <Label htmlFor="nuevo-nombre">Nombre del ítem</Label>
               <Input
+                id="nuevo-nombre"
                 className="mt-1.5"
                 value={nuevo.nombre}
                 onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })}
               />
             </div>
-            <div>
-              <Label>Área</Label>
-              <Select
-                value={nuevo.area}
-                onValueChange={(v) => setNuevo({ ...nuevo, area: v as Area })}
-              >
-                <SelectTrigger className="mt-1.5">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Balseros">Balseros</SelectItem>
-                  <SelectItem value="Cabañeros">Cabañeros</SelectItem>
-                  <SelectItem value="Guardería">Guardería</SelectItem>
-                  <SelectItem value="Windsurf">Windsurf</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label>Predio</Label>
-              <Select
-                value={nuevo.predio}
-                onValueChange={(v) => setNuevo({ ...nuevo, predio: v as Predio })}
-              >
-                <SelectTrigger className="mt-1.5">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Embalse">Embalse</SelectItem>
-                  <SelectItem value="Almafuerte">Almafuerte</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <CamposDeConcepto
+              form={nuevo}
+              set={(patch) => setNuevo({ ...nuevo, ...patch })}
+              idPrefix="nuevo"
+            />
             <div className="sm:col-span-2">
-              <Label>Monto</Label>
+              <Label htmlFor="nuevo-monto">Monto</Label>
               <Input
+                id="nuevo-monto"
                 type="number"
                 className="mt-1.5"
                 value={nuevo.monto}
@@ -439,20 +536,17 @@ function ArancelesPage() {
                   return;
                 }
                 createMutation.mutate(
-                  {
-                    nombre: nuevo.nombre,
-                    area: nuevo.area,
-                    predio: nuevo.predio,
-                    monto: Number(nuevo.monto) || 0,
-                    vigenteDesde: new Date().toISOString().slice(0, 10),
-                  },
+                  payloadArancel(nuevo, new Date().toISOString().slice(0, 10)),
                   {
                     onSuccess: () => {
                       setNuevoOpen(false);
-                      setNuevo({ nombre: "", area: "Balseros", predio: "Embalse", monto: "" });
+                      setNuevo(ARANCEL_FORM_VACIO);
                       toast.success("Ítem de arancel creado");
                     },
-                    onError: () => toast.error("No se pudo crear el ítem de arancel."),
+                    // El 409 de tupla duplicada se muestra entero y el form queda
+                    // abierto para cambiar la tupla (ReQ-006).
+                    onError: (e) =>
+                      toast.error(mensajeDeError(e, "No se pudo crear el ítem de arancel.")),
                   },
                 );
               }}
