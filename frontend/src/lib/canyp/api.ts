@@ -12,6 +12,7 @@ import type {
   Arancel,
   Area,
   CategoriaParcela,
+  ConceptoCobro,
   ConceptoMembresia,
   DashboardAlerta,
   DashboardStats,
@@ -394,7 +395,7 @@ export function updateMembresiaVencimiento(id: string, vencimiento: string): Pro
  * `items` = un ítem por cada concepto marcado por el operador, y `membresiaIds`
  * con TODOS los miembros para que el backend renueve a titulares e integrantes.
  *
- * `items` ya viene compuesto por `itemsPorConcepto` (7.2): el cliente propone
+ * `items` ya viene compuesto por `itemsPorArancel` (7.2): el cliente propone
  * el desglose y el `montoAplicado` es una PISTA — el servidor re-resuelve cada
  * línea contra el catálogo y es la única autoridad del total (PAG-01).
  *
@@ -410,7 +411,7 @@ export function buildUnitPago(params: {
   nota?: string;
   /** Fecha del cobro; por defecto hoy (PAG-02). */
   fecha?: string;
-  /** Un ítem por concepto marcado, ya compuesto por `itemsPorConcepto`. */
+  /** Un ítem por arancel marcado, ya compuesto por `itemsPorArancel`. */
   items: PagoItemInput[];
 }): CreatePagoInput | null {
   const { titular, integrantes, medio, nota, fecha, items } = params;
@@ -444,6 +445,13 @@ export interface CreateArancelInput {
   predio: Predio;
   monto: number;
   vigenteDesde: string;
+  /**
+   * Concepto que precio la fila (ReQ-005). Opcional porque el backend lo
+   * defaulta a `area` igual que la columna; el catálogo lo manda siempre.
+   */
+  concepto?: ConceptoCobro;
+  /** Categoría de parcela; null/ausente = catch-all del área+predio. */
+  categoria?: CategoriaParcela | null;
 }
 
 export function createArancel(data: CreateArancelInput): Promise<Arancel> {
@@ -467,6 +475,11 @@ export interface UpdateArancelInput {
   monto?: number;
   categoria?: CategoriaParcela | null;
   vigenteDesde?: string;
+  /**
+   * Re-tag del catálogo (ReQ-005/006). El backend exige un valor no nulo: un
+   * `null` explícito responde 422, no "borrá el concepto".
+   */
+  concepto?: ConceptoCobro;
 }
 
 export function updateArancel(id: string, data: UpdateArancelInput): Promise<Arancel> {

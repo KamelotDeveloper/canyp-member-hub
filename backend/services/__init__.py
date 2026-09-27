@@ -7,6 +7,7 @@ from backend.services.numeracion import siguiente_numero_comprobante
 from backend.services.numeracion_socio import siguiente_numero_socio
 from backend.services.renovacion import renovar_membresias
 from backend.services.resolucion import (
+    arancel_mismatch,
     precio_cuota_social,
     precio_servicio,
     resolver_monto,
@@ -14,6 +15,7 @@ from backend.services.resolucion import (
 
 __all__ = [
     "CobroVacioError",
+    "arancel_mismatch",
     "calcular_estado_socio",
     "estados_socio",
     "actualizar_monto_arancel",
