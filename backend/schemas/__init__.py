@@ -30,6 +30,8 @@ from backend.schemas.parcela import (
 )
 from backend.schemas.pago import (
     PagoCreate,
+    PagoCreateResponse,
+    PagoItemComprobante,
     PagoItemCreate,
     PagoItemResponse,
     PagoResponse,
@@ -57,6 +59,8 @@ __all__ = [
     "ParcelaResponse",
     "ParcelaUpdate",
     "PagoCreate",
+    "PagoCreateResponse",
+    "PagoItemComprobante",
     "PagoItemCreate",
     "PagoItemResponse",
     "PagoResponse",

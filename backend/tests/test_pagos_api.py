@@ -25,6 +25,7 @@ from backend.models.arancel import Arancel
 from backend.services.numeracion import siguiente_numero_comprobante
 from backend.services.renovacion import renovar_membresias
 from backend.services.resolucion import (
+    arancel_mismatch,
     precio_cuota_social,
     precio_servicio,
     resolver_arancel_concepto,
@@ -485,10 +486,9 @@ class TestMultiMembershipPagoIntegration:
 # PR 5a — multi-concept charge, server-owned amounts (CBM-04, CS-03, CS-05,
 # PAG-01, ARA-01, decision #646, design D3/D4).
 #
-# This block is the CONTRACT of the multi-concept charge: what every concept
-# must hold for the flow to be correct. The exhaustive combinatorial coverage
-# (every concept x every renewal combination, unit-size edge cases, catalog
-# fallbacks) is PR 5b.
+# Re-written by `cobro-aranceles-flexibles` (ReQ-017): SERVICIO is no longer a
+# concept-priced row with a placeholder place, it is a row of the unit's OWN
+# place. Nothing below may assert a global service price.
 # ---------------------------------------------------------------------------
 
 
@@ -496,10 +496,18 @@ CUOTA_UNIT_PRICE = 10000.0
 BALSA_ARANCEL = 130000.0
 CABANA_ARANCEL = 45000.0
 SERVICIO_MONTO = 5000.0
+# A SECOND service row of the SAME place: two apartes of one place are two
+# catalog rows, so ticking both must produce two lines (D3).
+SERVICIO_APARTES_MONTO = 3000.0
+# The second place of the club, priced on its own: a balsa and a cabaña of the
+# same receipt pay different service amounts (ReQ-002/004).
+CABANA_SERVICIO_MONTO = 8000.0
 RECARGO_MONTO = 10000.0
 RECARGO_ID = "a_recargo"
 CUOTA_PRICE_ID = "a_cuota"
 SERVICIO_ID = "a_serv"
+SERVICIO_APARTES_ID = "a_serv_apartes"
+CABANA_SERVICIO_ID = "a_serv_cab"
 VENC_PASADO = date(2025, 6, 1)
 VENC_COBRADO = date(2025, 7, 10)  # the charge is dated ON the 10th
 ORDEN_CONCEPTOS = ("area", "cuota social", "servicio", "recargo")
@@ -509,10 +517,19 @@ def _seed_unidad(db, miembros: int = 4, area=Area.BALSEROS):
     """One parcel, `miembros` socios on the same area membership + cuota rows.
 
     Every member gets an AREA membership on the parcel and a CUOTA_SOCIAL
-    membership of their own, so the charge can tick both concepts, and the four
+    membership of their own, so the charge can tick both concepts, and the
     catalog rows it can resolve are seeded too. Module-level because the 5a
     contract tests and the 5b exhaustive matrix charge the same unit at
     different sizes; the amounts are the module constants, never literals.
+
+    **The SERVICIO rows carry the unit's REAL place** (``area``+``predio``), not
+    a placeholder: a balsa's service and a cabaña's service are different rows
+    with different amounts, which is the whole point of ReQ-009. Two of them
+    (``a_serv`` and ``a_serv_apartes``) sit on the same place on purpose — that
+    is what lets two apartes of one place be ticked as two independent lines
+    instead of collapsing into one. The concept-only rows (the recargo carrier
+    and the cuota social unit price) keep the placeholder, because they are not
+    places (ReQ-101).
     """
     predio = Predio.EMBALSE if area is Area.BALSEROS else Predio.ALMAFUERTE
     db.add(Socio(id="s1", nombre="Titular", dni="30111111", fechaAlta=date(2024, 1, 1)))
@@ -526,27 +543,38 @@ def _seed_unidad(db, miembros: int = 4, area=Area.BALSEROS):
             )
         )
     db.add(Parcela(id="pa1", nombre="Balsa", tipo=TipoParcela.BALSA, predio=predio))
-    db.add(
-        Arancel(
-            id="a_balsa",
-            nombre="Amarre y Servicios",
-            area=area,
-            predio=predio,
-            monto=BALSA_ARANCEL,
-            vigenteDesde=date(2025, 1, 1),
-            historico=[],
-        )
-    )
+    # id, nombre, monto, concepto — all four rows of the unit's own place.
     for arancel_id, nombre, monto, concepto in (
-        (RECARGO_ID, "Recargo", 0.0, ConceptoCobro.RECARGO),
-        (CUOTA_PRICE_ID, "Cuota social", CUOTA_UNIT_PRICE, ConceptoCobro.CUOTA_SOCIAL),
+        ("a_balsa", "Amarre y Servicios", BALSA_ARANCEL, None),
         (SERVICIO_ID, "Servicio (luz, agua)", SERVICIO_MONTO, ConceptoCobro.SERVICIO),
+        (
+            SERVICIO_APARTES_ID,
+            "Servicio (luz, agua) - apartes",
+            SERVICIO_APARTES_MONTO,
+            ConceptoCobro.SERVICIO,
+        ),
     ):
         db.add(
             Arancel(
                 id=arancel_id,
                 nombre=nombre,
-                # Placeholder area/predio: resolved by concepto only, never by place.
+                area=area,
+                predio=predio,
+                monto=monto,
+                vigenteDesde=date(2025, 1, 1),
+                historico=[],
+                concepto=concepto,
+            )
+        )
+    for arancel_id, nombre, monto, concepto in (
+        (RECARGO_ID, "Recargo", 0.0, ConceptoCobro.RECARGO),
+        (CUOTA_PRICE_ID, "Cuota social", CUOTA_UNIT_PRICE, ConceptoCobro.CUOTA_SOCIAL),
+    ):
+        db.add(
+            Arancel(
+                id=arancel_id,
+                nombre=nombre,
+                # Placeholder area/predio: a concept-only row is not a place.
                 area=Area.GUARDERIA,
                 predio=Predio.ALMAFUERTE,
                 monto=monto,
@@ -555,7 +583,7 @@ def _seed_unidad(db, miembros: int = 4, area=Area.BALSEROS):
                 concepto=concepto,
             )
         )
-    db.flush()
+    db.flush()  # the memberships below carry real FKs to these socios
 
     for i in range(miembros):
         sid = "s1" if i == 0 else f"s{i + 1}"
@@ -664,6 +692,9 @@ class TestCobroMultiConcept:
         assert body["total"] == sum(i["monto"] for i in body["items"])
         assert body["total"] == BALSA_ARANCEL + CUOTA_UNIT_PRICE * 4 + SERVICIO_MONTO + 10000.0
         assert por_concepto["area"]["nombre"] == "Amarre y Servicios"
+        # Every submitted arancelId WAS the row that prices its line, so there is
+        # nothing to tell the operator (D8).
+        assert body["avisos"] == []
 
         # CBM-04: ticking area + cuota social renews all 8 memberships, the
         # recargo and the servicio renew nothing on their own.
@@ -718,13 +749,16 @@ class TestCobroMultiConcept:
         test_db.expire_all()
         assert self._vencimientos(test_db)["ma0"] == VENC_PASADO
 
-    # ── decision #646: SERVICIO is a catalog price, per unit ───────────────
+    # ── SERVICIO is a catalog price of the unit's OWN place (ReQ-002/009) ───
 
-    def test_servicio_se_resuelve_del_catalogo_por_unidad(self, test_client, test_db):
-        """Catalog amount, factor 1, anchored to the unit — and it renews nothing.
+    def test_servicio_se_resuelve_del_lugar_del_ancla(self, test_client, test_db):
+        """The price comes from the unit's place, and a wrong id is announced.
 
-        The client names a row that is NOT the servicio price: the server
-        resolves the concept, never the client's id (D3).
+        The client names a row that is NOT the service price. The server does not
+        price from it (D3) — it prices from the anchor's own place, which is the
+        only place a per-place price can come from (ReQ-009) — and it SAYS it did
+        so in ``avisos`` (D8). The line is charged, never dropped: dropping it
+        would hand out a free renewal (decision #671).
         """
         ids = self._seed_balsa(test_db)
         resp = self._post(
@@ -739,6 +773,10 @@ class TestCobroMultiConcept:
         assert item["monto"] == SERVICIO_MONTO
         assert item["factor"] == 1.0
         assert item["arancelId"] == SERVICIO_ID
+        # D8: the substitution is observable, naming the row and why it lost.
+        assert len(body["avisos"]) == 1
+        assert "a_balsa" in body["avisos"][0]
+        assert "area" in body["avisos"][0]
         # Utilities are per unit: the line hangs on the unit's membership.
         assert test_db.query(PagoItem).filter(PagoItem.pagoId == body["id"]).one().membresiaId == "ma0"
         # D4: a servicio-only charge renews NOTHING, so it cannot hand out a
@@ -749,7 +787,7 @@ class TestCobroMultiConcept:
     def test_servicio_ajustable_no_pisa_el_catalogo(self, test_client, test_db):
         """A per-charge adjustment freezes on the item; the catalog keeps its price.
 
-        This is the two-way contract of #646: the ADMIN owns the catalog price
+        This is the two-way contract of ReQ-010: the ADMIN owns the catalog price
         and the OPERATOR may adjust one charge (a metered reading), and neither
         writes over the other.
         """
@@ -760,7 +798,11 @@ class TestCobroMultiConcept:
             membresia_ids=ids["areas"],
         )
         assert resp.status_code == 201
-        assert resp.json()["items"][0]["monto"] == 7300.0
+        body = resp.json()
+        assert body["items"][0]["monto"] == 7300.0
+        # The id asked for IS the row that priced it, so there is nothing to warn about.
+        assert body["avisos"] == []
+        test_db.expire_all()
         assert test_db.get(Arancel, SERVICIO_ID).monto == SERVICIO_MONTO
 
         # The admin edits the catalog price: the NEXT charge follows it.
@@ -927,13 +969,25 @@ def _venc(db, ids):
 
 
 def _seed_cabana(db):
-    """A second unit on its own parcel, priced by its OWN catch-all catalog row."""
+    """A second unit on its own parcel, priced by its OWN catch-all catalog row.
+
+    It carries its own SERVICIO row too, at ITS place and for a different amount
+    than the balsa's: a charge covering both units must bill two different
+    service prices, one per place (ReQ-002/004).
+    """
     db.add(Socio(id="s9", nombre="Cabañero", dni="30999999", fechaAlta=date(2024, 1, 1)))
     db.add(Parcela(id="pa2", nombre="Cabaña", tipo=TipoParcela.CABANA, predio=Predio.ALMAFUERTE))
     db.add(
         Arancel(
             id="a_cab", nombre="Parcela", area=Area.CABANEROS, predio=Predio.ALMAFUERTE,
             monto=CABANA_ARANCEL, vigenteDesde=date(2025, 1, 1), historico=[],
+        )
+    )
+    db.add(
+        Arancel(
+            id=CABANA_SERVICIO_ID, nombre="Servicio (luz)", area=Area.CABANEROS,
+            predio=Predio.ALMAFUERTE, monto=CABANA_SERVICIO_MONTO,
+            vigenteDesde=date(2025, 1, 1), historico=[], concepto=ConceptoCobro.SERVICIO,
         )
     )
     db.flush()  # the memberships below carry a real FK to this socio and parcel
@@ -1052,6 +1106,167 @@ class TestCobroMultiConceptMatriz:
         test_db.expire_all()
         assert set(_venc(test_db, enviados).values()) == {VENC_COBRADO}
 
+    def test_cada_unidad_paga_el_servicio_de_su_propio_lugar(self, test_client, test_db):
+        """ReQ-002/004: one receipt, two places, two DIFFERENT service prices.
+
+        This is the bug the change exists for: a global service price billed
+        every unit of the club the same, no matter where it is. Each line is
+        priced from its OWN membership's place — never from the titular's, and
+        never from a club-wide fallback.
+        """
+        ids = _seed_unidad(test_db, miembros=2)
+        cabana = _seed_cabana(test_db)
+        enviados = ids["areas"] + ids["cuotas"] + cabana["areas"] + cabana["cuotas"]
+        resp = _post_cobro(
+            test_client,
+            [
+                {"arancelId": SERVICIO_ID, "membresiaId": "ma0"},
+                {"arancelId": CABANA_SERVICIO_ID, "membresiaId": "mb0"},
+            ],
+            enviados,
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert [(i["arancelId"], i["monto"]) for i in body["items"]] == [
+            (SERVICIO_ID, SERVICIO_MONTO),
+            (CABANA_SERVICIO_ID, CABANA_SERVICIO_MONTO),
+        ]
+        assert body["total"] == SERVICIO_MONTO + CABANA_SERVICIO_MONTO
+        # Each line is anchored to the unit it belongs to, not to the titular.
+        assert {
+            i.arancelId: i.membresiaId
+            for i in test_db.query(PagoItem).filter(PagoItem.pagoId == body["id"]).all()
+        } == {SERVICIO_ID: "ma0", CABANA_SERVICIO_ID: "mb0"}
+        assert body["avisos"] == []
+        # A utility renews nothing, in either place.
+        test_db.expire_all()
+        assert set(_venc(test_db, enviados).values()) == {VENC_PASADO}
+
+    def test_dos_filas_de_servicio_del_mismo_lugar_son_dos_lineas(self, test_client, test_db):
+        """ReQ-001/D3: two apartes of one place are two catalog rows, two lines.
+
+        The dedup key is ``(concepto, arancelId)``. Resolving the service by
+        place alone would collapse both ticks into one line and the operator
+        would tick two and pay one — so the submitted ``arancelId`` is honored
+        when it IS a service row of that place.
+        """
+        ids = _seed_unidad(test_db, miembros=2)
+        resp = _post_cobro(
+            test_client,
+            [
+                {"arancelId": SERVICIO_ID, "membresiaId": "ma0"},
+                {"arancelId": SERVICIO_APARTES_ID, "membresiaId": "ma1"},
+            ],
+            ids["areas"] + ids["cuotas"],
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert [(i["arancelId"], i["monto"]) for i in body["items"]] == [
+            (SERVICIO_ID, SERVICIO_MONTO),
+            (SERVICIO_APARTES_ID, SERVICIO_APARTES_MONTO),
+        ]
+        assert body["total"] == SERVICIO_MONTO + SERVICIO_APARTES_MONTO
+        assert body["avisos"] == []
+        test_db.expire_all()
+        assert set(_venc(test_db, ids["areas"] + ids["cuotas"]).values()) == {VENC_PASADO}
+
+    def test_un_lugar_sin_fila_de_servicio_no_inventa_linea_ni_avisa_de_mismatch(
+        self, test_client, test_db
+    ):
+        """ReQ-003: no service row for the place -> the line is dropped, not priced.
+
+        The charge still goes through with what it could resolve, and nothing is
+        announced: nothing was mismatched, the catalog simply has no row for that
+        place. The operator-facing notice for this case belongs to the UI.
+        """
+        ids = _seed_unidad(test_db, miembros=2)
+        test_db.query(Arancel).filter(
+            Arancel.id.in_([SERVICIO_ID, SERVICIO_APARTES_ID])
+        ).delete()
+        test_db.commit()
+        resp = _post_cobro(
+            test_client,
+            [
+                {"arancelId": "a_balsa", "membresiaId": "ma0"},
+                {"arancelId": SERVICIO_ID, "membresiaId": "ma0"},
+            ],
+            ids["areas"],
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert [i["concepto"] for i in body["items"]] == ["area"]
+        assert body["total"] == BALSA_ARANCEL
+        assert len(body["avisos"]) == 1
+        assert "a_serv" in body["avisos"][0]
+        # The line was DROPPED, so the aviso must not claim a charge: it reports
+        # the broken assignment and leaves the amounts to the items.
+        assert "no se cobra" in body["avisos"][0]
+        test_db.expire_all()
+        assert set(_venc(test_db, ids["areas"]).values()) == {VENC_COBRADO}
+
+    def test_un_arancel_id_retagueado_cobra_el_precio_del_lugar_y_avisa(
+        self, test_client, test_db
+    ):
+        """ReQ-011 + decision #671: charge the right price, announce it, drop nothing.
+
+        A membership was assigned to a row that has since been re-tagged from
+        AREA to SERVICIO. The explicit assignment can no longer price the unit's
+        area line, so the place's own AREA row does — and the operator is told,
+        because a silently re-priced line is exactly the error this change
+        refuses to hide. Dropping the line would hand out a free renewal.
+        """
+        ids = _seed_unidad(test_db, miembros=2)
+        test_db.add(
+            Arancel(
+                id="a_balsa_alt", nombre="Amarre (apartes)", area=Area.BALSEROS,
+                predio=Predio.EMBALSE, monto=90000.0, vigenteDesde=date(2025, 1, 1),
+                historico=[],
+            )
+        )
+        test_db.get(Arancel, "a_balsa").concepto = ConceptoCobro.SERVICIO
+        test_db.get(Membresia, "ma0").arancelId = "a_balsa"
+        test_db.commit()
+
+        resp = _post_cobro(
+            test_client,
+            # The line SAYS it is the unit's area line. It cannot be inferred from
+            # ``a_balsa`` anymore — that row now claims to be a service (and an
+            # item with no concept is priced as whatever its row claims to be).
+            [{"arancelId": "a_balsa", "membresiaId": "ma0", "concepto": "area"}],
+            ids["areas"],
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        # The line is NOT dropped: the place's own AREA row prices it.
+        assert [(i["arancelId"], i["monto"]) for i in body["items"]] == [
+            ("a_balsa_alt", 90000.0)
+        ]
+        assert body["total"] == 90000.0
+        # ...and the substitution is visible, naming the row and the re-tag.
+        assert len(body["avisos"]) == 1
+        assert "a_balsa" in body["avisos"][0]
+        assert "servicio" in body["avisos"][0]
+        test_db.expire_all()
+        assert set(_venc(test_db, ids["areas"]).values()) == {VENC_COBRADO}
+
+    def test_un_arancel_id_de_otro_lugar_se_corrige_y_se_avisa(self, test_client, test_db):
+        """ReQ-009: another place's row never prices this unit — and it is said."""
+        ids = _seed_unidad(test_db, miembros=2)
+        cabana = _seed_cabana(test_db)
+        resp = _post_cobro(
+            test_client,
+            [{"arancelId": CABANA_SERVICIO_ID, "membresiaId": "ma0"}],
+            ids["areas"] + cabana["areas"],
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        assert [(i["arancelId"], i["monto"]) for i in body["items"]] == [
+            (SERVICIO_ID, SERVICIO_MONTO)
+        ]
+        assert len(body["avisos"]) == 1
+        assert "Cabañeros/Almafuerte" in body["avisos"][0]
+        assert "Balseros/Embalse" in body["avisos"][0]
+
     def test_solo_cuota_social_no_agrega_linea_de_area(self, test_client, test_db):
         """CBM-04 'solo cuota social': no area item and no area membership renewed."""
         ids = _seed_unidad(test_db)
@@ -1095,12 +1310,17 @@ class TestCobroMultiConceptMatriz:
             ids["areas"],
         )
         assert resp.status_code == 201
-        item = resp.json()["items"][0]
+        body = resp.json()
+        item = body["items"][0]
         assert (item["arancelId"], item["monto"], item["nombre"]) == (
             "a_balsa",
             BALSA_ARANCEL,
             "Amarre y Servicios",
         )
+        # The client sent a client figure for a catalog-priced line and named the
+        # wrong row: both corrections happen, and the wrong row is announced (D8).
+        assert len(body["avisos"]) == 1
+        assert RECARGO_ID in body["avisos"][0]
 
     # ── PAG-01: amounts and factors freeze at creation ─────────────────────
 
@@ -1173,15 +1393,24 @@ class TestCobroMultiConceptMatriz:
     # ── catalog fallbacks: a missing row drops its line, never invents one ──
 
     @pytest.mark.parametrize(
-        ("faltante", "caida"),
-        [(SERVICIO_ID, "servicio"), (CUOTA_PRICE_ID, "cuota social"), ("a_balsa", "area")],
+        ("faltantes", "caida"),
+        [
+            ([SERVICIO_ID, SERVICIO_APARTES_ID], "servicio"),
+            ([CUOTA_PRICE_ID], "cuota social"),
+            (["a_balsa"], "area"),
+        ],
     )
     def test_un_concepto_sin_fila_de_catalogo_no_se_inventa_linea_ni_renueva(
-        self, test_client, test_db, faltante, caida
+        self, test_client, test_db, faltantes, caida
     ):
-        """Safety rule 1: a concept renews only after its line was produced."""
+        """Safety rule 1: a concept renews only after its line was produced.
+
+        The service case deletes BOTH service rows of the place: a place with one
+        row left still has a service price, and the point is a place whose
+        catalog has none.
+        """
         ids = _seed_unidad(test_db)
-        test_db.query(Arancel).filter(Arancel.id == faltante).delete()
+        test_db.query(Arancel).filter(Arancel.id.in_(faltantes)).delete()
         test_db.commit()
         resp = _post_cobro(
             test_client, [LINEAS[c][0] for c in ORDEN_CONCEPTOS], ids["areas"] + ids["cuotas"]
@@ -1363,10 +1592,13 @@ class TestResolucionConceptScoped:
     """PAG-01 at the resolver level: the concept tag scopes every catalog lookup."""
 
     def _catalog(self, db):
-        """Two real area rows plus the three non-place concept rows.
+        """Two real area rows, the two concept-only rows, one service row per place.
 
-        The concept rows deliberately share ``GUARDERIA``/``ALMAFUERTE`` with
-        ``a_guard``, because that is the collision the concept tag exists to stop.
+        The recargo/cuota rows deliberately share ``GUARDERIA``/``ALMAFUERTE``
+        with ``a_guard``, because that is the collision the concept tag exists to
+        stop. The SERVICE rows are the opposite case now: they carry a REAL
+        place, and each place has its own amount — which is what makes
+        ``precio_servicio`` a per-place lookup and not a global one.
         """
         # id, nombre, area, predio, categoria, monto, concepto
         filas = [
@@ -1378,8 +1610,10 @@ class TestResolucionConceptScoped:
              ConceptoCobro.RECARGO),
             (CUOTA_PRICE_ID, "Cuota social", Area.GUARDERIA, Predio.ALMAFUERTE, None,
              CUOTA_UNIT_PRICE, ConceptoCobro.CUOTA_SOCIAL),
-            (SERVICIO_ID, "Servicio (luz, agua)", Area.GUARDERIA, Predio.ALMAFUERTE, None,
+            (SERVICIO_ID, "Servicio (luz) balseros", Area.BALSEROS, Predio.EMBALSE, None,
              SERVICIO_MONTO, ConceptoCobro.SERVICIO),
+            ("a_serv_guard", "Servicio (luz) guardería", Area.GUARDERIA, Predio.ALMAFUERTE,
+             None, 2500.0, ConceptoCobro.SERVICIO),
         ]
         db.add_all(
             [
@@ -1395,7 +1629,9 @@ class TestResolucionConceptScoped:
     def test_una_fila_de_concepto_no_responde_a_un_lookup_de_area(self, test_db):
         """The non-place rows carry a placeholder area/predio; they must not answer."""
         self._catalog(test_db)
-        # A guardería area lookup shares area+predio with all three concept rows.
+        # A guardería area lookup shares area+predio with the recargo and cuota
+        # rows — and with the guardería SERVICE row, which the concept tag keeps
+        # out of an AREA answer.
         guarderia = resolver_monto(test_db, Area.GUARDERIA, Predio.ALMAFUERTE, CategoriaParcela.CHICA)
         assert guarderia.id == "a_guard"
         # The catch-all for that place is NOT one of them: it does not exist.
@@ -1416,6 +1652,24 @@ class TestResolucionConceptScoped:
             is None
         )
 
+    def test_un_arancel_id_de_otro_lugar_se_rechaza(self, test_db):
+        """A row of another place never prices this unit, however it got here.
+
+        Before the place filter, the guardería service row would have priced a
+        balsa's utility — the same class of bug as the global lookup, reached
+        through an id instead of a fallback (ReQ-009).
+        """
+        self._catalog(test_db)
+        balsa = resolver_monto(
+            test_db, Area.BALSEROS, Predio.EMBALSE, None, arancel_id="a_serv_guard"
+        )
+        assert balsa.id == "a_balsa"
+        servicio = resolver_monto(
+            test_db, Area.BALSEROS, Predio.EMBALSE, None,
+            arancel_id="a_serv_guard", concepto=ConceptoCobro.SERVICIO,
+        )
+        assert servicio.id == SERVICIO_ID
+
     def test_resolver_arancel_concepto_es_determinista(self, test_db):
         """Two rows for one concept: the lowest id wins, never an arbitrary one."""
         self._catalog(test_db)
@@ -1432,12 +1686,161 @@ class TestResolucionConceptScoped:
     def test_el_precio_de_cada_concepto_viene_de_su_propia_fila(self, test_db):
         """A catalog migrated but never re-seeded: no row, no invented price."""
         self._catalog(test_db)
+        # The cuota social price is concept-priced: one price for the club.
         assert precio_cuota_social(test_db).id == CUOTA_PRICE_ID
-        assert precio_servicio(test_db).id == SERVICIO_ID
-        test_db.query(Arancel).filter(Arancel.id.in_([CUOTA_PRICE_ID, SERVICIO_ID])).delete()
+        # The service price is per place: each place reads its OWN row.
+        assert precio_servicio(test_db, Area.BALSEROS, Predio.EMBALSE).id == SERVICIO_ID
+        assert precio_servicio(test_db, Area.GUARDERIA, Predio.ALMAFUERTE).id == "a_serv_guard"
+        test_db.query(Arancel).filter(
+            Arancel.id.in_([CUOTA_PRICE_ID, SERVICIO_ID, "a_serv_guard"])
+        ).delete()
         test_db.commit()
         assert precio_cuota_social(test_db) is None
-        assert precio_servicio(test_db) is None
+        assert precio_servicio(test_db, Area.BALSEROS, Predio.EMBALSE) is None
+        assert precio_servicio(test_db, Area.GUARDERIA, Predio.ALMAFUERTE) is None
+
+
+class TestResolucionPorLugar:
+    """ReQ-008/D1/D2/D8: determinism, per-place service, and the mismatch report."""
+
+    def _servicios(self, db):
+        """Two SERVICIO rows, one per place, with different amounts."""
+        db.add_all(
+            [
+                Arancel(
+                    id="a_serv_balsa", nombre="Servicio (luz) balseros", area=Area.BALSEROS,
+                    predio=Predio.EMBALSE, monto=5000.0, vigenteDesde=date(2025, 1, 1),
+                    historico=[], concepto=ConceptoCobro.SERVICIO,
+                ),
+                Arancel(
+                    id="a_serv_cabana", nombre="Servicio (luz) cabaña", area=Area.CABANEROS,
+                    predio=Predio.ALMAFUERTE, monto=3000.0, vigenteDesde=date(2025, 1, 1),
+                    historico=[], concepto=ConceptoCobro.SERVICIO,
+                ),
+            ]
+        )
+        db.commit()
+
+    def test_dos_filas_duplicadas_de_un_lugar_gana_el_id_menor(self, test_db):
+        """ReQ-008: a duplicated tuple always resolves the same way, not arbitrarily.
+
+        The 409 of D4 is what should stop this state; this is the guarantee for
+        the database that has it anyway (a migrated prod row, a manual fix).
+        """
+        test_db.add_all(
+            [
+                Arancel(
+                    id=f"a_dup_{sufijo}", nombre=f"Amarre {sufijo}", area=Area.BALSEROS,
+                    predio=Predio.EMBALSE, monto=float(monto), vigenteDesde=date(2025, 1, 1),
+                    historico=[], categoria=categoria,
+                )
+                for sufijo, monto, categoria in (
+                    ("z", 10.0, None),
+                    ("a", 20.0, None),
+                    ("m_grande", 30.0, CategoriaParcela.GRANDE),
+                    ("b_grande", 40.0, CategoriaParcela.GRANDE),
+                )
+            ]
+        )
+        test_db.commit()
+        # The catch-all branch and the exact-categoria branch are ordered alike.
+        assert resolver_monto(test_db, Area.BALSEROS, Predio.EMBALSE, None).id == "a_dup_a"
+        assert (
+            resolver_monto(
+                test_db, Area.BALSEROS, Predio.EMBALSE, CategoriaParcela.GRANDE
+            ).id
+            == "a_dup_b_grande"
+        )
+        # A place with no rows of its own is still None, not a neighbour's row.
+        assert resolver_monto(test_db, Area.CABANEROS, Predio.ALMAFUERTE, None) is None
+
+    def test_dos_lugares_resuelven_precios_de_servicio_distintos(self, test_db):
+        """ReQ-002/ReQ-009: the service price is a function of the PLACE."""
+        self._servicios(test_db)
+        # A second service row of the FIRST place: two apartes, two prices (D3).
+        test_db.add(
+            Arancel(
+                id="a_serv_balsa_apartes", nombre="Servicio (luz) balseros - apartes",
+                area=Area.BALSEROS, predio=Predio.EMBALSE, monto=1500.0,
+                vigenteDesde=date(2025, 1, 1), historico=[], concepto=ConceptoCobro.SERVICIO,
+            )
+        )
+        test_db.commit()
+
+        balsa = precio_servicio(test_db, Area.BALSEROS, Predio.EMBALSE)
+        cabana = precio_servicio(test_db, Area.CABANEROS, Predio.ALMAFUERTE)
+        assert (balsa.id, balsa.monto) == ("a_serv_balsa", 5000.0)
+        assert (cabana.id, cabana.monto) == ("a_serv_cabana", 3000.0)
+        # The id is honored when it IS a service row of that place (D3), so the
+        # apartes of one place are two independent prices...
+        assert precio_servicio(
+            test_db, Area.BALSEROS, Predio.EMBALSE, arancel_id="a_serv_balsa_apartes"
+        ).id == "a_serv_balsa_apartes"
+        # ...but another PLACE's id is not, and never prices this unit.
+        assert precio_servicio(
+            test_db, Area.BALSEROS, Predio.EMBALSE, arancel_id="a_serv_cabana"
+        ).id == "a_serv_balsa"
+
+    def test_precio_de_servicio_sin_lugar_es_none(self, test_db):
+        """D2/ReQ-009: no place, no per-place price. Never a global fallback.
+
+        The catalog HAS service rows here — a cuota-social-only Windsurf socio
+        still has nothing to resolve one from, and falling back to another
+        place's price is the bug being fixed.
+        """
+        self._servicios(test_db)
+        assert precio_servicio(test_db, None, None) is None
+        assert precio_servicio(test_db, Area.BALSEROS, None) is None
+        assert precio_servicio(test_db, None, Predio.EMBALSE) is None
+
+    def test_arancel_mismatch_no_dice_nada_cuando_el_id_sirve(self, test_db):
+        self._servicios(test_db)
+        assert (
+            arancel_mismatch(
+                test_db, "a_serv_balsa", Area.BALSEROS, Predio.EMBALSE, ConceptoCobro.SERVICIO
+            )
+            is None
+        )
+        # Nothing was requested: nothing to report.
+        assert (
+            arancel_mismatch(
+                test_db, None, Area.BALSEROS, Predio.EMBALSE, ConceptoCobro.SERVICIO
+            )
+            is None
+        )
+
+    def test_arancel_mismatch_nombra_el_id_que_ya_no_existe(self, test_db):
+        self._servicios(test_db)
+        motivo = arancel_mismatch(
+            test_db, "a_eliminado", Area.BALSEROS, Predio.EMBALSE, ConceptoCobro.SERVICIO
+        )
+        assert "a_eliminado" in motivo
+        assert "ya no existe" in motivo
+
+    def test_arancel_mismatch_nombra_el_retag(self, test_db):
+        self._servicios(test_db)
+        motivo = arancel_mismatch(
+            test_db, "a_serv_balsa", Area.BALSEROS, Predio.EMBALSE, ConceptoCobro.AREA
+        )
+        assert "a_serv_balsa" in motivo
+        assert "servicio" in motivo
+        assert "area" in motivo
+
+    def test_arancel_mismatch_nombra_el_otro_lugar(self, test_db):
+        self._servicios(test_db)
+        motivo = arancel_mismatch(
+            test_db, "a_serv_cabana", Area.BALSEROS, Predio.EMBALSE, ConceptoCobro.SERVICIO
+        )
+        assert "Cabañeros/Almafuerte" in motivo
+        assert "Balseros/Embalse" in motivo
+
+    def test_arancel_mismatch_avisa_de_un_cobro_sin_lugar(self, test_db):
+        self._servicios(test_db)
+        motivo = arancel_mismatch(
+            test_db, "a_serv_balsa", None, None, ConceptoCobro.SERVICIO
+        )
+        assert "a_serv_balsa" in motivo
+        assert "sin lugar" in motivo
 
 
 class TestPagoSchemaOpenApi:
