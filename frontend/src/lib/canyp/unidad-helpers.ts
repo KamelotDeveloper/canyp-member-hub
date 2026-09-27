@@ -362,8 +362,12 @@ export function membresiaDeLugar(
 export interface OpcionesItemsPorArancel {
   /** Ancla de las líneas sin lugar (cuota social y recargo); `PagoItem` exige una. */
   anclas: AnclasCobro;
-  /** Miembros de la unidad → multiplicador de la cuota social (CS-03). */
-  miembros: number;
+  /**
+   * Miembros que DEBEN la cuota social → multiplicador de su línea (CS-03 +
+   * regla del dueño). No es la cantidad de integrantes: un socio ya pago no se
+   * cuenta. `0` = todos al día → no se emite línea de cuota.
+   */
+  miembrosImpagos: number;
   /** Ajuste de importe por arancelId: el recargo (siempre) y los servicios (ReQ-010). */
   ajustes?: Readonly<Record<string, number>> | undefined;
 }
@@ -383,7 +387,8 @@ export interface OpcionesItemsPorArancel {
  *
  * - `area` → monto de catálogo, factor 1.
  * - `servicio` → monto de catálogo o el `ajuste` de este cobro, factor 1.
- * - `cuota social` → precio de UN miembro × miembros de la unidad.
+ * - `cuota social` → precio de UN miembro × integrantes IMPAGOS de la unidad;
+ *   con todos al día no hay línea (el servidor hace lo mismo, PAG-01).
  * - `recargo` → el importe tipeado (`ajuste`); sin importe mayor a 0 no se emite.
  */
 export function itemsPorArancel(
@@ -436,7 +441,10 @@ export function itemsPorArancel(
     if (concepto === "cuota social") {
       const membresiaId = opciones.anclas.cuota;
       if (!membresiaId) continue;
-      const factor = Math.max(1, opciones.miembros);
+      const factor = Math.max(0, opciones.miembrosImpagos);
+      // Todos al día: nadie debe la cuota, así que no se emite línea (el
+      // servidor tampoco la produciría: no hay nada que cobrar).
+      if (factor <= 0) continue;
       lineas.push({
         concepto,
         arancelId: arancel.id,
@@ -483,6 +491,62 @@ function lugarCobrableDeArancel(
 /** Concepto de una membresía; sin `concepto` servido, un área es un área. */
 export function conceptoDeMembresia(m: Membresia): ConceptoMembresia {
   return m.concepto ?? "area";
+}
+
+// ---------------------------------------------------------------------------
+// Cuota social: quién la debe (regla del dueño) — espejo de la regla servidor
+// ---------------------------------------------------------------------------
+
+/**
+ * Fecha de hoy en ISO corto usando el reloj LOCAL, igual que `date.today()` del
+ * servidor. No se usa `toISOString()` (UTC): cerca de medianoche la fecha UTC y
+ * la local difieren y el cliente estimaría un impago que el servidor cobra de
+ * otro modo.
+ */
+export function hoyLocalISO(): string {
+  const d = new Date();
+  const mes = String(d.getMonth() + 1).padStart(2, "0");
+  const dia = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mes}-${dia}`;
+}
+
+/** La membresía de cuota social del socio, o `undefined` si no tiene fila. */
+export function cuotaSocialDe(
+  membresias: readonly Membresia[],
+  socioId: string,
+): Membresia | undefined {
+  return membresias.find((m) => m.socioId === socioId && conceptoDeMembresia(m) === "cuota social");
+}
+
+/**
+ * ¿La cuota social está al día? Espejo EXACTO de la regla del servidor
+ * (`cobro._cuota_impaga` / `estado_socio.Vigencia`): está al día si hay fila,
+ * no está parada (`suspendida`/`baja`) y su `vencimiento` no es anterior a hoy.
+ * `vencimiento == hoy` está al día. Sin fila → impaga.
+ */
+export function cuotaAlDia(
+  cuota: Pick<Membresia, "estado" | "vencimiento"> | undefined,
+  hoy: string,
+): boolean {
+  if (!cuota) return false;
+  if (cuota.estado === "suspendida" || cuota.estado === "baja") return false;
+  return cuota.vencimiento >= hoy;
+}
+
+/**
+ * Cantidad de integrantes de una unidad que DEBEN la cuota social: el
+ * multiplicador de la línea de cuota (el servidor es la autoridad final, acá
+ * solo se estima con la misma regla). Un integrante ya pago no se cuenta.
+ *
+ * `members` son las membresías de área de la unidad y `membresias` el padrón
+ * completo (para encontrar la cuota de cada socio por `socioId`).
+ */
+export function miembrosCuotaImpaga(
+  members: readonly Membresia[],
+  membresias: readonly Membresia[],
+  hoy: string,
+): number {
+  return members.filter((m) => !cuotaAlDia(cuotaSocialDe(membresias, m.socioId), hoy)).length;
 }
 
 // ---------------------------------------------------------------------------

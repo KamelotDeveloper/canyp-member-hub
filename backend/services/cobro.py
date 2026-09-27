@@ -4,7 +4,7 @@ CBM-04, CS-03, CS-05, PAG-01 and design decisions D3/D4. The operator ticks the
 concepts that apply; the SERVER decides how many items exist, what each one is
 worth, what the receipt totals, and which memberships renew.
 
-The five rules this service exists to enforce:
+The six rules this service exists to enforce:
 
 1. **One item per ticked concept** (CBM-04). A balsa with 4 members is ONE
    area line, not four — the area arancel is fixed per unit (CS-03). Two
@@ -35,6 +35,12 @@ The five rules this service exists to enforce:
    back to ``aranceles.monto`` (ReQ-010). When a submitted ``arancelId`` cannot
    price the line, the place's own row does and the reason is published in
    ``avisos`` (D8) — the line is charged, never dropped (decision #671).
+6. **The cuota social is billed per UNPAID member, never per head** (CS-03 +
+   the owner's rule). A unit of 4 where 1 member already paid is charged 3, not
+   4: a member whose cuota is up to date is NOT charged again. "Unpaid" reuses
+   the badge's own rule (:func:`backend.services.estado_socio.Vigencia`): no
+   cuota row, a stopped cuota (suspendida/baja) or a vencimiento strictly before
+   today. Everybody up to date -> no cuota line at all.
 
 Amounts are frozen here at creation (AGENT.md rule 4): later arancel edits never
 rewrite an existing ``PagoItem``.
@@ -43,6 +49,7 @@ rewrite an existing ``PagoItem``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from sqlalchemy.orm import Session
 
@@ -56,6 +63,7 @@ from backend.models.enums import (
 from backend.models.membresia import Membresia
 from backend.models.parcela import Parcela
 from backend.services.cuota_social import cuota_de
+from backend.services.estado_socio import InputsSocio, Vigencia, inputs_socio
 from backend.services.resolucion import (
     arancel_mismatch,
     precio_cuota_social,
@@ -117,21 +125,56 @@ def _categoria_de(db: Session, m: Membresia):
     return parcela.categoria if parcela is not None else None
 
 
-def _unidad(db: Session, submitted: list[Membresia]) -> set[str]:
-    """Ids of the members of the unit being managed (CS-03 multiplier input).
+def _miembros_unidad(db: Session, submitted: list[Membresia]) -> list[Membresia]:
+    """The area memberships of the unit being managed (CS-03 multiplier input).
 
-    The managed unit is the parcel of the first area membership in the charge;
-    when no area line is charged (a solo cuota social, CS-06) every submitted
-    area membership counts. Windsurf memberships are excluded: they are cuota
-    social, so charging them must not multiply the cuota by itself.
+    The managed unit is the parcel of the first area membership in the charge.
+    When no area membership travels (a solo cuota social, CS-06) the list is
+    empty: the charge is per socio, not per unit. Windsurf memberships are
+    excluded: they are cuota social, so charging them must not multiply the
+    cuota by itself.
     """
     areas = [m for m in submitted if concepto_socio_de(m) is ConceptoMembresia.AREA]
     if not areas:
-        return set()
+        return []
     parcela_id = areas[0].parcelaId
     if parcela_id:
-        return {m.id for m in areas if m.parcelaId == parcela_id}
-    return {m.id for m in areas}
+        return [m for m in areas if m.parcelaId == parcela_id]
+    return list(areas)
+
+
+def _cuota_impaga(cuota: Vigencia | None, hoy: date) -> bool:
+    """Whether a socio still OWES the cuota social, reusing the badge's rule.
+
+    Mirrors the 🔴 branch of :func:`backend.services.estado_socio.calcular_estado_socio`
+    plus one deliberate business rule the owner stated: a socio with NO cuota
+    row owes it too, because nothing says it was ever created/paid. Three cases,
+    no fourth: no row, a stopped cuota (``suspendida``/``baja``) or a
+    ``vencimiento`` strictly before ``hoy`` (``== hoy`` is al día).
+    """
+    return cuota is None or cuota.parada or cuota.vencida(hoy)
+
+
+def _cuota_factor(
+    db: Session, socio_id: str, unidad: list[Membresia], hoy: date
+) -> int:
+    """How many cuota social units this charge must bill (the multiplier).
+
+    A unit charge bills ONE cuota per IMPAGO member of the unit: a member whose
+    cuota is up to date is not charged again, so a unit of 4 with 1 paid bills 3
+    (the owner's rule). A solo charge (no area membership — a cuota-social-only
+    or Windsurf socio, CS-06) bills the charged socio once when they owe it.
+
+    ``0`` means everybody involved is already paid: the caller emits no cuota
+    line, so the operator cannot double-charge a settled member.
+    """
+    socios = [m.socioId for m in unidad] if unidad else [socio_id]
+    inputs = inputs_socio(db, socios)
+    return sum(
+        1
+        for sid in dict.fromkeys(socios)
+        if _cuota_impaga(inputs.get(sid, InputsSocio(None, None)).cuota, hoy)
+    )
 
 
 def _concepto_de(db: Session, item) -> ConceptoCobro:
@@ -273,24 +316,28 @@ def _item_area(
     )
 
 
-def _item_cuota(db: Session, anchor: Membresia, miembros: int) -> ItemResuelto | None:
-    """Price the cuota social line: unit price x member count (CS-03).
+def _item_cuota(db: Session, anchor: Membresia, factor: int) -> ItemResuelto | None:
+    """Price the cuota social line: unit price x UNPAID member count (CS-03).
 
-    The multiplier lives on the item as ``factor``, so the receipt explains
-    itself: "Cuota social x4". The amount is computed here, never taken from
-    the client.
+    ``factor`` is the number of members that actually owe the cuota
+    (:func:`_cuota_factor`), so a unit where somebody already paid is billed for
+    the rest, never for all. ``0`` (everybody up to date) yields no line: there
+    is nothing to charge. The multiplier lives on the item as ``factor``, so the
+    receipt explains itself: "Cuota social x3". The amount is computed here,
+    never taken from the client.
     """
+    if factor <= 0:
+        return None
     precio = precio_cuota_social(db)
     if precio is None:
         return None
-    factor = float(max(1, miembros))
     return ItemResuelto(
         concepto=ConceptoCobro.CUOTA_SOCIAL,
         arancelId=precio.id,
         membresiaId=anchor.id,
         arancelNombre=precio.nombre,
         monto=precio.monto * factor,
-        factor=factor,
+        factor=float(factor),
     )
 
 
@@ -397,6 +444,7 @@ def resolver_cobro(
     socio_id: str,
     items: list | None,
     membresia_ids: list[str] | None,
+    hoy: date | None = None,
 ) -> CobroResuelto:
     """Resolve a submitted charge into items, a total and a renewal set.
 
@@ -418,10 +466,15 @@ def resolver_cobro(
     The returned ``avisos`` are the operator-visible half of D8: they name every
     submitted ``arancelId`` this charge had to replace with the place's own row.
     A charge that resolves exactly what was asked for returns an empty tuple.
+
+    ``hoy`` is the reference date for "cuota al día" (rule 6): a cuota whose
+    vencimiento is strictly before it is unpaid. It defaults to the real today,
+    the same clock the socio badge reads, so the estimate the client shows and
+    the amount the server charges agree.
     """
     submitted_ids = list(dict.fromkeys(membresia_ids or []))
     resueltos = resolver_items(
-        db, socio_id=socio_id, items=items or [], submitted_ids=submitted_ids
+        db, socio_id=socio_id, items=items or [], submitted_ids=submitted_ids, hoy=hoy
     )
     if not resueltos.items and not resueltos.membresias_a_renovar:
         raise CobroVacioError("El cobro no tiene conceptos ni membresías a cobrar")
@@ -429,7 +482,12 @@ def resolver_cobro(
 
 
 def resolver_items(
-    db: Session, *, socio_id: str, items: list, submitted_ids: list[str]
+    db: Session,
+    *,
+    socio_id: str,
+    items: list,
+    submitted_ids: list[str],
+    hoy: date | None = None,
 ) -> CobroResuelto:
     """Core resolution, split out so the empty-charge guard stays readable.
 
@@ -443,7 +501,8 @@ def resolver_items(
         por_id = {m.id: m for m in filas}
         submitted = [por_id[mid] for mid in submitted_ids if mid in por_id]
 
-    unidades = _unidad(db, submitted)
+    hoy = hoy or date.today()
+    unidades = _miembros_unidad(db, submitted)
     vistos: set[tuple[ConceptoCobro, str]] = set()
     avisos: list[str] = []
     lineas: list[ItemResuelto] = []
@@ -464,7 +523,7 @@ def resolver_items(
                 raise CobroVacioError(
                     "El socio no tiene membresía de cuota social para cobrar"
                 )
-            linea = _item_cuota(db, anchor, len(unidades))
+            linea = _item_cuota(db, anchor, _cuota_factor(db, socio_id, unidades, hoy))
         elif concepto is ConceptoCobro.SERVICIO:
             anchor = _anchor_servicio(db, submitted, item, socio_id)
             if anchor is None:

@@ -39,8 +39,11 @@ import { formatARS, formatFecha } from "@/lib/canyp/utils";
 import {
   arancelesDisponibles,
   conceptoDeMembresia,
+  cuotaAlDia,
+  cuotaSocialDe,
   esMembresiaCobrable,
   formatearAvisosCobro,
+  hoyLocalISO,
   itemsPorArancel,
   lineaAPagoItem,
   membresiaDeLugar,
@@ -186,6 +189,16 @@ function PagosPage() {
     return { cuota: cuota?.id, area: area?.id ?? cuota?.id };
   }, [membresiasSocio]);
 
+  /**
+   * ¿El socio debe la cuota? Si ya la tiene al día no se le ofrece ni se le
+   * cobra de nuevo (regla del dueño); el servidor resuelve lo mismo sobre el
+   * padrón completo, no sobre la lista ya filtrada de este cobro.
+   */
+  const cuotaImpaga = useMemo(
+    () => !cuotaAlDia(cuotaSocialDe(membresias, socioId), hoyLocalISO()),
+    [membresias, socioId],
+  );
+
   // Filas del catálogo que este cobro puede tikear (ReQ-001). La cuota social
   // sólo se ofrece si el socio la tiene; Windsurf (sin unidad) cobra sólo cuota
   // social (CS-05), como antes de recablear.
@@ -193,11 +206,12 @@ function PagosPage() {
     const soloWindsurf = lugares.length === 0 && membresiasSocio.some((m) => m.area === "Windsurf");
     return arancelesDisponibles(aranceles, lugares).filter((a) => {
       const concepto = conceptoDeArancel(a);
-      if (concepto === "cuota social") return Boolean(anclas.cuota);
+      // La cuota sólo se ofrece si el socio la tiene y todavía la debe.
+      if (concepto === "cuota social") return Boolean(anclas.cuota) && cuotaImpaga;
       if (soloWindsurf) return false;
       return true;
     });
-  }, [aranceles, lugares, anclas.cuota, membresiasSocio]);
+  }, [aranceles, lugares, anclas.cuota, membresiasSocio, cuotaImpaga]);
 
   // Aviso ReQ-003: el socio tiene unidad(es) pero ninguna fila de servicio.
   const hayServicio = useMemo(
@@ -219,10 +233,12 @@ function PagosPage() {
     () =>
       itemsPorArancel(aranceles, lugares, marcas, {
         anclas,
-        miembros: membresiasSocio.filter((m) => conceptoDeMembresia(m) === "area").length || 1,
+        // Cobro por socio: la cuota es ×1 cuando se debe, y nada cuando está
+        // al día (el servidor tampoco la emitiría).
+        miembrosImpagos: cuotaImpaga ? 1 : 0,
         ajustes: ajustesNum,
       }),
-    [aranceles, lugares, marcas, anclas, membresiasSocio, ajustesNum],
+    [aranceles, lugares, marcas, anclas, cuotaImpaga, ajustesNum],
   );
 
   const total = totalEstimado(lineas);

@@ -17,6 +17,8 @@ import {
   arancelesDisponibles,
   buildNuevaUnidadPayload,
   conceptoDeMembresia,
+  cuotaAlDia,
+  cuotaSocialDe,
   esMembresiaCobrable,
   estadoCriticoDe,
   estadoSocioPorParcela,
@@ -25,6 +27,7 @@ import {
   itemsPorArancel,
   lineaAPagoItem,
   membresiaDeLugar,
+  miembrosCuotaImpaga,
   predioDeTipo,
   totalEstimado,
   type LugarCobrable,
@@ -252,20 +255,37 @@ describe("itemsPorArancel (ReQ-001 / ReQ-012)", () => {
     },
   ];
 
-  /** Balsa de 4 integrantes: cuota ×4 y área por unidad (CS-03, PAG-01). */
-  const CUATRO: OpcionesItemsPorArancel = { anclas: ANCLAS, miembros: 4 };
+  /** Balsa de 4 integrantes IMPAGOS: cuota ×4 y área por unidad (CS-03, PAG-01). */
+  const CUATRO: OpcionesItemsPorArancel = { anclas: ANCLAS, miembrosImpagos: 4 };
 
   it("compone una línea por arancelId tickeado (ReQ-012)", () => {
     const lineas = itemsPorArancel(CATALOGO, LUGARES, new Set(["a_balsa", "p_cuota"]), CUATRO);
     expect(lineas.map((l) => l.arancelId)).toEqual(["a_balsa", "p_cuota"]);
   });
 
-  it("multiplica la cuota social por los miembros de la unidad (CS-03)", () => {
+  it("multiplica la cuota social por los integrantes IMPAGOS (CS-03 + regla del dueño)", () => {
     const cuota = itemsPorArancel(CATALOGO, LUGARES, new Set(["p_cuota"]), CUATRO)[0]!;
     expect(cuota.factor).toBe(4);
     expect(cuota.monto).toBe(48000); // 12.000 × 4
     expect(cuota.arancelId).toBe("p_cuota");
     expect(cuota.membresiaId).toBe("m-cuota");
+  });
+
+  it("una unidad con 1 pago se cobra ×3, no ×4 (regla del dueño)", () => {
+    const cuota = itemsPorArancel(CATALOGO, LUGARES, new Set(["p_cuota"]), {
+      ...CUATRO,
+      miembrosImpagos: 3,
+    })[0]!;
+    expect(cuota.factor).toBe(3);
+    expect(cuota.monto).toBe(36000); // 12.000 × 3
+  });
+
+  it("con todos al día (0 impagos) no emite línea de cuota", () => {
+    const lineas = itemsPorArancel(CATALOGO, LUGARES, new Set(["p_cuota"]), {
+      ...CUATRO,
+      miembrosImpagos: 0,
+    });
+    expect(lineas).toHaveLength(0);
   });
 
   it("el área NO se multiplica por integrantes: una balsa es importe fijo", () => {
@@ -352,6 +372,97 @@ describe("itemsPorArancel (ReQ-001 / ReQ-012)", () => {
   });
 });
 
+describe("cuota social al día / impaga (espejo del servidor)", () => {
+  const HOY = "2026-09-27";
+
+  function cuota(over: Partial<Membresia>): Membresia {
+    return {
+      id: "mc",
+      socioId: "s1",
+      area: null,
+      predio: null,
+      estado: "activa",
+      vencimiento: "2026-10-10",
+      concepto: "cuota social",
+      ...over,
+    };
+  }
+
+  function areaMember(socioId: string, id = `ma-${socioId}`): Membresia {
+    return {
+      id,
+      socioId,
+      area: "Balseros",
+      predio: "Embalse",
+      estado: "activa",
+      vencimiento: "2026-10-10",
+      concepto: "area",
+    };
+  }
+
+  it("cuotaSocialDe encuentra la fila del socio por concepto", () => {
+    const membresias = [areaMember("s1"), cuota({ id: "c1", socioId: "s1" })];
+    expect(cuotaSocialDe(membresias, "s1")?.id).toBe("c1");
+    expect(cuotaSocialDe(membresias, "s2")).toBeUndefined();
+  });
+
+  it("cuotaAlDia: parada o vencida es impaga; vencimiento == hoy está al día", () => {
+    expect(cuotaAlDia(undefined, HOY)).toBe(false);
+    expect(cuotaAlDia(cuota({ vencimiento: HOY }), HOY)).toBe(true);
+    expect(cuotaAlDia(cuota({ vencimiento: "2026-09-26" }), HOY)).toBe(false);
+    expect(cuotaAlDia(cuota({ estado: "suspendida", vencimiento: "2099-01-01" }), HOY)).toBe(false);
+    expect(cuotaAlDia(cuota({ estado: "baja", vencimiento: "2099-01-01" }), HOY)).toBe(false);
+  });
+
+  it("miembrosCuotaImpaga: 4 integrantes con 1 al día -> 3 impagos", () => {
+    const members = [areaMember("s1"), areaMember("s2"), areaMember("s3"), areaMember("s4")];
+    const membresias = [
+      ...members,
+      cuota({ id: "c1", socioId: "s1", vencimiento: "2026-09-26" }), // vencida
+      cuota({ id: "c2", socioId: "s2", vencimiento: "2099-01-01" }), // al día
+      cuota({ id: "c3", socioId: "s3", vencimiento: "2026-09-26" }),
+      cuota({ id: "c4", socioId: "s4", vencimiento: "2026-09-26" }),
+    ];
+    expect(miembrosCuotaImpaga(members, membresias, HOY)).toBe(3);
+  });
+
+  it("un socio sin fila de cuota cuenta como impago", () => {
+    const members = [areaMember("s1")];
+    expect(miembrosCuotaImpaga(members, [areaMember("s1")], HOY)).toBe(1);
+  });
+
+  it("la estimación del diálogo coincide con el factor del servidor (×3)", () => {
+    const members = [areaMember("s1"), areaMember("s2"), areaMember("s3"), areaMember("s4")];
+    const membresias = [
+      ...members,
+      cuota({ id: "c1", socioId: "s1", vencimiento: "2026-09-26" }),
+      cuota({ id: "c2", socioId: "s2", vencimiento: "2099-01-01" }),
+      cuota({ id: "c3", socioId: "s3", vencimiento: "2026-09-26" }),
+      cuota({ id: "c4", socioId: "s4", vencimiento: "2026-09-26" }),
+    ];
+    const impagos = miembrosCuotaImpaga(members, membresias, HOY);
+    const [linea] = itemsPorArancel(
+      [
+        {
+          id: "p_cuota",
+          nombre: "Cuota social",
+          area: "Guardería",
+          predio: "Almafuerte",
+          monto: 12000,
+          vigenteDesde: "2020-01-01",
+          historico: [],
+          concepto: "cuota social",
+        },
+      ],
+      [],
+      new Set(["p_cuota"]),
+      { anclas: { cuota: "c1" }, miembrosImpagos: impagos },
+    );
+    expect(linea!.factor).toBe(3);
+    expect(linea!.monto).toBe(36000);
+  });
+});
+
 describe("lineaAPagoItem (debt 5a: montoAplicado solo para recargo/servicio ajustado)", () => {
   const CATALOGO: Arancel[] = [
     {
@@ -400,7 +511,7 @@ describe("lineaAPagoItem (debt 5a: montoAplicado solo para recargo/servicio ajus
   ];
   const OPCIONES: OpcionesItemsPorArancel = {
     anclas: { area: "m-area", cuota: "m-cuota" },
-    miembros: 4,
+    miembrosImpagos: 4,
   };
 
   it("área y cuota social no envían montoAplicado (el servidor usa el catálogo)", () => {
