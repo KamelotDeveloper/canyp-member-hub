@@ -491,6 +491,66 @@ describe("unidades compartidas API (PR 3)", () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(init.body as string).fecha).toBe(new Date().toISOString().slice(0, 10));
   });
+
+  it("createPago returns the server's avisos from the POST response (ReQ-011)", async () => {
+    const aviso =
+      "El arancel a_balsa está etiquetado como concepto=area y no como servicio: " +
+      "la línea se resuelve con la fila de Balseros/Embalse para el concepto servicio";
+    const response = {
+      id: "p1",
+      numero: "C-0001",
+      socioId: "a1",
+      fecha: "2026-03-15",
+      medio: "Transferencia",
+      total: 100,
+      items: [],
+      membresiaIds: ["m1"],
+      avisos: [aviso],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(response), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pago = await createPago({
+      socioId: "a1",
+      medio: "Transferencia",
+      items: [{ arancelId: "ar1", membresiaId: "m1", montoAplicado: 100, arancelNombre: "X" }],
+    });
+
+    expect(pago.avisos).toEqual([aviso]);
+  });
+
+  it("createPago tolerates a missing avisos field (GET-shaped response)", async () => {
+    const response = {
+      id: "p1",
+      numero: "C-0001",
+      socioId: "a1",
+      fecha: "2026-03-15",
+      medio: "Transferencia",
+      total: 100,
+      items: [],
+      membresiaIds: ["m1"],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(response), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pago = await createPago({
+      socioId: "a1",
+      medio: "Transferencia",
+      items: [{ arancelId: "ar1", membresiaId: "m1", montoAplicado: 100, arancelNombre: "X" }],
+    });
+
+    expect(pago.avisos).toBeUndefined();
+  });
 });
 
 describe("catálogo de aranceles API (PR4)", () => {
