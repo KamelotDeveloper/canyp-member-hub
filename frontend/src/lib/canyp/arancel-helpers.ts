@@ -32,11 +32,11 @@ export const CONCEPTOS: ConceptoCobro[] = ["area", "servicio", "cuota social", "
 /**
  * Etiqueta legible de cada concepto (UI pública).
  *
- * Same vocabulary as `labelConcepto` in `unidad-dialogs.tsx` — same word for the
- * same concept in both screens. The labels are what disambiguate the seeded
- * `a7/a12/a13 "Cuota"` (concepto `area`) from `a15 "Cuota social"` (concepto
- * `cuota social`): identical `nombre`, different concept, different price
- * (ReQ-013).
+ * Same vocabulary the charge dialogs render from the catalog `nombre` — same
+ * word for the same concept in both screens. The labels are what disambiguate
+ * the seeded `a7/a12/a13 "Cuota"` (concepto `area`) from `a15 "Cuota social"`
+ * (concepto `cuota social`): identical `nombre`, different concept, different
+ * price (ReQ-013).
  */
 export const CONCEPTO_LABELS: Record<ConceptoCobro, string> = {
   area: "Cuota de la unidad",

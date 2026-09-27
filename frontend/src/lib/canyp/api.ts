@@ -395,7 +395,7 @@ export function updateMembresiaVencimiento(id: string, vencimiento: string): Pro
  * `items` = un ítem por cada concepto marcado por el operador, y `membresiaIds`
  * con TODOS los miembros para que el backend renueve a titulares e integrantes.
  *
- * `items` ya viene compuesto por `itemsPorConcepto` (7.2): el cliente propone
+ * `items` ya viene compuesto por `itemsPorArancel` (7.2): el cliente propone
  * el desglose y el `montoAplicado` es una PISTA — el servidor re-resuelve cada
  * línea contra el catálogo y es la única autoridad del total (PAG-01).
  *
@@ -411,7 +411,7 @@ export function buildUnitPago(params: {
   nota?: string;
   /** Fecha del cobro; por defecto hoy (PAG-02). */
   fecha?: string;
-  /** Un ítem por concepto marcado, ya compuesto por `itemsPorConcepto`. */
+  /** Un ítem por arancel marcado, ya compuesto por `itemsPorArancel`. */
   items: PagoItemInput[];
 }): CreatePagoInput | null {
   const { titular, integrantes, medio, nota, fecha, items } = params;

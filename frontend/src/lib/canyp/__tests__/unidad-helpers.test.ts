@@ -22,7 +22,6 @@ import {
   estadoSocioPorParcela,
   filtrarUnidades,
   itemsPorArancel,
-  itemsPorConcepto,
   lineaAPagoItem,
   membresiaDeLugar,
   predioDeTipo,
@@ -395,38 +394,46 @@ describe("lineaAPagoItem (debt 5a: montoAplicado solo para recargo/servicio ajus
       concepto: "recargo",
     },
   ];
-  const LUGAR = { area: "Balseros", predio: "Embalse", categoria: null } as const;
-  const OPCIONES = {
+  const LUGARES: LugarCobrable[] = [
+    { area: "Balseros", predio: "Embalse", categoria: null, membresiaId: "m-area" },
+  ];
+  const OPCIONES: OpcionesItemsPorArancel = {
     anclas: { area: "m-area", cuota: "m-cuota" },
     miembros: 4,
-    lugar: LUGAR,
-    aranceles: CATALOGO,
   };
 
   it("área y cuota social no envían montoAplicado (el servidor usa el catálogo)", () => {
-    const items = itemsPorConcepto(["area", "cuota social"], OPCIONES).map(lineaAPagoItem);
+    const items = itemsPorArancel(CATALOGO, LUGARES, new Set(["a_balsa", "p_cuota"]), OPCIONES).map(
+      lineaAPagoItem,
+    );
     for (const item of items) {
       expect(item).not.toHaveProperty("montoAplicado");
     }
   });
 
   it("el recargo envía el importe tipeado", () => {
-    const [l] = itemsPorConcepto(["recargo"], { ...OPCIONES, recargo: 10000 });
+    const [l] = itemsPorArancel(CATALOGO, LUGARES, new Set(["p_recargo"]), {
+      ...OPCIONES,
+      ajustes: { p_recargo: 10000 },
+    });
     expect(lineaAPagoItem(l!).montoAplicado).toBe(10000);
   });
 
   it("el servicio sin ajuste no envía montoAplicado (catálogo vigente del servidor)", () => {
-    const [l] = itemsPorConcepto(["servicio"], OPCIONES);
+    const [l] = itemsPorArancel(CATALOGO, LUGARES, new Set(["p_servicio"]), OPCIONES);
     expect(lineaAPagoItem(l!)).not.toHaveProperty("montoAplicado");
   });
 
   it("el servicio ajustado envía el importe solo para este cobro", () => {
-    const [l] = itemsPorConcepto(["servicio"], { ...OPCIONES, servicio: 9500 });
+    const [l] = itemsPorArancel(CATALOGO, LUGARES, new Set(["p_servicio"]), {
+      ...OPCIONES,
+      ajustes: { p_servicio: 9500 },
+    });
     expect(lineaAPagoItem(l!).montoAplicado).toBe(9500);
   });
 
   it("preserva arancelId, membresiaId, nombre y concepto", () => {
-    const [l] = itemsPorConcepto(["area"], OPCIONES);
+    const [l] = itemsPorArancel(CATALOGO, LUGARES, new Set(["a_balsa"]), OPCIONES);
     expect(lineaAPagoItem(l!)).toEqual({
       arancelId: "a_balsa",
       membresiaId: "m-area",
@@ -514,6 +521,10 @@ describe("arancelPorConcepto (ReQ-002 / ReQ-008)", () => {
   it("sin fila de servicio para el lugar devuelve undefined (ReQ-003)", () => {
     const guarderia: LugarCobro = { area: "Guardería", predio: "Almafuerte", categoria: null };
     expect(arancelPorConcepto(BASE, "servicio", guarderia)).toBeUndefined();
+  });
+
+  it("un servicio SIN lugar no resuelve nada (PR6 borró el fallback global)", () => {
+    expect(arancelPorConcepto(BASE, "servicio")).toBeUndefined();
   });
 });
 

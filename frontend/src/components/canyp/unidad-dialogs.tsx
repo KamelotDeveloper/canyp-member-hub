@@ -61,13 +61,15 @@ import {
 } from "@/components/ui/command";
 import { buildUnitPago } from "@/lib/canyp/api";
 import {
-  arancelPorConcepto,
+  arancelesDisponibles,
   buildNuevaUnidadPayload,
   conceptoDeMembresia,
-  itemsPorConcepto,
+  itemsPorArancel,
   lineaAPagoItem,
+  membresiaDeLugar,
   predioDeTipo,
   totalEstimado,
+  type LugarCobrable,
   type NuevaUnidadSocio,
 } from "@/lib/canyp/unidad-helpers";
 import {
@@ -87,6 +89,7 @@ import {
 } from "@/lib/canyp/queries";
 import { formatARS, formatFecha } from "@/lib/canyp/utils";
 import type {
+  Arancel,
   Area,
   CategoriaParcela,
   ConceptoCobro,
@@ -1052,7 +1055,7 @@ export function NuevaUnidadDialog({
 }
 
 // ---------------------------------------------------------------------------
-// CobrarUnidadDialog — cobro por unidad con múltiples conceptos (CBM-02)
+// CobrarUnidadDialog — cobro por unidad con una línea por arancel (ReQ-012)
 // ---------------------------------------------------------------------------
 
 /** Fecha de hoy en ISO corto, el default del cobro (PAG-02). */
@@ -1077,9 +1080,8 @@ export function CobrarUnidadDialog({
   const [medio, setMedio] = useState("Transferencia");
   const [nota, setNota] = useState("");
   const [fecha, setFecha] = useState(hoyIso);
-  const [marcas, setMarcas] = useState<ConceptoCobro[]>([]);
-  const [recargo, setRecargo] = useState("");
-  const [servicio, setServicio] = useState("");
+  const [marcas, setMarcas] = useState<Set<string>>(new Set());
+  const [ajustes, setAjustes] = useState<Record<string, string>>({});
 
   const socioMap = useMemo(() => new Map(socios.map((s) => [s.id, s])), [socios]);
   const titular = grupo.members.find((m) => m.rol === "Titular") ?? grupo.members[0];
@@ -1098,46 +1100,77 @@ export function CobrarUnidadDialog({
     [membresias, titular],
   );
 
-  // Conceptos que este cobro puede emitir: cada tick necesita fila de catálogo.
-  const disponibles = useMemo(() => {
-    const out: ConceptoCobro[] = ["area"];
-    if (cuotaTitular) out.push("cuota social");
-    if (arancelPorConcepto(aranceles, "servicio")) out.push("servicio");
-    if (arancelPorConcepto(aranceles, "recargo")) out.push("recargo");
-    return out;
-  }, [aranceles, cuotaTitular]);
+  /**
+   * Lugar de la unidad, derivado de SU membresía de área — nunca del titular
+   * (ReQ-004): el titular puede no tener área (cuota social) y el bug viejo
+   * tomaba su pareja area+predio como si fuera la de la unidad.
+   */
+  const lugar = useMemo<LugarCobrable | undefined>(() => {
+    const area = grupo.members.find((m) => conceptoDeMembresia(m) === "area" && m.area && m.predio);
+    if (!area?.area || !area.predio) return undefined;
+    const ancla = membresiaDeLugar(grupo.members, {
+      area: area.area,
+      predio: area.predio,
+      categoria: grupo.categoria,
+    });
+    if (!ancla) return undefined;
+    return {
+      area: area.area,
+      predio: area.predio,
+      categoria: grupo.categoria,
+      membresiaId: ancla.id,
+    };
+  }, [grupo.members, grupo.categoria]);
 
-  const lugar = useMemo(
+  // Filas que este cobro puede tikear: el área del lugar, TODOS sus apartes de
+  // servicio y los carriers por concepto (ReQ-001). La cuota social sólo se
+  // ofrece si el titular la tiene: sin ella el servidor rechaza (422).
+  const disponibles = useMemo(
     () =>
-      titular && titular.area && titular.predio
-        ? { area: titular.area, predio: titular.predio, categoria: grupo.categoria }
-        : undefined,
-    [titular, grupo.categoria],
+      arancelesDisponibles(aranceles, lugar ? [lugar] : []).filter((a) =>
+        conceptoDeArancel(a) === "cuota social" ? Boolean(cuotaTitular) : true,
+      ),
+    [aranceles, lugar, cuotaTitular],
   );
+
+  // Aviso ReQ-003: un lugar sin fila de servicio no calla, lo dice.
+  const hayServicio = useMemo(
+    () => disponibles.some((a) => conceptoDeArancel(a) === "servicio"),
+    [disponibles],
+  );
+
+  const ajustesNum = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [id, valor] of Object.entries(ajustes)) {
+      const n = Number(valor);
+      if (valor.trim() !== "" && Number.isFinite(n)) out[id] = n;
+    }
+    return out;
+  }, [ajustes]);
 
   const lineas = useMemo(
     () =>
-      itemsPorConcepto(marcas, {
-        anclas: { area: titular?.id, cuota: cuotaTitular?.id },
+      itemsPorArancel(aranceles, lugar ? [lugar] : [], marcas, {
+        anclas: { area: lugar?.membresiaId, cuota: cuotaTitular?.id },
         miembros: grupo.members.length,
-        aranceles,
-        ...(lugar ? { lugar } : {}),
-        ...(recargo ? { recargo: Number(recargo) } : {}),
-        ...(servicio ? { servicio: Number(servicio) } : {}),
+        ajustes: ajustesNum,
       }),
-    [marcas, titular, cuotaTitular, grupo.members.length, aranceles, lugar, recargo, servicio],
+    [aranceles, lugar, marcas, cuotaTitular, grupo.members.length, ajustesNum],
   );
 
   const total = totalEstimado(lineas);
 
-  /** Precio de catálogo de un concepto, se marque o no, para poder mostrarlo. */
-  const precioDe = (concepto: ConceptoCobro) =>
-    arancelPorConcepto(aranceles, concepto, lugar)?.monto;
+  function alternar(arancelId: string) {
+    setMarcas((prev) => {
+      const next = new Set(prev);
+      if (next.has(arancelId)) next.delete(arancelId);
+      else next.add(arancelId);
+      return next;
+    });
+  }
 
-  function alternar(concepto: ConceptoCobro) {
-    setMarcas((prev) =>
-      prev.includes(concepto) ? prev.filter((c) => c !== concepto) : [...prev, concepto],
-    );
+  function ajustar(arancelId: string, valor: string) {
+    setAjustes((prev) => ({ ...prev, [arancelId]: valor }));
   }
 
   function confirmar() {
@@ -1156,7 +1189,7 @@ export function CobrarUnidadDialog({
       items: lineas.map(lineaAPagoItem),
     });
     if (!payload) {
-      toast.error("Elegí al menos un concepto para cobrar");
+      toast.error("Elegí al menos un arancel para cobrar");
       return;
     }
     createPago.mutate(payload, {
@@ -1202,66 +1235,52 @@ export function CobrarUnidadDialog({
           </div>
 
           <div>
-            <Label>Conceptos</Label>
+            <Label>Aranceles</Label>
             <ul className="mt-1.5 space-y-2">
-              {disponibles.map((c) => (
-                <li key={c} className="flex items-center gap-3 rounded-md border border-border p-3">
-                  <Checkbox checked={marcas.includes(c)} onCheckedChange={() => alternar(c)} />
-                  <div className="flex-1">
-                    <p className="text-sm font-medium">{labelConcepto(c)}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {detalleConcepto(c, precioDe, grupo.members.length)}
-                    </p>
-                  </div>
-                </li>
-              ))}
+              {disponibles.map((a) => {
+                const concepto = conceptoDeArancel(a);
+                const editable = concepto === "servicio" || concepto === "recargo";
+                return (
+                  <li
+                    key={a.id}
+                    className="flex items-center gap-3 rounded-md border border-border p-3"
+                  >
+                    <Checkbox checked={marcas.has(a.id)} onCheckedChange={() => alternar(a.id)} />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium">{a.nombre}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {detalleArancel(a, grupo.members.length)}
+                      </p>
+                    </div>
+                    {editable && marcas.has(a.id) && (
+                      <Input
+                        type="number"
+                        min={0}
+                        step={100}
+                        className="w-[110px]"
+                        aria-label={`Importe de ${a.nombre}`}
+                        value={ajustes[a.id] ?? ""}
+                        onChange={(e) => ajustar(a.id, e.target.value)}
+                        placeholder={String(a.monto || "")}
+                      />
+                    )}
+                  </li>
+                );
+              })}
             </ul>
+            {lugar && !hayServicio && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Sin arancel de servicio para esta área.
+              </p>
+            )}
           </div>
-
-          {marcas.includes("servicio") && (
-            <div>
-              <Label htmlFor="unidad-servicio">Importe del servicio</Label>
-              <Input
-                id="unidad-servicio"
-                type="number"
-                min={0}
-                step={100}
-                className="mt-1.5"
-                value={servicio}
-                onChange={(e) => setServicio(e.target.value)}
-                placeholder={String(precioDe("servicio") ?? "")}
-              />
-              <p className="mt-1 text-xs text-muted-foreground">
-                Vacío = precio de catálogo. El ajuste se cobra solo en este comprobante.
-              </p>
-            </div>
-          )}
-
-          {marcas.includes("recargo") && (
-            <div>
-              <Label htmlFor="unidad-recargo">Importe del recargo</Label>
-              <Input
-                id="unidad-recargo"
-                type="number"
-                min={0}
-                step={100}
-                className="mt-1.5"
-                value={recargo}
-                onChange={(e) => setRecargo(e.target.value)}
-                placeholder="0"
-              />
-              <p className="mt-1 text-xs text-muted-foreground">
-                Se suma a los demás conceptos. Tiene que ser mayor a 0 para poder cobrarse.
-              </p>
-            </div>
-          )}
 
           {lineas.length > 0 && (
             <div className="rounded-md bg-secondary p-3">
               <p className="text-xs font-semibold tracking-wide uppercase">Ítems a cobrar</p>
               <ul className="mt-2 space-y-1 text-sm">
                 {lineas.map((l) => (
-                  <li key={l.concepto} className="flex justify-between">
+                  <li key={l.arancelId} className="flex justify-between">
                     <span>
                       {l.arancelNombre}
                       {l.factor > 1 && <span className="text-muted-foreground"> ×{l.factor}</span>}
@@ -1336,25 +1355,19 @@ export function CobrarUnidadDialog({
   );
 }
 
-/** Etiqueta de un concepto de cobro, tal como la nombra el dominio. */
-export function labelConcepto(c: ConceptoCobro): string {
-  if (c === "cuota social") return "Cuota social";
-  if (c === "recargo") return "Recargo";
-  if (c === "servicio") return "Servicio";
-  return "Cuota de la unidad";
+/** Concepto de una fila de catálogo; sin `concepto` servido, una fila es de área. */
+function conceptoDeArancel(a: Arancel): ConceptoCobro {
+  return a.concepto ?? "area";
 }
 
-/** Texto auxiliar de un concepto: cuánto costaría y por qué se multiplica. */
-function detalleConcepto(
-  c: ConceptoCobro,
-  precioDe: (c: ConceptoCobro) => number | undefined,
-  miembros: number,
-): string {
-  if (c === "cuota social") return `${formatARS(precioDe(c) ?? 0)} × ${miembros} miembros`;
-  if (c === "area") {
-    const precio = precioDe(c);
-    return precio != null ? formatARS(precio) : "Sin arancel configurado";
-  }
-  if (c === "servicio") return `Catálogo ${formatARS(precioDe(c) ?? 0)} (ajustable)`;
-  return "Importe que defina el operador";
+/**
+ * Texto auxiliar de una fila de catálogo: cuánto costaría y por qué se multiplica.
+ * Es sólo la estimación del cliente; el servidor re-resuelve cada línea (PAG-01).
+ */
+function detalleArancel(a: Arancel, miembros: number): string {
+  const concepto = conceptoDeArancel(a);
+  if (concepto === "cuota social") return `${formatARS(a.monto)} × ${miembros} miembros`;
+  if (concepto === "servicio") return `Catálogo ${formatARS(a.monto)} (ajustable)`;
+  if (concepto === "recargo") return "Importe que defina el operador";
+  return formatARS(a.monto);
 }
