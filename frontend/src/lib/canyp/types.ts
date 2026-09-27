@@ -159,6 +159,13 @@ export interface Pago {
   membresiaIds: string[];
   createdBy?: string | null;
   updatedBy?: string | null;
+  /**
+   * Avisos de resolución del POST /api/pagos (D8, ReQ-011): lista los
+   * `arancelId` enviados que el servidor tuvo que reemplazar por el precio del
+   * lugar de la unidad. El cobro se registra igual — el aviso no bloquea nada.
+   * Opcional a propósito: viaja SOLO en la respuesta del POST, un GET no lo trae.
+   */
+  avisos?: string[];
 }
 
 export interface Notificacion {

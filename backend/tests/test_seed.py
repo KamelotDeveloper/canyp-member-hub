@@ -29,12 +29,14 @@ from backend.models.enums import (
     TipoParcela,
 )
 from backend.models.membresia import Membresia
+from backend.models.pago import PagoItem
 from backend.models.parcela import Parcela
 from backend.models.socio import Socio
 from backend.models.usuario import Usuario
 from backend.security import create_access_token, hash_password
 from backend.seed import seed
 from backend.services.estado_socio import estados_socio
+from backend.services.resolucion import precio_servicio
 
 
 @pytest.fixture()
@@ -252,7 +254,9 @@ class TestExistingSeedPreserved:
             assert seeded.query(Membresia).filter(Membresia.id == mid).count() == 1
 
     def test_original_aranceles_still_present(self, seeded):
-        assert seeded.query(Arancel).count() == 11
+        # 7 area/price rows + the RECARGO carrier + the cuota social unit price
+        # + one SERVICIO row per real place (D7) = 13.
+        assert seeded.query(Arancel).count() == 13
         for aid in ("a1", "a7"):
             assert seeded.query(Arancel).filter(Arancel.id == aid).count() == 1
 
@@ -320,14 +324,29 @@ class TestIdempotency:
         assert len(_almafuerte_cabanas(seeded)) == 6
         assert len(_embalse_balsas(seeded)) == 3
 
+    def test_seed_on_a_split_database_invents_no_service_row(self, seed_engine):
+        """ReQ-015: the seed never re-prices and never invents a service row.
+
+        The seeded database already carries separate "Amarre" and "Servicio"
+        rows, so a second run must leave every amount alone and add nothing.
+        """
+        seed(engine=seed_engine)
+        antes = _snapshot(seed_engine)
+
+        seed(engine=seed_engine)  # the database is already split
+
+        despues = _snapshot(seed_engine)
+        assert despues["aranceles"] == antes["aranceles"]
+        assert len(despues["aranceles"]) == len(antes["aranceles"]) == 13
+        servicios = [a for a in despues["aranceles"] if a[5] == "servicio"]
+        assert len(servicios) == 3  # not 6: none invented
+
     def test_seed_populates_all_tables(self, seeded):
         assert seeded.query(Parcela).count() == 11
         assert seeded.query(Socio).count() == 12
         # 27 area memberships + 12 cuota social rows (one per socio).
         assert seeded.query(Membresia).count() == 39
-        # 7 area/price rows + the RECARGO carrier + the cuota social unit price
-        # + the SERVICIO price.
-        assert seeded.query(Arancel).count() == 11
+        assert seeded.query(Arancel).count() == 13
 
 
 class TestCuotaSocialEnElSeed:
@@ -384,15 +403,75 @@ class TestCuotaSocialEnElSeed:
         assert len(precios) == 1
         assert precios[0].monto > 0
 
-    def test_servicio_price_exists_in_the_catalog(self, seeded):
-        """Decision #646: unlike the recargo carrier, SERVICIO carries a price."""
+    def test_servicio_prices_exist_per_real_place(self, seeded):
+        """Decision #646 + D7: SERVICIO carries a real price, per PLACE.
+
+        One row per real place of the club, no global placeholder: with
+        per-place resolution a global row either prices every unit the same or
+        collides with a real area.
+        """
         precios = (
             seeded.query(Arancel)
             .filter(Arancel.concepto == ConceptoCobro.SERVICIO)
             .all()
         )
-        assert len(precios) == 1
-        assert precios[0].monto > 0
+        assert {(a.area, a.predio) for a in precios} == {
+            (Area.BALSEROS, Predio.EMBALSE),
+            (Area.CABANEROS, Predio.ALMAFUERTE),
+            (Area.GUARDERIA, Predio.ALMAFUERTE),
+        }
+        assert all(a.monto > 0 for a in precios)
+        # DEMO amounts to be configured by the club admin, never derived from
+        # the amarre price (ReQ-105).
+        assert sorted(a.monto for a in precios) == [2500.0, 4000.0, 5000.0]
+
+    def test_servicio_rows_are_the_catch_all_of_their_place(self, seeded):
+        """`categoria` NULL, or a cabaña of the wrong size would go unserviced.
+
+        A balsa's parcel has no categoria and a cabaña's has one
+        (Chica/Mediana/Especial/Grande), so a row tagged with a size would only
+        price that size and `precio_servicio` would fall through to nothing.
+        """
+        precios = (
+            seeded.query(Arancel)
+            .filter(Arancel.concepto == ConceptoCobro.SERVICIO)
+            .all()
+        )
+        assert all(a.categoria is None for a in precios)
+
+    def test_a_place_resolves_its_own_servicio_price(self, seeded):
+        """ReQ-002: two places, two prices — not one club-wide amount."""
+        assert precio_servicio(
+            seeded, Area.BALSEROS, Predio.EMBALSE
+        ).monto == 5000.0
+        assert precio_servicio(
+            seeded, Area.CABANEROS, Predio.ALMAFUERTE
+        ).monto == 4000.0
+        # A place with no row has NO service price: explicit None, no fallback.
+        assert precio_servicio(seeded, Area.WINDSURF, Predio.ALMAFUERTE) is None
+
+    def test_amarre_is_split_and_keeps_its_price_trail(self, seeded):
+        """D6: `a1` is the amarre alone, with its monto and historico intact."""
+        amarre = seeded.query(Arancel).filter(Arancel.id == "a1").one()
+        assert amarre.nombre == "Amarre"
+        assert amarre.monto == 18500.0
+        assert [h["monto"] for h in amarre.historico] == [15000.0]
+
+    def test_the_global_service_placeholder_is_gone(self, seeded):
+        """The old `a16` had placeholder area/predio: with per-place resolution
+        it collided with real Guardería/Almafuerte."""
+        assert seeded.query(Arancel).filter(Arancel.id == "a16").count() == 0
+
+    def test_old_receipts_keep_the_frozen_merged_name(self, seeded):
+        """ReQ-016: `pago_items.arancelNombre` is a receipt, not a catalog mirror."""
+        items = (
+            seeded.query(PagoItem)
+            .filter(PagoItem.arancelId == "a1")
+            .order_by(PagoItem.id)
+            .all()
+        )
+        assert [i.id for i in items] == ["pi1", "pi4"]
+        assert {i.arancelNombre for i in items} == {"Amarre y Servicios"}
 
     def test_dashboard_reads_a_padron_with_cuota_rows(self, seeded_client):
         """The seeded dataset must not 500 any read path (task 2.3 gate)."""
