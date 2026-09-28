@@ -1,17 +1,25 @@
 /**
- * Regression tests: a membership write must invalidate every cache whose data
- * the server DERIVES from that membership.
+ * Regression tests: a write must invalidate every cache whose data the server
+ * DERIVES from what that write changed.
  *
  * The 4 socio states are not stored. `services/estado_socio` recomputes them
  * from the stored `estado`/`vencimiento` of the cuota social and área
  * memberships on every read (EST-01/EST-02), so the padrón (`Socio.estado`) and
  * the dashboard cards (`estados`) are projections of a membership write.
  *
- * The bug these tests pin: `useUpdateMembresia` — the mutation behind the
- * `estado` selector of the socio ficha and of the membresías table — used to
- * invalidate `["membresias"]` only. The lista showed the new `estado` next to a
- * stale badge and the dashboard card kept counting the old bucket, so flipping a
- * membership to `vencida` looked like it had done nothing.
+ * Two bugs of the same class are pinned here:
+ *
+ * 1. `useUpdateMembresia` — the mutation behind the `estado` selector of the
+ *    socio ficha and of the membresías table — used to invalidate
+ *    `["membresias"]` only. The lista showed the new `estado` next to a stale
+ *    badge and the dashboard card kept counting the old bucket, so flipping a
+ *    membership to `vencida` looked like it had done nothing.
+ * 2. `useCreatePago` — the SAME derivation, reached through a different door.
+ *    A charge renews (`renovar_membresias` rewrites `vencimiento` and forces
+ *    `estado = 'activa'`), so it moves a socio out of 🔴/⚠️ exactly like an
+ *    operator flipping the flag by hand, and it used to invalidate
+ *    `["membresias"]` only. The operator charged somebody and the padrón kept
+ *    showing them as a debtor until the 15s poll happened to land.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,13 +29,18 @@ import type { ReactNode } from "react";
 
 import {
   useCreateMembresia,
+  useCreatePago,
+  useCreateSocio,
   useDeleteMembresia,
   useDeleteParcela,
+  useDeleteSocio,
+  useExecuteImport,
   useImportParcelas,
   useSetBatchEstado,
   useSetBatchVencimiento,
   useUpdateMembresia,
   useUpdateMembresiaVencimiento,
+  useUpdateSocio,
 } from "../queries";
 
 const mockApi = vi.hoisted(() => ({
@@ -39,6 +52,11 @@ const mockApi = vi.hoisted(() => ({
   updateMembresiaVencimiento: vi.fn(),
   deleteParcela: vi.fn(),
   importParcelas: vi.fn(),
+  createSocio: vi.fn(),
+  updateSocio: vi.fn(),
+  deleteSocio: vi.fn(),
+  createPago: vi.fn(),
+  executeImport: vi.fn(),
 }));
 
 vi.mock("../api", () => mockApi);
@@ -173,5 +191,79 @@ describe("membership writes invalidate the derived socio-state caches", () => {
     await waitFor(() => expect(invalidated.length).toBeGreaterThan(0));
     expect(invalidatedRoots()).not.toContain("pagos");
     expect(invalidatedRoots()).not.toContain("aranceles");
+  });
+});
+
+describe("a charge invalidates the derived socio-state caches too", () => {
+  it("useCreatePago invalidates socios + dashboard (the renewal rewrites estado/vencimiento)", async () => {
+    const { result } = renderHook(() => useCreatePago(), { wrapper });
+
+    result.current.mutate({ socioId: "s1" } as never);
+
+    await waitFor(() => expect(mockApi.createPago).toHaveBeenCalled());
+    await waitFor(() => expect(invalidated.length).toBeGreaterThan(0));
+
+    const roots = invalidatedRoots();
+    expect(roots).toContain("pagos");
+    expect(roots).toContain("membresias");
+    expect(roots).toContain("socios");
+    expect(roots).toContain("dashboard");
+  });
+
+  it("useCreatePago still invalidates the catalog and the receipts", async () => {
+    const { result } = renderHook(() => useCreatePago(), { wrapper });
+
+    result.current.mutate({ socioId: "s1" } as never);
+
+    await waitFor(() => expect(invalidated.length).toBeGreaterThan(0));
+    const roots = invalidatedRoots();
+    expect(roots).toEqual(expect.arrayContaining(["pagos", "aranceles"]));
+  });
+});
+
+describe("a socio write that changes who exists invalidates the counts", () => {
+  it("useCreateSocio invalidates membresias + dashboard (the server provisions its cuota)", async () => {
+    const { result } = renderHook(() => useCreateSocio(), { wrapper });
+
+    result.current.mutate({ nombre: "Nuevo" } as never);
+
+    await waitFor(() => expect(invalidated.length).toBeGreaterThan(0));
+    expect(invalidatedRoots()).toEqual(
+      expect.arrayContaining(["membresias", "socios", "dashboard"]),
+    );
+  });
+
+  it("useDeleteSocio invalidates membresias + dashboard (its memberships go with it)", async () => {
+    const { result } = renderHook(() => useDeleteSocio(), { wrapper });
+
+    result.current.mutate("s1");
+
+    await waitFor(() => expect(invalidated.length).toBeGreaterThan(0));
+    expect(invalidatedRoots()).toEqual(
+      expect.arrayContaining(["membresias", "socios", "dashboard"]),
+    );
+  });
+
+  it("useUpdateSocio leaves the dashboard alone (socio columns cannot move a bucket)", async () => {
+    const { result } = renderHook(() => useUpdateSocio(), { wrapper });
+
+    result.current.mutate({ id: "s1", data: { nombre: "Nuevo nombre" } });
+
+    await waitFor(() => expect(invalidated.length).toBeGreaterThan(0));
+    const roots = invalidatedRoots();
+    expect(roots).toContain("socios");
+    expect(roots).not.toContain("dashboard");
+    expect(roots).not.toContain("membresias");
+  });
+
+  it("useExecuteImport invalidates dashboard (imports move the same buckets)", async () => {
+    const { result } = renderHook(() => useExecuteImport(), { wrapper });
+
+    result.current.mutate({ resource: "socios", rows: [] });
+
+    await waitFor(() => expect(invalidated.length).toBeGreaterThan(0));
+    expect(invalidatedRoots()).toEqual(
+      expect.arrayContaining(["membresias", "socios", "dashboard"]),
+    );
   });
 });
