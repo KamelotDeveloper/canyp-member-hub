@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { FileUp, Plus, Printer, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -47,9 +47,24 @@ import { AreaBadge } from "@/components/canyp/AreaBadge";
 import { CarnetPrint } from "@/components/canyp/CarnetPrint";
 import { PageHeader } from "@/components/canyp/AppShell";
 import { useSocios, useMembresias, useCreateSocio, useDeleteSocio } from "@/lib/canyp/queries";
-import type { EstadoSocio, Socio, Membresia } from "@/lib/canyp/types";
+import { ORDEN_ESTADOS } from "@/lib/canyp/utils";
+import type { Area, EstadoSocio, Predio, Socio, Membresia } from "@/lib/canyp/types";
+
+/** Las 4 áreas de membresía, para validar el filtro `area` de la URL. */
+const AREAS: readonly Area[] = ["Balseros", "Cabañeros", "Guardería", "Windsurf"];
+
+/** Filtros del padrón transportados en la URL (el atajo del dashboard los setea). */
+type SociosSearch = { q?: string; predio?: Predio; area?: Area; estado?: EstadoSocio };
 
 export const Route = createFileRoute("/socios/")({
+  validateSearch: (s: Record<string, unknown>): SociosSearch => ({
+    ...(typeof s["q"] === "string" && s["q"] ? { q: s["q"] } : {}),
+    ...(s["predio"] === "Embalse" || s["predio"] === "Almafuerte" ? { predio: s["predio"] } : {}),
+    ...(AREAS.includes(s["area"] as Area) ? { area: s["area"] as Area } : {}),
+    ...(ORDEN_ESTADOS.includes(s["estado"] as EstadoSocio)
+      ? { estado: s["estado"] as EstadoSocio }
+      : {}),
+  }),
   head: () => ({
     meta: [
       { title: "Socios — CANYP Gestión" },
@@ -80,10 +95,14 @@ function SociosPage() {
   const { data: membresias = [] } = useMembresias();
   const createSocio = useCreateSocio();
   const deleteSocio = useDeleteSocio();
-  const [q, setQ] = useState("");
-  const [predio, setPredio] = useState("todos");
-  const [area, setArea] = useState("todas");
-  const [estado, setEstado] = useState<"todos" | EstadoSocio>("todos");
+  const search = useSearch({ from: "/socios/" });
+  const navigate = useNavigate();
+  const [q, setQ] = useState(() => search.q ?? "");
+  // Predio/área/estado viven en la URL: el atajo del dashboard los setea y el
+  // botón "atrás" vuelve al filtro anterior. "todos"/"todas" = sin filtro.
+  const predio = search.predio ?? "todos";
+  const area = search.area ?? "todas";
+  const estado = search.estado ?? "todos";
   const [open, setOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Socio | null>(null);
@@ -97,6 +116,14 @@ function SociosPage() {
     email: "",
     direccion: "",
   });
+
+  /** Refleja un filtro de select en la URL (compartible y compatible con "atrás"). */
+  function setFiltro<K extends "predio" | "area" | "estado">(key: K, value: SociosSearch[K]) {
+    const next: SociosSearch = { ...search };
+    if (value === undefined) delete next[key];
+    else next[key] = value;
+    navigate({ to: "/socios", search: next });
+  }
 
   const filas = useMemo(() => {
     return socios
@@ -205,7 +232,10 @@ function SociosPage() {
           />
         </div>
         <span className="text-sm font-medium text-muted-foreground">Total: {socios.length}</span>
-        <Select value={predio} onValueChange={setPredio}>
+        <Select
+          value={predio}
+          onValueChange={(v) => setFiltro("predio", v === "todos" ? undefined : (v as Predio))}
+        >
           <SelectTrigger className="w-[160px]">
             <SelectValue placeholder="Predio" />
           </SelectTrigger>
@@ -215,7 +245,10 @@ function SociosPage() {
             <SelectItem value="Almafuerte">Almafuerte</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={area} onValueChange={setArea}>
+        <Select
+          value={area}
+          onValueChange={(v) => setFiltro("area", v === "todas" ? undefined : (v as Area))}
+        >
           <SelectTrigger className="w-[150px]">
             <SelectValue placeholder="Área" />
           </SelectTrigger>
@@ -227,16 +260,20 @@ function SociosPage() {
             <SelectItem value="Windsurf">Windsurf</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={estado} onValueChange={(v) => setEstado(v as "todos" | EstadoSocio)}>
+        <Select
+          value={estado}
+          onValueChange={(v) => setFiltro("estado", v === "todos" ? undefined : (v as EstadoSocio))}
+        >
           <SelectTrigger className="w-[170px]">
             <SelectValue placeholder="Estado" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="todos">Todos los estados</SelectItem>
-            <SelectItem value="Inactivo — revisar">Inactivo — revisar</SelectItem>
-            <SelectItem value="Socio activo — revisar">Socio activo — revisar</SelectItem>
-            <SelectItem value="Socio activo">Socio activo</SelectItem>
-            <SelectItem value="Solo cuota social">Solo cuota social</SelectItem>
+            {ORDEN_ESTADOS.map((e) => (
+              <SelectItem key={e} value={e}>
+                {e}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </Card>

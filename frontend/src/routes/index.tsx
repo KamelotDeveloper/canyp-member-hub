@@ -111,11 +111,17 @@ function Dashboard() {
         </Link>
 
         {ESTADOS.map((e) => (
-          <Card key={e} className="h-full p-5">
-            <EstadoBadge estado={e} />
-            <p className="mt-3 text-3xl font-bold tabular-nums">{stats?.estados[e] ?? 0}</p>
-            <p className="text-xs text-muted-foreground">socios</p>
-          </Card>
+          <Link key={e} to="/socios" search={{ estado: e }}>
+            <Card className="h-full p-5 transition-shadow hover:shadow-md">
+              <EstadoBadge estado={e} />
+              <p className="mt-3 text-3xl font-bold tabular-nums">{stats?.estados[e] ?? 0}</p>
+              <p className="text-xs text-muted-foreground">socios</p>
+              <p className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
+                <span>Ir al padrón</span>
+                <ArrowRight className="size-3" />
+              </p>
+            </Card>
+          </Link>
         ))}
       </section>
 
