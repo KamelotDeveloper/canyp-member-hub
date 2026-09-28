@@ -83,6 +83,55 @@ export function usaCategoria(concepto: ConceptoCobro): boolean {
   return concepto === "area";
 }
 
+/**
+ * The catalog rows that can price a membership of `area` — the options of the
+ * "Nueva membresía" / "Editar membresía" arancel select.
+ *
+ * Scoped by `area` ALONE, on purpose. A previous version of this screen also
+ * filtered on a hardcoded `predio === "Almafuerte"`, which is the second bug of
+ * the "written and never read" class: a hardcoded place that does not describe
+ * the area being edited. Against the production catalog that filter leaves the
+ * select EMPTY for two of the four areas (Balseros is priced in Embalse, and
+ * Guardería too), so the operator simply cannot assign an arancel there — and
+ * this list was the only thing feeding that select.
+ *
+ * `predio` is deliberately NOT guessed here. The area->predio rule is the
+ * domain's, not the form's: `backend/models/enums.py` documents "Embalse aloja
+ * solo balsas; Almafuerte aloja cabañas y guardería" while the live catalog
+ * prices Guardería in Embalse. Until the owner settles which is right, the
+ * catalog is the only source that cannot be wrong, so the select offers what
+ * the catalog has and lets `predioDeArancel` below carry the place through.
+ */
+export function arancelesDeArea(aranceles: Arancel[], area: Area): Arancel[] {
+  return aranceles.filter((a) => a.area === area);
+}
+
+/**
+ * The `predio` of the arancel the operator actually chose, or `undefined` when
+ * they chose none.
+ *
+ * A membership row stores BOTH its `area` and its `predio`, and the charge
+ * resolves its price with `Arancel.area == area AND Arancel.predio == predio`
+ * (`backend/services/resolucion.py:resolver_monto`). So a membership created
+ * with a `predio` that contradicts its `area` is a row nothing can price: the
+ * area line is silently DROPPED (and therefore not charged and not renewed), and
+ * when no `arancelId` was named there is not even an `arancel_mismatch` aviso to
+ * tell the operator. This screen used to send a literal `predio: "Almafuerte"`
+ * for every area, so a hand-created Balseros membership was born unpriceable.
+ *
+ * The arancel the operator picked IS the place being priced, so carrying its
+ * own `predio` is the one derivation that cannot contradict the catalog and
+ * needs no domain claim. Callers keep their previous value when this returns
+ * `undefined` (no arancel chosen), so the no-arancel path is unchanged.
+ */
+export function predioDeArancel(
+  aranceles: Arancel[],
+  arancelId: string | undefined,
+): Predio | undefined {
+  if (!arancelId) return undefined;
+  return aranceles.find((a) => a.id === arancelId)?.predio;
+}
+
 /** Estado del form de alta/edición: sólo los campos que el operador ve. */
 export interface ArancelForm {
   nombre: string;
