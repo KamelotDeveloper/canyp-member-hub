@@ -199,19 +199,18 @@ function PagosPage() {
     [membresias, socioId],
   );
 
-  // Filas del catálogo que este cobro puede tikear (ReQ-001). La cuota social
-  // sólo se ofrece si el socio la tiene; Windsurf (sin unidad) cobra sólo cuota
+  // Filas del catálogo que este cobro puede tikear (ReQ-001). La cuota social se
+  // ofrece SIEMPRE que el arancel exista: el servidor decide el monto y si emite
+  // la línea (sin nadie impago no cobra). Windsurf (sin unidad) cobra sólo cuota
   // social (CS-05), como antes de recablear.
   const disponibles = useMemo(() => {
     const soloWindsurf = lugares.length === 0 && membresiasSocio.some((m) => m.area === "Windsurf");
     return arancelesDisponibles(aranceles, lugares).filter((a) => {
-      const concepto = conceptoDeArancel(a);
-      // La cuota sólo se ofrece si el socio la tiene y todavía la debe.
-      if (concepto === "cuota social") return Boolean(anclas.cuota) && cuotaImpaga;
+      if (conceptoDeArancel(a) === "cuota social") return true;
       if (soloWindsurf) return false;
       return true;
     });
-  }, [aranceles, lugares, anclas.cuota, membresiasSocio, cuotaImpaga]);
+  }, [aranceles, lugares, membresiasSocio]);
 
   // Aviso ReQ-003: el socio tiene unidad(es) pero ninguna fila de servicio.
   const hayServicio = useMemo(
