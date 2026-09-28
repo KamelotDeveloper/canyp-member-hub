@@ -408,7 +408,7 @@ function PagosPage() {
       </Card>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>Registrar pago</DialogTitle>
             <DialogDescription>
@@ -457,7 +457,7 @@ function PagosPage() {
                             type="number"
                             min={0}
                             step={100}
-                            className="w-[110px]"
+                            className="w-32 shrink-0"
                             aria-label={`Importe de ${a.nombre}`}
                             value={ajustes[a.id] ?? ""}
                             onChange={(e) => ajustar(a.id, e.target.value)}

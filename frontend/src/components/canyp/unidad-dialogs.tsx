@@ -1225,7 +1225,7 @@ export function CobrarUnidadDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Cobrar unidad</DialogTitle>
           <DialogDescription>
@@ -1273,7 +1273,7 @@ export function CobrarUnidadDialog({
                         type="number"
                         min={0}
                         step={100}
-                        className="w-[110px]"
+                        className="w-32 shrink-0"
                         aria-label={`Importe de ${a.nombre}`}
                         value={ajustes[a.id] ?? ""}
                         onChange={(e) => ajustar(a.id, e.target.value)}

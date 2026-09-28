@@ -248,7 +248,7 @@ function CamposDeConcepto({
           </div>
         </>
       ) : (
-        <div className="sm:col-span-3 text-xs text-muted-foreground">
+        <div className="sm:col-span-2 text-xs text-muted-foreground">
           Este concepto se resuelve por concepto, no por lugar: el área y el predio del ítem no
           definen su precio.
         </div>
