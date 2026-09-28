@@ -655,3 +655,81 @@ class TestEstadoVencidaPersistido:
         assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.INACTIVO_REVISAR
         assert len([s for s in selects if s.lstrip().upper().startswith("SELECT")]) == 1
 
+
+class TestAlertaDeMembresiaVencida:
+    """`/api/dashboard/alertas` has to agree with the badge it exists to work from.
+
+    The reported bug, second occurrence of the same class: a datum the operator
+    writes and nobody reads. `Membresia.estado = 'vencida'` was honoured by the
+    derivacion (`TestEstadoVencidaPersistido` above) but NOT by the alerts query,
+    whose filter was `vencimiento < hoy or estado in (suspendida, baja)`. So a
+    membership flagged `vencida` with a future date was served "Socio activo —
+    revisar" by the padron and was ABSENT from the "Atención inmediata" panel, from
+    the "N a revisar" counter of every area card and from the Notificaciones
+    screen — the operator was told to review a socio with no way to find them.
+
+    Confirmed on the remote database: the single `vencida` row there is an `area`
+    membership with `vencimiento = 2026-10-10`, and the alerts payload contained 0
+    of the 213 memberships flagged that way.
+    """
+
+    def test_el_area_vencida_con_fecha_futura_aparece_en_alertas(self, test_client, test_db):
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+
+        alertas = test_client.get("/api/dashboard/alertas").json()
+
+        assert [a["id"] for a in alertas] == ["m2"]
+        assert alertas[0]["estadoSocio"] == REVISAR
+        assert alertas[0]["estado"] == "vencida"
+
+    def test_la_cuota_vencida_con_fecha_futura_aparece_como_inactiva(self, test_client, test_db):
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        _area(test_db, "m2", "s1", dias=120)
+
+        alertas = test_client.get("/api/dashboard/alertas").json()
+
+        assert [a["id"] for a in alertas] == ["m1"]
+        assert alertas[0]["estadoSocio"] == INACTIVO
+
+    def test_una_membresia_al_dia_no_aparece_igual_que_la_marcada(self, test_client, test_db):
+        """Control: the mark is what puts the row in the list, not its future date."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120)
+        _area(test_db, "m3", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+
+        alertas = test_client.get("/api/dashboard/alertas").json()
+
+        assert [a["id"] for a in alertas] == ["m3"]
+
+    def test_la_alerta_y_la_insignia_no_se_pueden_desacordar(self, test_client, test_db):
+        """The invariant, stated once: every alert is a membership the badge reviews.
+
+        Whatever `alertas` serves, the padron must NOT be serving "Socio activo"
+        for its socio — an alert the badge calls settled is an operator sent to
+        charge somebody who owes nothing, and an alert the badge never mentioned is
+        the bug this class exists to pin.
+        """
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        _socio(test_db, "s2")
+        _cuota(test_db, "m3", "s2", dias=120)
+        _area(test_db, "m4", "s2", dias=-3)
+        _socio(test_db, "s3")
+        _cuota(test_db, "m5", "s3", dias=120)
+        _area(test_db, "m6", "s3", dias=120)
+
+        alertas = test_client.get("/api/dashboard/alertas").json()
+        padron = {s["id"]: s["estado"] for s in test_client.get("/api/socios").json()}
+
+        ids = {a["id"] for a in alertas}
+        assert ids == {"m2", "m4"}
+        for a in alertas:
+            assert padron[a["socioId"]] == a["estadoSocio"]
+            assert padron[a["socioId"]] != ACTIVO
+
+
