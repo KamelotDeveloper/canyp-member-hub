@@ -2106,6 +2106,29 @@ class TestCuotaSocialSoloCobraImpagos:
         assert resp.status_code == 201
         assert resp.json()["items"][0]["factor"] == 2.0
 
+    def test_una_cuota_vencida_cuenta_como_impaga(self, test_client, test_db):
+        """El flag `vencida` también de 🔴 con fecha futura: se cobra igual.
+
+        `_cuota_impaga` reutiliza el predicado de la insignia, así que marcar
+        `vencida` y dejar la fecha futura no abre una puerta gratis: la insignia
+        dice 🔴 y el cobro factura la cuota. Si divergieran, el socio vería "debe
+        cuota social" en el padrón y el cobro omitiría la línea.
+        """
+        ids = _seed_unidad(test_db, miembros=2)
+        vencida = test_db.get(Membresia, "mc1")
+        vencida.vencimiento = AL_DIA
+        vencida.estado = EstadoMembresia.VENCIDA
+        test_db.commit()
+
+        resp = _post_cobro(
+            test_client, [LINEAS["cuota social"][0]], ids["areas"] + ids["cuotas"]
+        )
+        assert resp.status_code == 201
+        assert resp.json()["items"][0]["factor"] == 2.0
+        # Cobrada == renovada: el flag no sobrevive al cobro.
+        test_db.expire_all()
+        assert test_db.get(Membresia, "mc1").estado == EstadoMembresia.ACTIVA
+
 
 class TestCuotaSocialIntegranteSinFila:
     """Un integrante sin fila de cuota se crea y renueva al cobrar (gap de datos).

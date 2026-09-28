@@ -12,7 +12,6 @@ the next read (EST-02) — there is no stored flag to maintain.
 
 from datetime import date, timedelta
 
-import pytest
 from sqlalchemy import event
 
 from backend.models.enums import (
@@ -33,6 +32,7 @@ from backend.services.estado_socio import (
     calcular_estado_socio,
     estados_socio,
     inputs_socio,
+    vigencia_mas_vencida,
 )
 from backend.services.renovacion import renovar_membresias
 
@@ -512,64 +512,146 @@ class TestDashboardConCuatroBuckets:
 
 
 class TestEstadoVencidaPersistido:
-    """KNOWN GAP — `Membresia.estado = 'vencida'` does not move the socio state.
+    """`Membresia.estado = 'vencida'` reuses the two existing buckets.
 
     Reported as: "en la pestaña Socio activo, si cambio la ficha a uno y pongo
     vencida, queda en activo".
 
-    The derivation reads only `vencimiento`, plus `estado` for the cuota social
-    administrative stop (`services.estado_socio.CUOTA_PARADA` = suspendida/baja).
-    `EstadoMembresia.VENCIDA` is in neither, and `inputs_socio` never filters on
-    `estado` at all, so a row an operator explicitly flagged `vencida` keeps
-    contributing its still-future date to the derivation. Confirmed on the remote
-    database: the only `vencida` row there is an `area` membership with
-    `vencimiento = 2026-10-10` and the server serves that socio as "Socio activo".
+    The mark is not a state of its own: it is a shortcut for "just expired", so
+    `concepto` picks the bucket exactly as a past `vencimiento` does — a `vencida`
+    área row reads ⚠️ `Socio activo — revisar`, a `vencida` cuota row reads 🔴
+    `Inactivo — revisar` (owner's decision). `Vigencia.vencida` folds the mark
+    into the single "is it expired" predicate, so the precedence, the four
+    buckets and every read path are the ones that already existed.
 
-    These tests are `xfail(strict=False)`: they pin the defect without asserting
-    WHICH of the two remaining states is correct. Picking that is a business
-    decision (a `vencida` cuota row reads 🔴 and a `vencida` área row reads ⚠️, per
-    the design table) and the fix is waiting on owner approval. When it lands they
-    XPASS, which is the signal to drop the markers and assert the exact states.
-
-    The assertion is the invariant both candidate fixes satisfy: a membership the
-    operator flagged `vencida` can never be served as the fully-al-día green state.
+    Confirmed on the remote database: the only `vencida` row there is an `area`
+    membership with `vencimiento = 2026-10-10`, i.e. the ⚠️ case below.
     """
 
-    PENDIENTE = "estado='vencida' ignorado por la derivacion: fix aprobado pendiente"
-
-    @pytest.mark.xfail(strict=False, reason=PENDIENTE)
-    def test_area_vencida_con_fecha_futura_no_es_socio_activo(self, test_db):
+    def test_area_vencida_con_fecha_futura_es_revisar(self, test_db):
         """The real row: an `area` membership flagged `vencida`, date untouched."""
         _socio(test_db, "s1")
         _cuota(test_db, "m1", "s1", dias=120)
         _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
-        assert estados_socio(test_db, ["s1"])["s1"] != EstadoSocioVisual.ACTIVO
+        assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.ACTIVO_REVISAR
 
-    @pytest.mark.xfail(strict=False, reason=PENDIENTE)
-    def test_cuota_vencida_con_fecha_futura_no_es_socio_activo(self, test_db):
+    def test_cuota_vencida_con_fecha_futura_es_inactivo(self, test_db):
         _socio(test_db, "s1")
         _cuota(test_db, "m1", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
         _area(test_db, "m2", "s1", dias=120)
-        assert estados_socio(test_db, ["s1"])["s1"] != EstadoSocioVisual.ACTIVO
+        assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.INACTIVO_REVISAR
 
-    @pytest.mark.xfail(strict=False, reason=PENDIENTE)
-    def test_el_padron_no_sirve_activo_para_una_membresia_vencida(self, test_client, test_db):
+    def test_el_padron_sirve_revisar_para_una_membresia_vencida(self, test_client, test_db):
         _socio(test_db, "s1")
         _cuota(test_db, "m1", "s1", dias=120)
         _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
         body = test_client.get("/api/socios").json()
-        assert body[0]["estado"] != ACTIVO
+        assert body[0]["estado"] == REVISAR
+        assert body[0]["nominacion"] == REVISAR
 
-    @pytest.mark.xfail(strict=False, reason=PENDIENTE)
     def test_el_dashboard_no_cuenta_como_activo(self, test_client, test_db):
         _socio(test_db, "s1")
         _cuota(test_db, "m1", "s1", dias=120)
         _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
-        assert test_client.get("/api/dashboard/stats").json()["estados"][ACTIVO] == 0
+        assert test_client.get("/api/dashboard/stats").json()["estados"] == {
+            ACTIVO: 0,
+            REVISAR: 1,
+            INACTIVO: 0,
+            SOLO: 0,
+        }
 
     def test_la_fecha_vencida_si_mueve_el_estado(self, test_db):
-        """Control: the `vencimiento` path works, which isolates the gap to `estado`."""
+        """Control: the `vencimiento` path works, which isolates the mark to `estado`."""
         _socio(test_db, "s1")
         _cuota(test_db, "m1", "s1", dias=120)
         _area(test_db, "m2", "s1", dias=-1)
         assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.ACTIVO_REVISAR
+
+    def test_todo_al_dia_sigue_activo(self, test_db):
+        """Control: the untouched pair keeps the green state."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120)
+        assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.ACTIVO
+
+    def test_la_cuota_vencida_manda_sobre_el_area_vencida(self, test_db):
+        """Precedence unchanged: a 🔴 cuota is never downgraded to the ⚠️ warning."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.INACTIVO_REVISAR
+
+    def test_la_marca_no_se_esconde_detras_de_una_fecha_mas_nueva(self, test_db):
+        """Aggregation, not last-row-wins: one flagged row of a concept flags it."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=-5)
+        _area(test_db, "m3", "s1", dias=300, estado=EstadoMembresia.VENCIDA)
+        assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.ACTIVO_REVISAR
+
+    def test_una_marca_vencida_no_arrastra_a_la_otra_cuota(self, test_db):
+        """The split is per concept: an área mark never reaches the 🔴 branch."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        inputs = inputs_socio(test_db, ["s1"])["s1"]
+        assert inputs.cuota.estado_vencida is False
+        assert inputs.area.estado_vencida is True
+
+    def test_la_marca_se_borra_al_cobrar(self, test_client, test_db):
+        """EST-02: paying restores the state on the next read, no manual step.
+
+        A charge writes `estado = 'activa'` (`renovacion.dia10`), which is what
+        keeps the mark a recalculation and not a second stored badge.
+        """
+        _socio(test_db, "s1")
+        cuota = _cuota(test_db, "m1", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        assert test_client.get("/api/socios").json()[0]["estado"] == INACTIVO
+
+        renovar_membresias(test_db, [cuota.id], date.today())
+
+        assert test_client.get("/api/socios").json()[0]["estado"] == SOLO
+
+    def test_la_unidad_entera_lectura_el_marca_de_area(self, test_client, test_db):
+        """Scope = unidad: the ⚠️ reaches the titular AND the integrante."""
+        _parcela(test_db, "p1")
+        _socio(test_db, "s1")
+        _socio(test_db, "s2")
+        _cuota(test_db, "m1", "s1")
+        _cuota(test_db, "m2", "s2")
+        _area(test_db, "m3", "s1", dias=120, parcela_id="p1", rol=RolMembresia.TITULAR)
+        _area(
+            test_db,
+            "m4",
+            "s2",
+            dias=120,
+            parcela_id="p1",
+            rol=RolMembresia.INTEGRANTE,
+            estado=EstadoMembresia.VENCIDA,
+        )
+        miembros = test_client.get("/api/membresias/parcelas").json()[0]["membresias"]
+        assert {m["socioId"]: m["estadoSocio"] for m in miembros} == {
+            "s1": REVISAR,
+            "s2": REVISAR,
+        }
+
+    def test_la_marca_del_area_no_se_pierde_al_unir_con_la_unidad(self, test_db):
+        """`vigencia_mas_vencida` unions the mark, it does not pick a date and drop it.
+
+        The flagged unit row carries a LATER date than the member's own area, so a
+        date-only comparison would return the unflagged one and serve 🟢.
+        """
+        propio = Vigencia(date(2026, 10, 5))
+        unidad = Vigencia(date(2026, 12, 20), estado_vencida=True)
+        unida = vigencia_mas_vencida(propio, unidad)
+        assert unida.vencimiento == date(2026, 10, 5)
+        assert unida.vencida(HOY) is True
+
+    def test_una_sola_consulta_agrupada_con_la_marca(self, test_db):
+        """D5: reading the mark costs no extra round trip."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        selects = _selects(test_db)
+        assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.INACTIVO_REVISAR
+        assert len([s for s in selects if s.lstrip().upper().startswith("SELECT")]) == 1
+
