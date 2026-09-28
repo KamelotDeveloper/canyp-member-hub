@@ -22,8 +22,9 @@ from backend.models.pago import Pago, PagoItem
 from backend.models.parcela import Parcela
 from backend.models.socio import Socio
 from backend.models.arancel import Arancel
+from backend.services.cuota_social import cuota_de
 from backend.services.numeracion import siguiente_numero_comprobante
-from backend.services.renovacion import renovar_membresias
+from backend.services.renovacion import dia10, renovar_membresias
 from backend.services.resolucion import (
     arancel_mismatch,
     precio_cuota_social,
@@ -2078,6 +2079,91 @@ class TestCuotaSocialSoloCobraImpagos:
         )
         assert resp.status_code == 201
         assert resp.json()["items"][0]["factor"] == 2.0
+
+
+class TestCuotaSocialIntegranteSinFila:
+    """Un integrante sin fila de cuota se crea y renueva al cobrar (gap de datos).
+
+    A legacy/deleted cuota row makes the member count as impago, so the unit
+    multiplier bills them. Without this change nothing renewed (there was no row
+    to renew), so the same member was billed again next time — a double charge.
+    The resolver now provisions the missing row in the SAME transaction as the
+    payment, so charged == renewed even on an un-backfilled database.
+    """
+
+    def _sin_fila(self, db, mid: str) -> None:
+        """Delete one member's cuota row to simulate the data gap."""
+        db.delete(db.get(Membresia, mid))
+        db.commit()
+
+    def test_integrante_sin_fila_se_crea_y_renueva_al_cobrar(self, test_client, test_db):
+        ids = _seed_unidad(test_db, miembros=4)
+        self._sin_fila(test_db, "mc1")  # socio s2 has no cuota row at all
+        assert cuota_de(test_db, "s2") is None
+
+        resp = _post_cobro(
+            test_client,
+            [LINEAS["cuota social"][0]],
+            ids["areas"],
+            fecha=AL_DIA.isoformat(),
+        )
+        assert resp.status_code == 201
+        # s2 owes too: no row means nothing says it was paid.
+        assert resp.json()["items"][0]["factor"] == 4.0
+
+        test_db.expire_all()
+        nueva = cuota_de(test_db, "s2")
+        assert nueva is not None
+        assert nueva.concepto == ConceptoMembresia.CUOTA_SOCIAL
+        assert nueva.area is None and nueva.parcelaId is None and nueva.rol is None
+        # Created (inheriting the area date) AND renewed onto the charge window.
+        assert nueva.vencimiento == dia10(AL_DIA)
+        assert set(_venc(test_db, ["mc0", "mc2", "mc3"]).values()) == {dia10(AL_DIA)}
+
+    def test_segundo_cobro_no_lo_vuelve_a_cobrar(self, test_client, test_db):
+        ids = _seed_unidad(test_db, miembros=4)
+        self._sin_fila(test_db, "mc1")
+
+        primera = _post_cobro(
+            test_client,
+            [LINEAS["cuota social"][0]],
+            ids["areas"],
+            fecha=AL_DIA.isoformat(),
+        )
+        assert primera.status_code == 201
+        assert primera.json()["items"][0]["factor"] == 4.0
+
+        # The repaired member is now al día, so a second charge bills only area.
+        segunda = _post_cobro(
+            test_client,
+            [LINEAS["area"][0], LINEAS["cuota social"][0]],
+            ids["areas"],
+            fecha=AL_DIA.isoformat(),
+        )
+        assert segunda.status_code == 201
+        assert [i["concepto"] for i in segunda.json()["items"]] == ["area"]
+
+    def test_si_el_cobro_falla_no_queda_fila_huerfana(self, test_client, test_db):
+        ids = _seed_unidad(test_db, miembros=2)
+        self._sin_fila(test_db, "mc1")  # s2 has no cuota row
+
+        # The cuota line provisions s2's row first; the recargo then fails with a
+        # non-positive amount -> 422, before the endpoint's commit.
+        resp = _post_cobro(
+            test_client,
+            [
+                LINEAS["cuota social"][0],
+                {"arancelId": RECARGO_ID, "membresiaId": "ma0", "montoAplicado": 0},
+            ],
+            ids["areas"],
+            fecha=AL_DIA.isoformat(),
+        )
+        assert resp.status_code == 422
+        assert test_db.query(Pago).count() == 0
+        # The row was only flushed inside the request transaction; a 422 means the
+        # request never committed and get_db's close rolls it back (modelled here).
+        test_db.rollback()
+        assert cuota_de(test_db, "s2") is None
 
 
 class TestCobroPorSocioCuotaAlDia:

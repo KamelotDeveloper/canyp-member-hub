@@ -29,7 +29,11 @@ The six rules this service exists to enforce:
    member (rule 6), exactly those members' cuota rows renew even when the client
    did not submit them — the unit dialog only submits area memberships, so the
    renewal set is derived server-side to keep charged == renewed. A member whose
-   cuota is up to date is not billed and is not renewed.
+   cuota is up to date is not billed and is not renewed. An UNPAID member who
+   has NO cuota row at all (a legacy gap or a deleted row) gets the row CREATED
+   here, in the same transaction as the payment: the charge and the renewal must
+   agree even on a database that was never backfilled, or the member would be
+   billed without anything renewing and be billed again next time.
 4. **Windsurf is never double-charged** (CS-05). A Windsurf membership IS its
    cuota social, so it is classified as CUOTA_SOCIAL for charging purposes: it
    can never anchor an area line, and it renews when cuota social is ticked.
@@ -67,7 +71,7 @@ from backend.models.enums import (
 )
 from backend.models.membresia import Membresia
 from backend.models.parcela import Parcela
-from backend.services.cuota_social import cuota_de
+from backend.services.cuota_social import crear_cuota_social, cuota_de
 from backend.services.estado_socio import InputsSocio, Vigencia, inputs_socio
 from backend.services.resolucion import (
     arancel_mismatch,
@@ -216,16 +220,23 @@ def _cuotas_a_renovar(
 
     The set is derived server-side, never from the submitted ``membresiaIds``:
     the unit dialog submits only area memberships, so a client that forgets the
-    cuotas cannot leave them charged but not renewed. A legacy impago socio with
-    NO cuota row has nothing to renew; the missing row is a pre-existing data
-    gap, not something this resolver invents.
+    cuotas cannot leave them charged but not renewed.
+
+    A legacy impago socio with NO cuota row is REPAIRED here: the row is created
+    with :func:`backend.services.cuota_social.crear_cuota_social` in the SAME
+    transaction as the payment, so the member being charged ends up with a real
+    cuota row that renews with the rest. Without it the money would be collected,
+    nothing would renew, and the next charge would bill the same member again.
+    Creation is idempotent, so an existing row is returned untouched.
     """
     socios = _socios_de_cuota(unidad, socio_id)
-    return [
-        cuota.id
-        for sid in _socios_impagos(inputs_socio(db, socios), socios, hoy)
-        if (cuota := cuota_de(db, sid)) is not None
-    ]
+    ids: list[str] = []
+    for sid in _socios_impagos(inputs_socio(db, socios), socios, hoy):
+        cuota = cuota_de(db, sid)
+        if cuota is None:
+            cuota, _ = crear_cuota_social(db, sid, hoy=hoy)
+        ids.append(cuota.id)
+    return ids
 
 
 def _concepto_de(db: Session, item) -> ConceptoCobro:
@@ -545,6 +556,12 @@ def resolver_items(
     ``avisos`` is collected in item order and de-duplicated: the same bad
     ``arancelId`` submitted on two lines is ONE problem for the operator to fix,
     not two identical warnings.
+
+    This is NOT purely a read: when a cuota social line is actually billed and an
+    impago member of the charge has NO cuota row, the row is provisioned here via
+    :func:`_cuotas_a_renovar` so the charge and its renewal cannot disagree. The
+    write is a flush, never a commit — the caller's transaction owns it, so a
+    failed/rolled-back payment leaves no orphan row.
     """
     submitted: list[Membresia] = []
     if submitted_ids:
