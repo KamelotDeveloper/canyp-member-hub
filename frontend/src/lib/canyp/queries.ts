@@ -5,7 +5,7 @@
  * Each mutation hook wraps a POST/PUT/DELETE and invalidates relevant caches on success.
  */
 
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import * as api from "./api";
 import { clearFotosCache } from "./fotos";
 import { verificarSuscripcion } from "./suscripcion";
@@ -303,14 +303,33 @@ export function useQuitarFoto() {
 // MUTATIONS — Membresias
 // ---------------------------------------------------------------------------
 
+/**
+ * Invalidates every cache a membership write can move.
+ *
+ * The 4 socio states are NOT stored: the server derives them from the stored
+ * `vencimiento`/`estado` of the cuota social and área memberships on every read
+ * (EST-01/EST-02). So any write that changes `estado`, changes `vencimiento`,
+ * or removes a membership row can move a socio into a different bucket — the
+ * padrón (`Socio.estado`) and the dashboard cards (`estados`) are projections of
+ * that derivation, so they have to be refetched together with the membership.
+ *
+ * Invalidating only `["membresias"]` leaves the operator reading a state the
+ * server has already moved: the lista de membresías shows the new `estado` next
+ * to a stale badge, and the dashboard card keeps counting the old bucket until
+ * its own 15s poll happens to land.
+ */
+function invalidateMembershipWrites(qc: QueryClient) {
+  qc.invalidateQueries({ queryKey: ["membresias"] });
+  qc.invalidateQueries({ queryKey: ["socios"] });
+  qc.invalidateQueries({ queryKey: ["dashboard"] });
+}
+
 /** Create a new membresia */
 export function useCreateMembresia() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: Omit<Membresia, "id">) => api.createMembresia(data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["membresias"] });
-    },
+    onSuccess: () => invalidateMembershipWrites(qc),
   });
 }
 
@@ -320,9 +339,9 @@ export function useUpdateMembresia() {
   return useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<Membresia> }) =>
       api.updateMembresia(id, data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["membresias"] });
-    },
+    // This is the mutation behind the `estado` selector of the socio ficha and
+    // of the membresías table, so it is the one that can flip a socio's bucket.
+    onSuccess: () => invalidateMembershipWrites(qc),
   });
 }
 
@@ -331,9 +350,7 @@ export function useDeleteMembresia() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.deleteMembresia(id),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["membresias"] });
-    },
+    onSuccess: () => invalidateMembershipWrites(qc),
   });
 }
 
@@ -371,7 +388,9 @@ export function useDeleteParcela() {
     mutationFn: (id: string) => api.deleteParcela(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["parcelas"] });
-      qc.invalidateQueries({ queryKey: ["membresias"] });
+      // Removing a unit removes its área memberships, so every member of the
+      // unit can land in a different socio state.
+      invalidateMembershipWrites(qc);
     },
   });
 }
@@ -387,8 +406,8 @@ export function useImportParcelas() {
     mutationFn: (payload: ImportPayload) => api.importParcelas(payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["parcelas"] });
-      qc.invalidateQueries({ queryKey: ["membresias"] });
-      qc.invalidateQueries({ queryKey: ["socios"] });
+      // The import writes socios AND memberships, so it moves socio states too.
+      invalidateMembershipWrites(qc);
     },
   });
 }
@@ -399,9 +418,7 @@ export function useSetBatchEstado() {
   return useMutation({
     mutationFn: ({ parcelaId, estado }: { parcelaId: string; estado: EstadoMembresia }) =>
       api.setBatchEstado(parcelaId, estado),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["membresias"] });
-    },
+    onSuccess: () => invalidateMembershipWrites(qc),
   });
 }
 
@@ -418,12 +435,7 @@ export function useSetBatchVencimiento() {
       vencimiento: string;
       concepto?: ConceptoMembresia;
     }) => api.setBatchVencimiento(parcelaId, vencimiento, concepto),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["membresias"] });
-      // El vencimiento mueve el estado del socio: refrescar el padrón y el dashboard.
-      qc.invalidateQueries({ queryKey: ["socios"] });
-      qc.invalidateQueries({ queryKey: ["dashboard"] });
-    },
+    onSuccess: () => invalidateMembershipWrites(qc),
   });
 }
 
@@ -433,11 +445,7 @@ export function useUpdateMembresiaVencimiento() {
   return useMutation({
     mutationFn: ({ id, vencimiento }: { id: string; vencimiento: string }) =>
       api.updateMembresiaVencimiento(id, vencimiento),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["membresias"] });
-      qc.invalidateQueries({ queryKey: ["socios"] });
-      qc.invalidateQueries({ queryKey: ["dashboard"] });
-    },
+    onSuccess: () => invalidateMembershipWrites(qc),
   });
 }
 

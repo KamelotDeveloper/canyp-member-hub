@@ -12,6 +12,7 @@ the next read (EST-02) — there is no stored flag to maintain.
 
 from datetime import date, timedelta
 
+import pytest
 from sqlalchemy import event
 
 from backend.models.enums import (
@@ -508,3 +509,67 @@ class TestDashboardConCuatroBuckets:
         alertas = test_client.get("/api/dashboard/alertas").json()
         assert [a["id"] for a in alertas] == ["m1", "m4"]
         assert [a["estadoSocio"] for a in alertas] == [INACTIVO, REVISAR]
+
+
+class TestEstadoVencidaPersistido:
+    """KNOWN GAP — `Membresia.estado = 'vencida'` does not move the socio state.
+
+    Reported as: "en la pestaña Socio activo, si cambio la ficha a uno y pongo
+    vencida, queda en activo".
+
+    The derivation reads only `vencimiento`, plus `estado` for the cuota social
+    administrative stop (`services.estado_socio.CUOTA_PARADA` = suspendida/baja).
+    `EstadoMembresia.VENCIDA` is in neither, and `inputs_socio` never filters on
+    `estado` at all, so a row an operator explicitly flagged `vencida` keeps
+    contributing its still-future date to the derivation. Confirmed on the remote
+    database: the only `vencida` row there is an `area` membership with
+    `vencimiento = 2026-10-10` and the server serves that socio as "Socio activo".
+
+    These tests are `xfail(strict=False)`: they pin the defect without asserting
+    WHICH of the two remaining states is correct. Picking that is a business
+    decision (a `vencida` cuota row reads 🔴 and a `vencida` área row reads ⚠️, per
+    the design table) and the fix is waiting on owner approval. When it lands they
+    XPASS, which is the signal to drop the markers and assert the exact states.
+
+    The assertion is the invariant both candidate fixes satisfy: a membership the
+    operator flagged `vencida` can never be served as the fully-al-día green state.
+    """
+
+    PENDIENTE = "estado='vencida' ignorado por la derivacion: fix aprobado pendiente"
+
+    @pytest.mark.xfail(strict=False, reason=PENDIENTE)
+    def test_area_vencida_con_fecha_futura_no_es_socio_activo(self, test_db):
+        """The real row: an `area` membership flagged `vencida`, date untouched."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        assert estados_socio(test_db, ["s1"])["s1"] != EstadoSocioVisual.ACTIVO
+
+    @pytest.mark.xfail(strict=False, reason=PENDIENTE)
+    def test_cuota_vencida_con_fecha_futura_no_es_socio_activo(self, test_db):
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        _area(test_db, "m2", "s1", dias=120)
+        assert estados_socio(test_db, ["s1"])["s1"] != EstadoSocioVisual.ACTIVO
+
+    @pytest.mark.xfail(strict=False, reason=PENDIENTE)
+    def test_el_padron_no_sirve_activo_para_una_membresia_vencida(self, test_client, test_db):
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        body = test_client.get("/api/socios").json()
+        assert body[0]["estado"] != ACTIVO
+
+    @pytest.mark.xfail(strict=False, reason=PENDIENTE)
+    def test_el_dashboard_no_cuenta_como_activo(self, test_client, test_db):
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        assert test_client.get("/api/dashboard/stats").json()["estados"][ACTIVO] == 0
+
+    def test_la_fecha_vencida_si_mueve_el_estado(self, test_db):
+        """Control: the `vencimiento` path works, which isolates the gap to `estado`."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=-1)
+        assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.ACTIVO_REVISAR
