@@ -152,7 +152,11 @@ export interface LugarCobrable extends LugarCobro {
 export interface AnclasCobro {
   /** Ancla de área; también la de servicio y recargo cuando hay unidad. */
   area?: string | undefined;
-  /** Membresía de cuota social del socio; ancla la línea de cuota social. */
+  /**
+   * Membresía de cuota social del socio; ancla la línea de cuota social. Si
+   * falta (el socio no tiene fila), la línea cae al ancla de área: el servidor
+   * crea la fila faltante y vuelve a resolver su ancla.
+   */
   cuota?: string | undefined;
 }
 
@@ -439,7 +443,11 @@ export function itemsPorArancel(
     }
 
     if (concepto === "cuota social") {
-      const membresiaId = opciones.anclas.cuota;
+      // El ancla es sólo una PISTA de contabilidad (`PagoItem.membresiaId` es NOT
+      // NULL); el servidor re-resuelve la suya (`_anchor_cuota`) y crea la fila
+      // de cuota que falte. Sin la cuota del socio caemos al ancla de área para
+      // que la línea igual se componga y sume, en vez de desaparecer en silencio.
+      const membresiaId = opciones.anclas.cuota ?? opciones.anclas.area;
       if (!membresiaId) continue;
       const factor = Math.max(0, opciones.miembrosImpagos);
       // Todos al día: nadie debe la cuota, así que no se emite línea (el

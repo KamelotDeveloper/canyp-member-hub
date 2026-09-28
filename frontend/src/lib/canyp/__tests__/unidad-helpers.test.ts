@@ -349,11 +349,25 @@ describe("itemsPorArancel (ReQ-001 / ReQ-012)", () => {
     expect(itemsPorArancel(CATALOGO, LUGARES, new Set(["p_recargo"]), CUATRO)).toHaveLength(0);
   });
 
-  it("una línea sin ancla no se emite", () => {
+  it("una cuota sin ancla propia cae al ancla de área y se emite igual", () => {
+    // El socio cobrado puede no tener fila de cuota: el ancla es sólo una pista
+    // y el servidor la re-resuelve/crea. La línea debe componerse y sumar, no
+    // desaparecer (era el bug: tildar la cuota no sumaba).
+    const [cuota] = itemsPorArancel(CATALOGO, LUGARES, new Set(["p_cuota"]), {
+      ...CUATRO,
+      anclas: { area: "m-area" },
+    });
+    expect(cuota!.arancelId).toBe("p_cuota");
+    expect(cuota!.membresiaId).toBe("m-area");
+    expect(cuota!.factor).toBe(4);
+    expect(cuota!.monto).toBe(48000);
+  });
+
+  it("sin ninguna ancla no se emite la línea", () => {
     expect(
       itemsPorArancel(CATALOGO, LUGARES, new Set(["p_cuota"]), {
         ...CUATRO,
-        anclas: { area: "m-area" },
+        anclas: {},
       }),
     ).toHaveLength(0);
   });

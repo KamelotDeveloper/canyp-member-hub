@@ -1469,17 +1469,43 @@ class TestCobroMultiConceptMatriz:
         test_db.expire_all()
         assert set(_venc(test_db, ids["areas"] + ids["cuotas"]).values()) == {VENC_PASADO}
 
-    def test_cuota_social_sin_membresia_del_socio_es_422(self, test_client, test_db):
-        """A database with no cuota social row for the socio: never invented."""
+    def test_cuota_social_sin_fila_del_socio_se_repara_y_cobra(self, test_client, test_db):
+        """A socio with no cuota row must ANCHOR, not 422: the row is created.
+
+        The historical contract refused the line ("never invented"), which is the
+        bug: the tenant's missing row made the charge fail. The domain rule is
+        that every socio owns one cuota row, so the anchor provisions it in the
+        same transaction and the line composes with the impago multiplier.
+        """
         ids = _seed_unidad(test_db)
         test_db.query(Membresia).filter(
             Membresia.concepto == ConceptoMembresia.CUOTA_SOCIAL
         ).delete()
         test_db.commit()
+        assert cuota_de(test_db, "s1") is None
+
         resp = _post_cobro(test_client, [LINEAS["cuota social"][0]], ids["areas"])
-        assert resp.status_code == 422
-        assert "cuota social" in resp.json()["detail"]
-        assert test_db.query(Pago).count() == 0
+        assert resp.status_code == 201
+        body = resp.json()
+        assert len(body["items"]) == 1
+        item = body["items"][0]
+        assert (item["concepto"], item["factor"], item["monto"]) == (
+            "cuota social",
+            4.0,
+            CUOTA_UNIT_PRICE * 4,
+        )
+        assert body["total"] == CUOTA_UNIT_PRICE * 4
+
+        test_db.expire_all()
+        # Every member's row was (re)created and renews onto the charge window.
+        assert cuota_de(test_db, "s1") is not None
+        cuotas = (
+            test_db.query(Membresia)
+            .filter(Membresia.concepto == ConceptoMembresia.CUOTA_SOCIAL)
+            .all()
+        )
+        assert len(cuotas) == 4
+        assert {c.vencimiento for c in cuotas} == {VENC_COBRADO}
 
     def test_un_item_sin_membresia_que_imputar_es_422(self, test_client, test_db):
         """``PagoItem.membresiaId`` is NOT NULL: a dangling id is refused."""
@@ -2164,6 +2190,87 @@ class TestCuotaSocialIntegranteSinFila:
         # request never committed and get_db's close rolls it back (modelled here).
         test_db.rollback()
         assert cuota_de(test_db, "s2") is None
+
+
+class TestCuotaSocialTitularSinFila:
+    """El socio cobrado (titular) sin fila de cuota: el ancla la repara y cobra.
+
+    The bug the owner reported: ticking the cuota did not add to the total because
+    the line's anchor (the titular's own cuota row) was missing and the server
+    refused it with a 422. The anchor now provisions that row — idempotent, in the
+    payment's own transaction — so the line composes and the receipt totals.
+    """
+
+    def _borrar_cuota(self, db, mid: str) -> None:
+        db.delete(db.get(Membresia, mid))
+        db.commit()
+
+    def test_titular_sin_fila_cobra_y_se_la_crea(self, test_client, test_db):
+        ids = _seed_unidad(test_db, miembros=4)
+        assert cuota_de(test_db, "s1").id == "mc0"
+        self._borrar_cuota(test_db, "mc0")  # only the charged socio's row is gone
+        assert cuota_de(test_db, "s1") is None
+
+        resp = _post_cobro(
+            test_client,
+            [LINEAS["cuota social"][0]],
+            ids["areas"],
+            fecha=AL_DIA.isoformat(),
+        )
+        assert resp.status_code == 201
+        body = resp.json()
+        item = body["items"][0]
+        assert (item["concepto"], item["factor"], item["monto"]) == (
+            "cuota social",
+            4.0,
+            CUOTA_UNIT_PRICE * 4,
+        )
+        assert body["total"] == CUOTA_UNIT_PRICE * 4
+
+        test_db.expire_all()
+        nueva = cuota_de(test_db, "s1")
+        assert nueva is not None
+        assert nueva.concepto == ConceptoMembresia.CUOTA_SOCIAL
+        assert nueva.area is None and nueva.parcelaId is None and nueva.rol is None
+        # Created (inheriting the area date) AND renewed onto the charge window,
+        # exactly like the members that already had a row.
+        assert nueva.vencimiento == dia10(AL_DIA)
+        assert set(_venc(test_db, ids["cuotas"]).values()) == {dia10(AL_DIA)}
+
+    def test_segundo_cobro_no_duplica_la_fila(self, test_client, test_db):
+        ids = _seed_unidad(test_db, miembros=2)
+        self._borrar_cuota(test_db, "mc0")
+
+        primera = _post_cobro(
+            test_client,
+            [LINEAS["cuota social"][0]],
+            ids["areas"],
+            fecha=AL_DIA.isoformat(),
+        )
+        assert primera.status_code == 201
+        assert primera.json()["items"][0]["factor"] == 2.0
+
+        # The repaired row is now al día, so the second charge bills no cuota and
+        # — crucially — does not create a SECOND row: creation is idempotent.
+        segunda = _post_cobro(
+            test_client,
+            [LINEAS["area"][0], LINEAS["cuota social"][0]],
+            ids["areas"],
+            fecha=AL_DIA.isoformat(),
+        )
+        assert segunda.status_code == 201
+        assert [i["concepto"] for i in segunda.json()["items"]] == ["area"]
+
+        test_db.expire_all()
+        assert (
+            test_db.query(Membresia)
+            .filter(
+                Membresia.socioId == "s1",
+                Membresia.concepto == ConceptoMembresia.CUOTA_SOCIAL,
+            )
+            .count()
+            == 1
+        )
 
 
 class TestCobroPorSocioCuotaAlDia:
