@@ -34,6 +34,16 @@ def _run_against_postgres() -> bool:
     return TEST_DATABASE_URL.startswith("postgresql")
 
 
+# The write gate (``backend/middleware.py``) would otherwise back up the global
+# engine — which is the developer's real dev database, unrelated to the
+# in-memory fixture these tests use. The fixture DB is ephemeral, so the gate
+# has nothing to protect. Tests that assert the gate's behaviour turn it back
+# on explicitly (``activar_guard``).
+from backend import middleware as _middleware  # noqa: E402
+
+_middleware.desactivar_guard()
+
+
 @pytest.fixture()
 def test_db():
     """Isolated engine per test.

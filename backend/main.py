@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
 from backend.database import Base, engine
+from backend.middleware import BackupGuardMiddleware
 from backend.routers import (
     aranceles,
     auth,
@@ -87,6 +88,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Write gate: a mutating request needs a restorable dump behind it. Registered
+# after CORS so the 503 it returns stays readable cross-origin. The lifespan is
+# untouched — a failing startup backup only blocks writes, never the boot.
+app.add_middleware(BackupGuardMiddleware, engine=engine)
 
 # Routers
 # Auth is open (login/logout/status/first-user bootstrap). Settings is included
