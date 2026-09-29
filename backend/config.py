@@ -30,12 +30,25 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRATION_MINUTES: int = 1440
 
-    # Supabase (suscripciones/licencias). SUPABASE_SERVICE_KEY y MP_ACCESS_TOKEN
-    # son credenciales de PRIVILEGIO DEL OPERADOR: nunca se empaquetan en el
-    # sidecar ni se escriben en disco del cliente. La clasificación y el fallo
-    # explícito ante su ausencia viven en backend/operator_credentials.py.
-    # En dev se leen de backend/.env (ignorado por git y excluido del .spec).
-    SUPABASE_URL: str = "https://nrysusllouuytjlwdyvn.supabase.co"
+    # Supabase (suscripciones/licencias) — PROYECTO ÚNICO DEL OPERADOR.
+    #
+    # Fuente de verdad: este endpoint. El webhook remoto (suscripcion-api) tiene
+    # que escribir en ESTE mismo proyecto; si escribe en otro, el pago se
+    # registra donde el backend no mira y la licencia nunca se activa. Antes
+    # convivían dos proyectos distintos (este y el que tenía hardcodeado el
+    # webhook de Ordo-ERP), que es el corte #3 del bug de activación.
+    #
+    # Sin valor por defecto a propósito: que quede hardcodeado esconde el
+    # desacople y hace que un build sin configurar apunte al proyecto del
+    # operador por sorpresa. Se inyecta por entorno (ver
+    # backend/operator_credentials.py y docs/credenciales.md).
+    #
+    # SUPABASE_SERVICE_KEY y MP_ACCESS_TOKEN son credenciales de PRIVILEGIO DEL
+    # OPERADOR: nunca se empaquetan en el sidecar ni se escriben en disco del
+    # cliente. La clasificación y el fallo explícito ante su ausencia viven en
+    # backend/operator_credentials.py. En dev se leen de backend/.env
+    # (ignorado por git y excluido del .spec).
+    SUPABASE_URL: str = ""
     SUPABASE_ANON_KEY: str = ""
     SUPABASE_SERVICE_KEY: str = ""
 

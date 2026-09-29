@@ -8,12 +8,21 @@ al stack CANYP:
 - Planes: se leen de Supabase (tabla planes_suscripcion, filtrada por app_id)
   con fallback al catálogo local (backend/pricing.py).
 - Preferencia: POST a MercadoPago Checkout Pro con el token de producción.
-  Sin token -> modo mock (payment_url local).
 - Licencia: GET de filas en la tabla `suscripciones` de Supabase
   (estado activo/prueba + fecha_expiracion futura). Sin Supabase o con error,
   el trial local (SQLite, 7 días, una vez por client_id) es el fallback.
 - El webhook remoto (https://suscripcion-api.vercel.app/api/webhook) es quien
-  activa la suscripción en Supabase al aprobarse el pago. NO se toca.
+  activa la suscripción en Supabase al aprobarse el pago.
+
+Los estados de `suscripciones.estado` NO se escriben como literales sueltos acá:
+usan el enum canónico de backend/subscription_status.py, que es el mismo
+vocabulario que el webhook remoto debe escribir. `activa` (femenino) queda
+solo como sinónimo de lectura, para no dejar afuera a quien ya pagó.
+
+El cobro simulado (/mock-pago, /mock-confirm) no activa nada salvo que se
+habilite explícitamente en desarrollo (backend/dev_flags.py): en producción la
+activación pasa por verificar el pago contra la API de MercadoPago y falla
+cerrado si no se puede confirmar.
 
 Los endpoints son OPEN (pre-login): la verificación de licencia y el pago
 ocurren antes de que exista usuario en CANYP.
@@ -28,12 +37,25 @@ from sqlalchemy.orm import Session
 
 from backend.config import settings
 from backend.database import get_db
+from backend.dev_flags import mock_pagos_habilitados, motivo_mock_pagos_deshabilitado
 from backend.models.licencia_trial import LicenciaTrial, TRIAL_DAYS, fecha_fin_trial
 from backend.pricing import KNOWN_APPS, get_planes_for_app
+from backend.subscription_status import (
+    EstadoSuscripcion,
+    estado_da_acceso,
+    normalizar_estado,
+)
 
 router = APIRouter(prefix="/api/suscripcion", tags=["suscripcion"])
 
 APP_ID_DEFAULT = "canyp"
+
+# Prefijo de CANYP en external_reference. El webhook remoto debe reconocerlo
+# además del flujo `ERP-` histórico de Ordo-ERP.
+PREFIXO_EXTERNAL_REFERENCE = APP_ID_DEFAULT
+
+# API de MercadoPago para consultar el estado real de un pago.
+MP_API_PAGOS = "https://api.mercadopago.com/v1/payments"
 
 # ==================== SCHEMAS ====================
 
@@ -66,7 +88,9 @@ class CodigoDescuentoRequest(BaseModel):
 
 def supabase_configured() -> bool:
     """True si hay URL + service key para hablar con Supabase REST."""
-    return bool(settings.SUPABASE_URL and settings.SUPABASE_SERVICE_KEY)
+    return bool(
+        settings.SUPABASE_URL and settings.SUPABASE_SERVICE_KEY
+    )
 
 
 def get_supabase_headers() -> dict:
@@ -197,7 +221,11 @@ def crear_preferencia(data: CrearPreferenciaRequest):
         "plan": data.plan,
         # G2 lifecycle: paid -> 'pendiente' (only approved payment flips to
         # 'activo'); gratis (0 o 100% descuento) mantiene 'prueba'.
-        "estado": "prueba" if precio_final == 0 else "pendiente",
+        "estado": (
+            EstadoSuscripcion.PRUEBA.value
+            if precio_final == 0
+            else EstadoSuscripcion.PENDIENTE.value
+        ),
         "fecha_inicio": datetime.utcnow().isoformat(),
         "fecha_expiracion": fecha_expiracion.isoformat(),
         "mp_payment_id": None,
@@ -228,7 +256,20 @@ def crear_preferencia(data: CrearPreferenciaRequest):
             "modo": "gratis",
         }
 
+    # Sin MP_ACCESS_TOKEN antes se caía a un "modo simulado" que devolvía una
+    # payment_url local y dejaba activating licencias sin cobrar. Ahora eso solo
+    # existe en desarrollo explícito; en cualquier otro caso se falla loudly
+    # (fail-closed) en vez de invitar al usuario a un pago que nunca ocurre.
     if not settings.MP_ACCESS_TOKEN:
+        if not mock_pagos_habilitados():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "MercadoPago no esta configurado (falta MP_ACCESS_TOKEN) y el "
+                    "cobro simulado esta deshabilitado. "
+                    + motivo_mock_pagos_deshabilitado()
+                ),
+            )
         mock_payment_id = f"mock_{data.client_id}_{datetime.utcnow().timestamp()}"
         update_url = (
             f"{supabase_url}/rest/v1/suscripciones"
@@ -352,7 +393,12 @@ def _marcar_expirada_supabase(client_id: str, app_id: str) -> None:
             f"{get_supabase_url()}/rest/v1/suscripciones"
             f"?client_id=eq.{client_id}&app_id=eq.{app_id}"
         )
-        requests.patch(url, headers=get_supabase_headers(), json={"estado": "expirado"}, timeout=10)
+        requests.patch(
+            url,
+            headers=get_supabase_headers(),
+            json={"estado": EstadoSuscripcion.EXPIRADO.value},
+            timeout=10,
+        )
     except Exception:  # noqa: BLE001 - best effort
         pass
 
@@ -399,25 +445,29 @@ def verificar_suscripcion(data: VerificarRequest, db: Session = Depends(get_db))
     sub = _buscar_suscripcion_supabase(data.client_id, data.app_id)
 
     if sub:
-        estado = sub.get("estado")
+        estado_bruto = sub.get("estado")
+        estado = normalizar_estado(estado_bruto)
         try:
             exp = _parse_iso(sub["fecha_expiracion"])
         except (KeyError, ValueError):
             exp = None
 
-        if estado in ("activo", "prueba") and exp is not None and exp > datetime.now(timezone.utc):
+        # Un estado desconocido (o el sinónimo heredado 'activa' sin fecha
+        # válida) NO da acceso: antes sólo se comparaba contra una tupla
+        # literal y cualquier otra cosa caía en la rama de "expirada".
+        if estado_da_acceso(estado_bruto, exp) and estado is not None:
             dias_restantes = (exp - datetime.now(timezone.utc)).days
             return {
                 "ok": True,
                 "activo": True,
                 "tipo": "licencia",
-                "estado": estado,
+                "estado": estado.value,
                 "plan": sub.get("plan"),
                 "fecha_expiracion": sub.get("fecha_expiracion"),
                 "dias_restantes": dias_restantes,
             }
 
-        if estado == "pendiente":
+        if estado is EstadoSuscripcion.PENDIENTE:
             # Pago iniciado pero jamás aprobado: no consume el trial local.
             trial = _trial_vigente(db, data.client_id, data.app_id)
             if trial:
@@ -426,7 +476,7 @@ def verificar_suscripcion(data: VerificarRequest, db: Session = Depends(get_db))
                 "ok": False,
                 "activo": False,
                 "tipo": "licencia",
-                "estado": estado,
+                "estado": estado.value,
                 "mensaje": "Pago pendiente de aprobación",
             }
 
@@ -435,7 +485,7 @@ def verificar_suscripcion(data: VerificarRequest, db: Session = Depends(get_db))
             "ok": False,
             "activo": False,
             "tipo": "licencia",
-            "estado": "expirado",
+            "estado": EstadoSuscripcion.EXPIRADO.value,
             "error": "licencia_expirada",
             "mensaje": "La licencia ha expirado",
         }
@@ -605,12 +655,132 @@ def consumir_codigo_descuento(codigo: str, plan: str, client_id: str) -> None:
         raise HTTPException(status_code=500, detail=f"Error consumiendo codigo de descuento: {str(e)}")
 
 
-# ==================== MOCK PAGO (SOLO PARA PRUEBAS) ====================
+# ==================== CONFIRMAR PAGO REAL (VERIFICADO CONTRA MP) ====================
+
+
+def _pago_aprobado_en_mercadopago(payment_id: str) -> bool:
+    """Consulta el pago en la API de MercadoPago y exige ``status == approved``.
+
+    Falla cerrado: cualquier error de red, respuesta inesperada o estado distinto
+    de ``approved`` devuelve False. Preferimos dejar la licencia sin activar antes
+    que activar sin haber cobrado.
+    """
+    if not settings.MP_ACCESS_TOKEN:
+        return False
+    try:
+        resp = requests.get(
+            f"{MP_API_PAGOS}/{payment_id}",
+            headers={"Authorization": f"Bearer {settings.MP_ACCESS_TOKEN}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json().get("status") == "approved"
+    except Exception:  # noqa: BLE001 - fail-closed: sin verificación no se activa
+        return False
+
+
+def _activar_suscripcion_por_pago(suscripcion: dict) -> bool:
+    """Pasa la fila a 'activo' de forma idempotente. True si el write ocurrió.
+
+    Idempotencia: si la fila ya está activa con el mismo ``mp_payment_id``, no
+    vuelve a escribir. Esto importa porque reintentar una confirmación NO puede
+    extender ``fecha_expiracion`` otra vez (el webhook remoto recomputa la
+    fecha; sin este freno, cada reintento regalaría días).
+    """
+    headers = get_supabase_headers()
+    supabase_url = get_supabase_url()
+    app_id = suscripcion.get("app_id", APP_ID_DEFAULT)
+
+    estado_actual = normalizar_estado(suscripcion.get("estado"))
+    mismo_pago = suscripcion.get("mp_payment_id") is not None
+    if estado_actual is EstadoSuscripcion.ACTIVO and mismo_pago:
+        return False
+
+    update_url = (
+        f"{supabase_url}/rest/v1/suscripciones"
+        f"?client_id=eq.{suscripcion['client_id']}&app_id=eq.{app_id}"
+    )
+    try:
+        requests.patch(
+            update_url,
+            headers=headers,
+            json={"estado": EstadoSuscripcion.ACTIVO.value},
+            timeout=10,
+        ).raise_for_status()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Error actualizando suscripcion: {str(e)}")
+    return True
+
+
+def _buscar_suscripcion_por_pago(payment_id: str) -> dict:
+    """Fila de `suscripciones` con ese `mp_payment_id`, o 404."""
+    url = f"{get_supabase_url()}/rest/v1/suscripciones?mp_payment_id=eq.{payment_id}&select=*"
+    try:
+        resp = requests.get(url, headers=get_supabase_headers(), timeout=10)
+        resp.raise_for_status()
+        filas = resp.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="Pago no encontrado")
+
+    if not filas:
+        raise HTTPException(
+            status_code=404, detail="Suscripcion no encontrada para este payment_id"
+        )
+    return filas[0]
+
+
+@router.post("/confirmar-pago")
+def confirmar_pago(payment_id: str):
+    """Activa la licencia solo después de VERIFICAR el pago en MercadoPago.
+
+    Es el camino de respaldo cuando el webhook remoto no llegó. No confía en el
+    `payment_id` que le manden: lo consulta en la API de MercadoPago y exige
+    `status == approved`. Si la consulta no puede hacerse (sin token, sin red,
+    respuesta inesperada) NO activa: devuelve 502 y deja la fila como estaba.
+    """
+    if not settings.MP_ACCESS_TOKEN:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No se puede verificar el pago: falta MP_ACCESS_TOKEN. "
+                "La licencia no se activa sin verificar el cobro."
+            ),
+        )
+
+    suscripcion = _buscar_suscripcion_por_pago(payment_id)
+
+    if not _pago_aprobado_en_mercadopago(payment_id):
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "El pago no pudo verificarse como aprobado en MercadoPago. "
+                "La licencia no se activa sin confirmacion del cobro."
+            ),
+        )
+
+    escrito = _activar_suscripcion_por_pago(suscripcion)
+    return {
+        "success": True,
+        "verificado": True,
+        "idempotente": not escrito,
+        "estado": EstadoSuscripcion.ACTIVO.value,
+        "suscripcion": suscripcion,
+    }
+
+
+# ==================== MOCK PAGO (SOLO DESARROLLO EXPLICITO) ====================
+
+
+def _exigir_mock_habilitado() -> None:
+    """Corta con 403 si el cobro simulado no está habilitado en desarrollo."""
+    if not mock_pagos_habilitados():
+        raise HTTPException(status_code=403, detail=motivo_mock_pagos_deshabilitado())
 
 
 @router.get("/mock-pago")
 def mock_pago(payment_id: str):
-    """Simula una pagina de pago exitoso para pruebas (sin MP_ACCESS_TOKEN)."""
+    """Simula una pagina de pago exitoso. Solo con el flag de desarrollo."""
+    _exigir_mock_habilitado()
     return {
         "message": "Mock Payment Page - Simulacion de pago exitoso",
         "payment_id": payment_id,
@@ -621,32 +791,22 @@ def mock_pago(payment_id: str):
 
 @router.post("/mock-confirm")
 def mock_confirm(payment_id: str):
-    """Simula la confirmacion de un pago (Fase 1, sin webhooks reales)."""
-    supabase_url = get_supabase_url()
-    headers = get_supabase_headers()
+    """Simula la confirmacion de un pago. SOLO desarrollo.
 
-    url = f"{supabase_url}/rest/v1/suscripciones?mp_payment_id=eq.{payment_id}&select=*"
-    try:
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        suscripciones = resp.json()
-    except Exception:  # noqa: BLE001
-        raise HTTPException(status_code=404, detail="Pago no encontrado")
-
-    if not suscripciones:
-        raise HTTPException(status_code=404, detail="Suscripcion no encontrada para este payment_id")
-
-    sub = suscripciones[0]
-    update_url = (
-        f"{supabase_url}/rest/v1/suscripciones"
-        f"?client_id=eq.{sub['client_id']}&app_id=eq.{sub.get('app_id', APP_ID_DEFAULT)}"
-    )
-    try:
-        requests.patch(update_url, headers=headers, json={"estado": "activo"}, timeout=10).raise_for_status()
-    except Exception:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail="Error actualizando suscripcion")
-
-    return {"success": True, "message": "Pago confirmado (mock)", "estado": "activo", "suscripcion": sub}
+    Activa sin cobrar, así que está detrás del flag de desarrollo y se niega
+    explícitamente en builds de cliente: en producción la activación va por
+    /confirmar-pago, que verifica el pago contra MercadoPago.
+    """
+    _exigir_mock_habilitado()
+    suscripcion = _buscar_suscripcion_por_pago(payment_id)
+    escrito = _activar_suscripcion_por_pago(suscripcion)
+    return {
+        "success": True,
+        "message": "Pago confirmado (mock)",
+        "idempotente": not escrito,
+        "estado": EstadoSuscripcion.ACTIVO.value,
+        "suscripcion": suscripcion,
+    }
 
 
 # ==================== CALLBACKS DE MP (PLACEHOLDERS) ====================
@@ -654,8 +814,19 @@ def mock_confirm(payment_id: str):
 
 @router.get("/exito")
 def pago_exito():
-    """Callback de exito de MercadoPago (back_url)."""
-    return {"message": "Pago exitoso. Tu suscripcion ha sido activada."}
+    """Callback de exito de MercadoPago (back_url).
+
+    Ojo con el mensaje: volver de MercadoPago NO significa que la licencia esté
+    activa. Antes decía "tu suscripcion ha sido activada" y no activaba nada,
+    que es parte de por qué se cobraba sin activar. La activación ocurre cuando
+    el pago se verifica (webhook o /confirmar-pago).
+    """
+    return {
+        "message": (
+            "Pago recibido. La licencia se activa al confirmarse el cobro; "
+            "puede tardar unos instantes."
+        )
+    }
 
 
 @router.get("/fallo")
