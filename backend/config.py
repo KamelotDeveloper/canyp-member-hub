@@ -30,12 +30,17 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRATION_MINUTES: int = 1440
 
-    # Supabase (suscripciones/licencias). Se leen de backend/.env.
+    # Supabase (suscripciones/licencias). SUPABASE_SERVICE_KEY y MP_ACCESS_TOKEN
+    # son credenciales de PRIVILEGIO DEL OPERADOR: nunca se empaquetan en el
+    # sidecar ni se escriben en disco del cliente. La clasificación y el fallo
+    # explícito ante su ausencia viven en backend/operator_credentials.py.
+    # En dev se leen de backend/.env (ignorado por git y excluido del .spec).
     SUPABASE_URL: str = "https://nrysusllouuytjlwdyvn.supabase.co"
     SUPABASE_ANON_KEY: str = ""
     SUPABASE_SERVICE_KEY: str = ""
 
-    # MercadoPago (Checkout Pro). MP_ACCESS_TOKEN es de producción y vive en .env.
+    # MercadoPago (Checkout Pro). MP_ACCESS_TOKEN es de producción, es
+    # credencial de privilegio del operador y vive fuera del bundle.
     # CANYP_PORT lo inyecta Rust (sidecar) al elegir un puerto libre; 8000 es
     # solo el fallback de dev (uvicorn manual).
     CANYP_PORT: int = 8000

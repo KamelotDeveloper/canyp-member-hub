@@ -85,6 +85,28 @@ def _configure_database_url() -> None:
     os.environ["DATABASE_URL"] = f"sqlite:///{db_file}"
 
 
+def _verify_operator_credentials() -> None:
+    """Corta el arranque si el estado de credenciales no es seguro.
+
+    Build de cliente: no debe traer credenciales de operador (si aparecen, es
+    una regresión de empaquetado y se corta igual). Build del operador: si
+    falta alguna, se corta con un mensaje que nombra la variable y el motivo.
+    Nunca se imprime el valor de un secreto.
+    """
+    from backend.config import settings
+    from backend.operator_credentials import (
+        FaltanCredencialesOperador,
+        verificar_credenciales_operador,
+    )
+
+    es_build_cliente = os.environ.get("CANYP_CLIENT_BUILD") == "1"
+    try:
+        verificar_credenciales_operador(settings, es_build_cliente=es_build_cliente)
+    except FaltanCredencialesOperador as e:
+        print(e.construir_mensaje(), file=sys.stderr)
+        raise SystemExit(1) from None
+
+
 def main() -> None:
     # PyInstaller builds with console=False leave sys.stdout/sys.stderr as None,
     # and uvicorn's logging setup calls stream.isatty() while configuring the
@@ -95,6 +117,10 @@ def main() -> None:
         sys.stdout = open(os.devnull, "w", encoding="utf-8")
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+    # Checked BEFORE anything else: an unsafe credential state must not let the
+    # process come up far enough to serve a single request.
+    _verify_operator_credentials()
 
     # Critical: override DATABASE_URL BEFORE importing backend.main — database.py
     # reads the env at import time, so the sidecar must know its target database
