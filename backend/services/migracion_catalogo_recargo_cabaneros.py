@@ -15,8 +15,9 @@ WHAT IT CHANGES
    "recargo")`` and the server resolver is ``resolver_arancel_concepto`` — both
    need a row tagged ``concepto=recargo`` to find.
 
-2. INSERTS the SERVICIO row of ``CABANEROS``. **Its amount is not derivable** —
-   see MONTOS below — so it stays blocked until the owner configures one.
+2. INSERTS the SERVICIO row of ``CABANEROS``, or — when the row is already
+   there — **UPDATES its amount** when ``--monto-cabaneros`` says so. The amount
+   is never inferred; see MONTOS below.
 
 3. CORRECTS the ``predio`` of the Guardería AREA row from ``EMBALSE`` to
    ``ALMAFUERTE``, confirmed by the owner and matching the domain rule in
@@ -42,6 +43,27 @@ invent one:
 So the amount is an explicit operator input: ``--monto-cabaneros <n>`` supplies
 it, and without that flag the change is reported as BLOCKED and not written. A
 utility price is an admin decision, not a calculation.
+
+WHY THE FLAG CAN ALSO LOWER A PRICE
+-----------------------------------
+The flag is the owner's decision channel, so it is honoured in BOTH directions:
+running ``--monto-cabaneros 0`` against an existing row rewrites the amount
+instead of only inserting. That is what makes a placeholder safe to park at 0 —
+an amount nobody has decided yet must not sit in the catalog where an operator
+could charge it by accident. Idempotent: a second run reports "sin cambios: sí".
+
+The write follows the SAME rule as the API
+(``services/historial_aranceles.actualizar_monto_arancel``, which
+``PUT /api/aranceles/{id}/monto`` and the full edit both use): the old amount is
+pushed to ``historico`` with the date it was in force, and ``vigenteDesde``
+restarts today. Rewriting the price without that would quietly erase 15000 from
+the price history — the same "written and never read" defect in reverse.
+
+A 0 amount is a real state, not a broken row: the line still RESOLVES in the
+cobro (the resolver looks the row up by concept and place, never by amount) and
+the operator types the real figure per charge as ``montoAplicado``. Only the
+submission of a charge without an amount is refused, loudly
+(``services/cobro._item_servicio``), and never by dropping the line.
 
 OPERATOR CONTRACT (SAFETY)
 --------------------------
@@ -81,6 +103,7 @@ from backend.models.pago import Pago, PagoItem
 from backend.models.notificacion import Notificacion
 from backend.models.socio import Socio
 from backend.services import backup as backup_service
+from backend.services.historial_aranceles import actualizar_monto_arancel
 
 # `created_by` is a plain nullable string with NO FK (models/arancel.py), so a
 # mark id is the honest value here: no Usuario row backs this write.
@@ -175,12 +198,32 @@ class PlanCatalogo:
         """
         return not any(c.escribe for c in self.cambios)
 
+    @property
+    def mueve_monto(self) -> bool:
+        """True when a planned change rewrites ``aranceles.monto``.
+
+        The footer of the report has to admit it, because "NO toca: montos" is
+        exactly the sentence an operator would rely on to let it run.
+        """
+        return any(
+            c.escribe and c.linea.startswith("~ servicio cabañeros") for c in self.cambios
+        )
+
+    @property
+    def escriben(self) -> list[Cambio]:
+        """The changes that actually WRITE. Not the same as ``aplicables``.
+
+        Reporting "3 de 3" when two are no-ops is the kind of arithmetic that
+        makes an operator stop reading the lines under it.
+        """
+        return [c for c in self.cambios if c.escribe]
+
     def resumen(self) -> str:
         verb = "aplicó" if self.ejecucion else "aplicaría"
         lineas = [
             "Migración de catálogo (datos: carrier recargo, servicio cabañeros, predio guardería)",
             f"  {verb} ......................................... "
-            f"{len(self.aplicables)} de {len(self.cambios)} cambio(s)",
+            f"{len(self.escriben)} escritura(s) sobre {len(self.cambios)} cambio(s)",
         ]
         for c in self.cambios:
             marca = "  BLOQUEADO ->" if c.bloqueado else "  *"
@@ -188,8 +231,15 @@ class PlanCatalogo:
             if c.bloqueado:
                 lineas.append(f"      motivo: {c.bloqueado}")
         lineas.append(f"  {SIN_CAMBIOS_NO if not self.sin_cambios else SIN_CAMBIOS_SI}")
-        lineas.append("  NO toca: montos, areas, categorias, historico, socios,")
-        lineas.append("          membresias, pagos, pago_items, notificaciones.")
+        if self.mueve_monto:
+            # Saying "NO toca montos" while the plan moves one would be a lie
+            # the operator reads as permission.
+            lineas.append("  mueve: SOLO el importe del servicio cabañeros;")
+            lineas.append("        ese importe queda en historico de la fila.")
+        else:
+            lineas.append("  NO toca: montos, areas, categorias, historico.")
+        lineas.append("  nunca toca: socios, membresias, pagos, pago_items,")
+        lineas.append("              notificaciones.")
         if self.ruta_backup:
             lineas.append(f"  backup ..................... {self.ruta_backup}")
             lineas.append(f"  backup sha256 .............. {self.sha256_backup}")
@@ -323,19 +373,26 @@ def _servicio_cabaneros(db: Session) -> Arancel | None:
 def _plan_cabaneros(db: Session, monto: float | None) -> Cambio:
     existente = _servicio_cabaneros(db)
     if existente is not None:
-        if monto is not None and float(existente.monto) != monto:
+        monto_actual = float(existente.monto)
+        if monto is not None and monto_actual != monto:
+            # The flag is the owner's decision channel, so it is honoured in both
+            # directions. Parking a placeholder at 0 has to be possible, or an
+            # undecided price sits in the catalog waiting to be charged.
             return Cambio(
                 linea=(
-                    f"~ servicio cabañeros {existente.id}: existe con monto "
-                    f"{float(existente.monto):.2f}, se pidió {monto:.2f} — "
-                    f"NO se cambia el precio desde acá (usá la app)"
-                )
+                    f"~ servicio cabañeros {existente.id}: "
+                    f"{monto_actual:.2f} -> {monto:.2f} "
+                    f"(el importe viejo {monto_actual:.2f} se guarda en "
+                    f"historico y vigenteDesde vuelve a hoy; el área y el "
+                    f"predio no se tocan)"
+                ),
+                escribe=True,
             )
         return Cambio(
             linea=(
                 f"= servicio cabañeros {existente.id}: ya existe "
                 f"({existente.area.value}/{existente.predio.value}, monto "
-                f"{float(existente.monto):.2f}) — alta omitida"
+                f"{monto_actual:.2f}) — alta omitida"
             )
         )
     if monto is None:
@@ -365,8 +422,16 @@ def _plan_cabaneros(db: Session, monto: float | None) -> Cambio:
 
 
 def _aplicar_cabaneros(db: Session, monto: float | None) -> None:
-    """Insert the Cabañeros service row. A blocked change writes nothing."""
-    if monto is None or _servicio_cabaneros(db) is not None:
+    """Insert the Cabañeros service row, or move an existing one's amount.
+
+    A blocked change writes nothing. An existing row is only touched when the
+    owner passed an amount that differs from the one in place.
+    """
+    if monto is None:
+        return
+    existente = _servicio_cabaneros(db)
+    if existente is not None:
+        _aplicar_monto_cabaneros(db, existente, monto)
         return
     # The API rejects a repeated (area, predio, categoria, concepto) tuple with a
     # 409. Check it here too, so a duplicate can never be committed behind the
@@ -406,6 +471,56 @@ def _aplicar_cabaneros(db: Session, monto: float | None) -> None:
         raise MigracionCatalogoError(
             "verificación del servicio cabañeros falló: la fila insertada no "
             "resuelve. Revisá el estado de la base."
+        )
+
+
+def _aplicar_monto_cabaneros(db: Session, existente: Arancel, monto: float) -> None:
+    """Move an existing Cabañeros service row to the owner's amount.
+
+    Delegates to ``actualizar_monto_arancel`` on purpose: that is the single
+    implementation of the price-change rule the API already uses (old amount to
+    ``historico`` with its ``vigenteDesde``, then ``vigenteDesde`` = today), so
+    the script cannot drift from what the app does with the same edit. Writing
+    ``monto`` directly here would silently drop the old price from the history.
+
+    Everything EXCEPT the amount is asserted intact afterwards, and the amount
+    is re-read through the resolver's own lookup, so a run that moved more than
+    the price is reported as the failure it is.
+    """
+    monto_antes = float(existente.monto)
+    historico_antes = len(existente.historico or [])
+    area_antes = existente.area
+    predio_antes = existente.predio
+    concepto_antes = existente.concepto
+
+    arancel = actualizar_monto_arancel(db, existente.id, float(monto))
+    arancel.updated_by = MARCA_CREATED_BY
+    db.commit()
+
+    db.refresh(arancel)
+    if float(arancel.monto) != float(monto):
+        raise MigracionCatalogoError(
+            f"verificación del importe falló: quedó {float(arancel.monto):.2f} "
+            f"y se pidió {float(monto):.2f}. Revisá el estado de la base."
+        )
+    if len(arancel.historico or []) != historico_antes + 1:
+        raise MigracionCatalogoError(
+            f"el cambio de importe no dejó el valor anterior "
+            f"({monto_antes:.2f}) en el historico: quedaría perdido."
+        )
+    if (
+        arancel.area is not area_antes
+        or arancel.predio is not predio_antes
+        or arancel.concepto is not concepto_antes
+    ):
+        raise MigracionCatalogoError(
+            "el cambio de importe movió un campo que no debía "
+            "(area/predio/concepto). Revisá el estado de la base."
+        )
+    if _servicio_cabaneros(db) is None:
+        raise MigracionCatalogoError(
+            "verificación del servicio cabañeros falló: la fila ya no resuelve "
+            "por lugar. Revisá el estado de la base."
         )
 
 

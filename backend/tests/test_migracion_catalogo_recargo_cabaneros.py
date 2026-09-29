@@ -174,12 +174,97 @@ class TestServicioCabaneros:
         assert fila.predio is Predio.ALMAFUERTE
         assert fila.categoria is None
 
-    def test_no_reescribe_el_precio_de_una_fila_existente(self, test_db):
+    def test_reescribe_el_precio_de_una_fila_existente(self, test_db):
+        """`--monto-cabaneros` es la vía de decisión del dueño, en ambos sentidos.
+
+        Antes este caso se reportaba y no se escribía. Parkear un importe de
+        ejemplo en 15000 era justamente el riesgo: si alguien cobraba antes de
+        editarlo, se cobraba 15000. Bajar a 0 tiene que ser posible desde acá.
+        """
         _arancel(db=test_db, id="a_serv_cabaneros", nombre="Servicio",
                  area=Area.CABANEROS, predio=Predio.ALMAFUERTE,
                  monto=777.0, concepto=ConceptoCobro.SERVICIO)
         migracion.aplicar(test_db, dry_run=False, monto_cabaneros=4200.0)
-        assert float(test_db.get(Arancel, "a_serv_cabaneros").monto) == 777.0
+        assert float(test_db.get(Arancel, "a_serv_cabaneros").monto) == 4200.0
+
+    def test_baja_el_importe_a_cero_para_aparcar_el_placeholder(self, test_db):
+        """El caso del dueño: 15000 es demasiado riesgoso hasta que defina el precio."""
+        fila = _arancel(db=test_db, id="a_serv_cabaneros", nombre="Servicio",
+                        area=Area.CABANEROS, predio=Predio.ALMAFUERTE,
+                        monto=15000.0, concepto=ConceptoCobro.SERVICIO)
+        migracion.aplicar(test_db, dry_run=False, monto_cabaneros=0.0)
+        test_db.refresh(fila)
+        assert float(fila.monto) == 0.0
+        # Solo el importe se mueve: el resto de la fila es la que resuelve.
+        assert fila.area is Area.CABANEROS
+        assert fila.predio is Predio.ALMAFUERTE
+        assert fila.concepto is ConceptoCobro.SERVICIO
+        assert fila.categoria is None
+
+    def test_el_importe_anterior_queda_en_el_historico(self, test_db):
+        """Misma regla que la app: bajar un precio no borra el anterior.
+
+        Escribir `monto` a pelo perdería los 15000 del historial en silencio.
+        """
+        fila = _arancel(db=test_db, id="a_serv_cabaneros", nombre="Servicio",
+                        area=Area.CABANEROS, predio=Predio.ALMAFUERTE,
+                        monto=15000.0, concepto=ConceptoCobro.SERVICIO)
+        vigente_antes = fila.vigenteDesde
+        migracion.aplicar(test_db, dry_run=False, monto_cabaneros=0.0)
+        test_db.refresh(fila)
+        assert float(fila.monto) == 0.0
+        assert len(fila.historico) == 1
+        assert float(fila.historico[0]["monto"]) == 15000.0
+        assert fila.historico[0]["vigenteDesde"] == str(vigente_antes)
+        assert fila.vigenteDesde == date.today()
+
+    def test_es_idempotente_al_bajar_a_cero(self, test_db):
+        """Correrlo dos veces no vuelve a tocar la fila ni duplica el historico."""
+        _arancel(db=test_db, id="a_serv_cabaneros", nombre="Servicio",
+                 area=Area.CABANEROS, predio=Predio.ALMAFUERTE,
+                 monto=15000.0, concepto=ConceptoCobro.SERVICIO)
+        migracion.aplicar(test_db, dry_run=False, monto_cabaneros=0.0)
+        segundo = migracion.aplicar(test_db, dry_run=False, monto_cabaneros=0.0)
+        assert segundo.sin_cambios
+        fila = test_db.get(Arancel, "a_serv_cabaneros")
+        assert float(fila.monto) == 0.0
+        assert len(fila.historico) == 1  # no un 15000 duplicado
+
+    def test_sin_flag_no_mueve_un_importe_existente(self, test_db):
+        """Sin `--monto-cabaneros` no hay decisión del dueño: no se toca nada."""
+        _arancel(db=test_db, id="a_serv_cabaneros", nombre="Servicio",
+                 area=Area.CABANEROS, predio=Predio.ALMAFUERTE,
+                 monto=15000.0, concepto=ConceptoCobro.SERVICIO)
+        migracion.aplicar(test_db, dry_run=False, monto_cabaneros=None)
+        assert float(test_db.get(Arancel, "a_serv_cabaneros").monto) == 15000.0
+
+    def test_el_plan_admite_que_mueve_el_importe(self, test_db):
+        """El reporte no puede decir 'NO toca: montos' mientras mueve uno."""
+        _arancel(db=test_db, id="a_serv_cabaneros", nombre="Servicio",
+                 area=Area.CABANEROS, predio=Predio.ALMAFUERTE,
+                 monto=15000.0, concepto=ConceptoCobro.SERVICIO)
+        texto = migracion.plan(test_db, monto_cabaneros=0.0).resumen()
+        assert "NO toca: montos" not in texto
+        assert "importe" in texto.lower()
+
+    def test_una_linea_de_servicio_en_cero_sigue_resolviendose(self, test_db):
+        """El riesgo real de dejar el importe en 0: que la línea desaparezca.
+
+        El resolver busca por concepto y lugar, nunca por importe, así que una
+        fila en 0 se sigue ofreciendo. Lo que se rechaza es COBRAR sin
+        `montoAplicado`, y eso lo hace el cobro, no el catálogo.
+        """
+        from backend.services.resolucion import resolver_arancel_concepto
+
+        _arancel(db=test_db, id="a_serv_cabaneros", nombre="Servicio",
+                 area=Area.CABANEROS, predio=Predio.ALMAFUERTE,
+                 monto=15000.0, concepto=ConceptoCobro.SERVICIO)
+        migracion.aplicar(test_db, dry_run=False, monto_cabaneros=0.0)
+
+        fila = resolver_arancel_concepto(test_db, ConceptoCobro.SERVICIO)
+        assert fila is not None, "una línea en 0 no puede desaparecer del cobro"
+        assert fila.id == "a_serv_cabaneros"
+        assert float(fila.monto) == 0.0
 
 
 class TestPredioGuarderia:
