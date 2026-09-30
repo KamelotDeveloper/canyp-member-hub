@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ApiError } from "@/lib/canyp/api";
+import { CLIENT_BUILD } from "@/lib/canyp/build-flags";
 import { useLicencia, useSettings } from "@/lib/canyp/queries";
 import {
   activarTrial,
@@ -25,6 +26,16 @@ import {
  *   - Sin licencia → pantalla de planes (comprar o trial).
  *   - Servidor no responde → pantalla amigable con reintentar (el sidecar
  *     local puede tardar en arrancar).
+ *
+ * En un BUILD DE CLIENTE el passthrough de "sin configurar" ya no aplica: sin
+ * settings no hay base remota provisionada, y sin base remota la instalación
+ * no puede operar (lo decide backend/activation.py, no este componente). La
+ * diferencia es deliberada: en dev el asistente de primer uso tiene que poder
+ * correr, y en un build distribuido ese mismo estado es justamente el bypass
+ * —un `settings.json` con `configured:false` abría la app completa sin licencia.
+ * El ClientBuildGuard de __root.tsx cubre ese estado con el mensaje del
+ * servidor; acá sólo evitamos que, aun con la pantalla de planes, se cuelgue el
+ * children por debajo.
  */
 export function LicenseGate({ children }: { children: ReactNode }) {
   const { data: settings, error: settingsError, isLoading: settingsLoading } = useSettings();
@@ -43,6 +54,16 @@ export function LicenseGate({ children }: { children: ReactNode }) {
       : licencia.data?.ok || licencia.data?.activo
         ? "ok"
         : "blocked";
+
+  // Sólo el build de cliente pierde el atajo de "sin configurar". El trial
+  // tampoco existe ahí (lo rechaza el backend), así que la pantalla de planes
+  // de abajo es la de desarrollo: en un cliente sin activar se muestra
+  // primero el "Esperando activación" del ClientBuildGuard.
+  if (CLIENT_BUILD) {
+    return (
+      <>{state === "ok" ? children : <LicenseUI onLicensed={() => void licencia.refetch()} />}</>
+    );
+  }
 
   if (!configured || settingsLoading) return <>{children}</>;
 

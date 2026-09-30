@@ -16,6 +16,7 @@ import type {
   ConceptoMembresia,
   DashboardAlerta,
   DashboardStats,
+  EstadoActivacion,
   EstadoMembresia,
   ExecuteResult,
   ImportPayload,
@@ -560,6 +561,22 @@ export function createNotificaciones(items: CreateNotificacionInput[]): Promise<
     // Los ids los genera el backend (uuid4, seguro para modo remoto/Postgres).
     body: JSON.stringify(items),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Activación (frontera de confianza — espejo del veredicto del servidor)
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/activacion → veredicto de activación de esta instalación.
+ *
+ * Endpoint abierto y pre-login a propósito: la instalación puede estar sin
+ * activar y la UI tiene que poder preguntar igual. Devuelve 200 siempre — que
+ * no esté activada es un estado, no un error; el 503 vive en las rutas de
+ * dominio.
+ */
+export function getActivacion(): Promise<EstadoActivacion> {
+  return apiFetch<EstadoActivacion>("/activacion");
 }
 
 // ---------------------------------------------------------------------------

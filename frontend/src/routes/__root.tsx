@@ -13,7 +13,7 @@ import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { TOKEN_KEY, clearToken, logout } from "../lib/canyp/api";
 import { CLIENT_BUILD } from "../lib/canyp/build-flags";
-import { useSettings } from "../lib/canyp/queries";
+import { useActivacion } from "../lib/canyp/queries";
 import { AppShell } from "../components/canyp/AppShell";
 import { DataModeWizard } from "../components/canyp/DataModeWizard";
 import { LicenseGate } from "../components/canyp/LicenseGate";
@@ -177,27 +177,50 @@ function RootComponent() {
 }
 
 /**
- * Guard de build de cliente: si un instalador (client build) queda con
- * settings en modo local, se bloquea la app por completo. Fuera de builds de
- * cliente (dev / web) no hace nada. No bloquea el estado sin configurar
- * (configured: false) — ahí el DataModeWizard sigue a cargo.
+ * Guard de build de cliente: refleja el veredicto del SERVIDOR
+ * (GET /api/activacion). Fuera de builds de cliente (dev / web) no hace nada.
+ *
+ * Antes este guard derivaba el bloqueo de `settings` y sólo tapaba un caso
+ * (`configured === true && dataMode === "local"`). El estado `configured:false`
+ * —es decir, una instalación nueva, o un `settings.json` escrito a mano— pasaba
+ * de largo y la app abría completa sobre una base local vacía. Ahora la
+ * pregunta no es "¿qué dice el archivo de ajustes?" sino "¿dice el servidor que
+ * esta instalación puede operar?": en un build de cliente, sin base remota
+ * provisionada, la respuesta es no.
+ *
+ * Sigue siendo un ESPEJO. Si esta pantalla mintiera, el backend igual devolvería
+ * 503 en cada ruta de dominio (backend/activation.py).
  */
 function ClientBuildGuard({ children }: { children: ReactNode }) {
-  const { data, isLoading, isError, refetch } = useSettings();
+  const { data, isLoading, isError, refetch } = useActivacion();
 
   if (!CLIENT_BUILD) return <>{children}</>;
 
-  const blocked = !isLoading && !isError && data?.configured === true && data.dataMode === "local";
+  // Todavía no se pudo consultar al servidor: se espera su respuesta. No es
+  // una pantalla de bloqueo, es la espera de la primera respuesta.
+  if (isLoading) return <>{children}</>;
 
-  if (blocked) {
+  // FALLA CERRADO. Sólo un "sí" explícito del servidor libera la app: si la
+  // consulta falló o nunca volvió, `data` es undefined y la instalación NO se
+  // abre. La versión anterior era `!isError && (...)`, o sea que un error de
+  // red soltaba la app entera — el comentario de arriba incluso decía "se
+  // espera" mientras el código hacía lo contrario. Aunque el backend igual
+  // negaría cada ruta con 503, un espejo que se abre solo es exactamente la
+  // clase de bug que esta frontera vino a cerrar.
+  const bloqueado = data?.operacionPermitida !== true;
+
+  if (bloqueado) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background px-4">
         <div className="max-w-md text-center">
           <h1 className="text-xl font-semibold tracking-tight text-foreground">
-            Configuración de cliente inválida
+            Esperando activación
           </h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Este equipo debe conectarse al servicio remoto. Comuníquese con el administrador.
+            {isError
+              ? "No se pudo contactar al servicio local. Reintente; si el problema continúa, comuníquese con el administrador."
+              : (data?.mensaje ??
+                "Este equipo todavía no tiene una base de datos provisionada por el administrador. Comuníquese con el administrador.")}
           </p>
           <button
             onClick={() => void refetch()}

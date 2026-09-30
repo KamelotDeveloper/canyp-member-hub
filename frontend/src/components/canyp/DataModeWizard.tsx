@@ -20,6 +20,15 @@ import type { DataMode } from "@/lib/canyp/types";
 /**
  * Wizard de primer uso: aparece una sola vez (hasta que se guarda la elección
  * del modo de datos). No se muestra si el backend no responde.
+ *
+ * En un build de cliente el diálogo NO se puede cerrar. Se podía, y eso dejaba
+ * la instalación en el peor estado posible: un `settings.json` con
+ * `configured:false` y el wizard descartado, es decir exactamente el bypass que
+ * abre la app completa sin licencia. Cerrar el diálogo no es una salida en un
+ * instalador: o se provisiona la base remota, o la app queda esperando
+ * activación (que es lo que muestra el ClientBuildGuard). En dev el cierre sigue
+ * disponible, porque descartar el asistente y seguir con SQLite es un flujo
+ * legítimo de desarrollo.
  */
 export function DataModeWizard() {
   const { data, isLoading, isError } = useSettings();
@@ -31,6 +40,12 @@ export function DataModeWizard() {
   if (isLoading || isError || !data || data.configured) return null;
 
   const open = !dismissed;
+
+  function cerrar() {
+    // Sin escapatoria en un build de cliente (ver docstring).
+    if (CLIENT_BUILD) return;
+    setDismissed(true);
+  }
 
   function guardar() {
     updateSettings.mutate(
@@ -50,7 +65,7 @@ export function DataModeWizard() {
   }
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && setDismissed(true)}>
+    <Dialog open={open} onOpenChange={(o) => !o && cerrar()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>¿Dónde querés guardar los datos?</DialogTitle>

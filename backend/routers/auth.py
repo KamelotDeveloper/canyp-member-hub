@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from backend.activation import exigir_operacion_para_crear_admin
 from backend.database import get_db
 from backend.models.usuario import Usuario
 from backend.security import (
@@ -86,7 +87,15 @@ def first_user(body: FirstUserRequest, db: Session = Depends(get_db)):
 
     Returns 409 if users already exist, or if a race condition causes a
     UNIQUE constraint violation on username.
+
+    En un build de cliente devuelve 403 sin tocar la base: la cuenta de
+    administrador la provisiona el operador contra la base real del club. Con el
+    endpoint abierto, "borrar settings.json, arrancar, crear admin" era un
+    camino completo a una app operativa sin licencia. En desarrollo y web queda
+    exactamente igual que antes, que es lo que necesita el flujo de dev.
     """
+    exigir_operacion_para_crear_admin()
+
     count = db.query(Usuario).count()
     if count > 0:
         raise HTTPException(

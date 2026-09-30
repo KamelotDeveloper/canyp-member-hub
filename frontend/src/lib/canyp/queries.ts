@@ -148,6 +148,28 @@ function retryOnNetwork(_failureCount: number, error: Error): boolean {
   return error instanceof TypeError;
 }
 
+/**
+ * Veredicto de activación del servidor (GET /api/activacion).
+ *
+ * Es el ÚNICO origen de la decisión "abre o no" en la UI. Los guards
+ * (ClientBuildGuard, LicenseGate) lo consultan; ninguno de los dos calcula el
+ * veredicto por su cuenta. Aun así sigue siendo un espejo: si el frontend
+ * mintiera, el backend igual negaría la petición.
+ *
+ * `refetchOnWindowFocus` para que una instalación que el administrador acaba
+ * de activar se destrabe sola al volver a la ventana, sin reiniciar a mano.
+ */
+export function useActivacion() {
+  return useQuery({
+    queryKey: ["activacion"],
+    queryFn: api.getActivacion,
+    staleTime: 10_000,
+    retry: retryOnNetwork,
+    retryDelay: NETWORK_RETRY_DELAY_MS,
+    refetchOnWindowFocus: true,
+  });
+}
+
 /** Current data-mode settings (badge + wizard + Ajustes). */
 export function useSettings() {
   return useQuery({

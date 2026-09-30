@@ -37,7 +37,11 @@ from sqlalchemy.orm import Session
 
 from backend.config import settings
 from backend.database import get_db
-from backend.dev_flags import mock_pagos_habilitados, motivo_mock_pagos_deshabilitado
+from backend.dev_flags import (
+    es_build_cliente,
+    mock_pagos_habilitados,
+    motivo_mock_pagos_deshabilitado,
+)
 from backend.models.licencia_trial import LicenciaTrial, TRIAL_DAYS, fecha_fin_trial
 from backend.pricing import KNOWN_APPS, get_planes_for_app
 from backend.subscription_status import (
@@ -403,10 +407,68 @@ def _marcar_expirada_supabase(client_id: str, app_id: str) -> None:
         pass
 
 
+def _exigir_trial_habilitado() -> None:
+    """Corta con 403 la activator local del trial en un build de cliente.
+
+    Es la contraparte de lectura de :func:`_exigir_mock_habilitado`, y por el
+    mismo motivo: el trial es estado que el cliente posee. Ambas cosas
+    (simular el cobro, concederse el trial) tienen sentido en una máquina de
+    desarrollo y son un agujero en la máquina de un cliente.
+    """
+    if not es_build_cliente():
+        return
+    from backend.activation import registrar_intento
+
+    registrar_intento("trial_local_en_build_cliente", "POST /api/suscripcion/trial")
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "El periodo de prueba local no existe en un build de cliente: se "
+            "reservaba contra la base de datos de la maquina, que cualquiera "
+            "puede borrar y volver a pedir."
+        ),
+    )
+
+
+def _trial_local_disponible() -> bool:
+    """False en builds de cliente: el veredicto de licencia no puede ser local.
+
+    Esta es la pieza que hace que la licencia no sea un dato del cliente. En un
+    build de cliente las credenciales de operador NO están (ver
+    ``backend/operator_credentials.py``: una ``service_role`` dentro del binario
+    saltaría todas las RLS), así que la fila de Supabase no se puede leer y el
+    sistema caía al trial local. Ese fallback era una licencia local, editable a
+    mano. Acá, "no se pudo verificar" es "no hay licencia": se falla cerrado.
+    """
+    return not es_build_cliente()
+
+
+def _sin_licencia_por_falta_de_registro() -> dict:
+    """Respuesta de ``sin_licencia`` para un build de cliente sin registro.
+
+    Distinta del ``sin_licencia`` de desarrollo a propósito: el motivo es que
+    no hay fila en el registro del operador, no que nunca se compró nada. La UI
+    no debería prometer un trial que este build no puede conceder.
+    """
+    return {
+        "ok": False,
+        "activo": False,
+        "tipo": "ninguno",
+        "estado": None,
+        "error": "licencia_no_verificable",
+        "mensaje": (
+            "No hay licencia registrada para este equipo por el administrador. "
+            "Comuníquese con el administrador para habilitarla."
+        ),
+    }
+
+
 def _trial_vigente(
     db: Session, client_id: str, app_id: str
 ) -> dict | None:
     """Trial local activo y no vencido para (client_id, app_id), o None."""
+    if not _trial_local_disponible():
+        return None
     trial = (
         db.query(LicenciaTrial)
         .filter(
@@ -494,6 +556,12 @@ def verificar_suscripcion(data: VerificarRequest, db: Session = Depends(get_db))
     if trial:
         return trial
 
+    # Build de cliente: sin fila en el registro del operador no hay licencia.
+    # Se corta acá ANTES de mirar la tabla de trials, que en esta máquina es un
+    # archivo que el cliente puede editar o borrar para volver a "empezar".
+    if not _trial_local_disponible():
+        return _sin_licencia_por_falta_de_registro()
+
     trial_row = (
         db.query(LicenciaTrial)
         .filter(
@@ -535,7 +603,15 @@ def activar_trial(data: TrialRequest, db: Session = Depends(get_db)):
 
     Idempotente: si el trial sigue vigente devuelve su estado; si expiró
     devuelve ok=False (trial_expirado) y jamás crea otro.
+
+    En un build de cliente devuelve 403 y no escribe nada. El trial local vive
+    en la base SQLite del equipo: sin esto, "borrar la base y volver a pedir
+    el trial" era un bypass sin conexión y sin límite, porque la fila que lo
+    controla la guarda el cliente, no el operador. Fuera de un build de cliente
+    el comportamiento no cambia.
     """
+    _exigir_trial_habilitado()
+
     trial = (
         db.query(LicenciaTrial)
         .filter(

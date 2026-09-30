@@ -36,13 +36,14 @@ def _remote_database_url_from_settings() -> str | None:
     """Read the persisted data mode; return a Postgres URL when "remoto".
 
     Returns None for local/unconfigured so the caller keeps SQLite defaults.
+    Shares the resolver with the trust boundary (backend.activation) so the
+    sidecar and the activation guard can never disagree about where they think
+    they are pointing.
     """
+    from backend.activation import resolver_base_remota
     from backend.settings_store import load_settings
 
-    settings = load_settings()
-    if settings.dataMode == "remoto" and settings.databaseUrl:
-        return settings.databaseUrl
-    return None
+    return resolver_base_remota(load_settings()) or None
 
 
 def _configure_database_url() -> None:
@@ -60,6 +61,14 @@ def _configure_database_url() -> None:
     resolve to local; if it somehow does (edited settings.json), refuse to
     start so the installer fails closed with a clear message instead of
     silently serving a local database.
+
+    Starting on SQLite is NOT the same as operating on SQLite. The sidecar has
+    to come up in an unprovisioned install so the UI can show the activation
+    screen and the operator can enter the remote base; what it must not do is
+    SERVE the app from there. That is enforced one layer up, in
+    ``activation.exigir_operacion``, which returns 503 for every domain route
+    until a valid remote base is provisioned. Hence the warning below: the
+    process is up, but the app behind it is locked.
     """
     CLIENT_BUILD = os.environ.get("CANYP_CLIENT_BUILD") == "1"
 
@@ -80,6 +89,14 @@ def _configure_database_url() -> None:
             file=sys.stderr,
         )
         raise SystemExit(1)
+
+    if CLIENT_BUILD:
+        print(
+            "CANYP: esperando activación — no hay base remota provisionada. "
+            "El servidor local levanta sólo para mostrar el asistente; la app "
+            "no operará hasta que el administrador configure el modo remoto.",
+            file=sys.stderr,
+        )
 
     db_file = os.path.join(_data_dir(), "canyp.db")
     os.environ["DATABASE_URL"] = f"sqlite:///{db_file}"

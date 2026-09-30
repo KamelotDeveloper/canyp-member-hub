@@ -17,6 +17,7 @@ import {
   deleteArancel,
   deleteMembresia,
   executeImport,
+  getActivacion,
   getImportTemplate,
   getParcelas,
   getSettings,
@@ -31,6 +32,7 @@ import {
 } from "../api";
 import type {
   AppSettings,
+  EstadoActivacion,
   ExecuteResult,
   ImportPayload,
   Parcela,
@@ -654,6 +656,58 @@ describe("catálogo de aranceles API (PR4)", () => {
       status: 409,
       message: detail,
     });
+  });
+});
+
+describe("activación API (frontera de confianza)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("getActivacion GETs /activacion y devuelve el veredicto del servidor", async () => {
+    const estado: EstadoActivacion = {
+      operacionPermitida: false,
+      esBuildCliente: true,
+      motivo: "sin_base_remota",
+      mensaje: "Este equipo todavía no tiene una base de datos provisionada.",
+      dataMode: "local",
+      configured: false,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(estado), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getActivacion();
+    expect(result).toEqual(estado);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit | undefined];
+    expect(url).toBe("/api/activacion");
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+
+  it("getActivacion no manda token: es un endpoint pre-login", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          operacionPermitida: false,
+          esBuildCliente: true,
+          motivo: "sin_base_remota",
+          mensaje: "x",
+          dataMode: "local",
+          configured: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    window.localStorage.clear();
+
+    await getActivacion();
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit | undefined];
+    expect(new Headers(init?.headers).get("Authorization")).toBeNull();
   });
 });
 
