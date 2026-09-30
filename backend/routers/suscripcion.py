@@ -28,9 +28,13 @@ Los endpoints son OPEN (pre-login): la verificación de licencia y el pago
 ocurren antes de que exista usuario en CANYP.
 """
 
+import json
+import re
+
 import requests
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -43,7 +47,7 @@ from backend.dev_flags import (
     motivo_mock_pagos_deshabilitado,
 )
 from backend.models.licencia_trial import LicenciaTrial, TRIAL_DAYS, fecha_fin_trial
-from backend.pricing import KNOWN_APPS, get_planes_for_app
+from backend.pricing import KNOWN_APPS, PLANES_FALLBACK, get_planes_for_app
 from backend.subscription_status import (
     EstadoSuscripcion,
     estado_da_acceso,
@@ -60,6 +64,9 @@ PREFIXO_EXTERNAL_REFERENCE = APP_ID_DEFAULT
 
 # API de MercadoPago para consultar el estado real de un pago.
 MP_API_PAGOS = "https://api.mercadopago.com/v1/payments"
+# La preferencia expone el `payment_id`: es el puente entre "la app solo tiene la
+# preferencia" y "hay que verificar un pago concreto".
+MP_API_PREFERENCIAS = "https://api.mercadopago.com/checkout/preferences"
 
 # ==================== SCHEMAS ====================
 
@@ -340,9 +347,7 @@ def crear_preferencia(data: CrearPreferenciaRequest):
             f"{supabase_url}/rest/v1/suscripciones"
             f"?client_id=eq.{data.client_id}&app_id=eq.{data.app_id}"
         )
-        requests.patch(
-            update_url, headers=headers, json={"mp_payment_id": mp_data.get("id")}, timeout=10
-        )
+        _guardar_preference_id(update_url, headers, mp_data.get("id"))
     except HTTPException:
         raise
     except Exception as e:
@@ -734,15 +739,81 @@ def consumir_codigo_descuento(codigo: str, plan: str, client_id: str) -> None:
 # ==================== CONFIRMAR PAGO REAL (VERIFICADO CONTRA MP) ====================
 
 
-def _pago_aprobado_en_mercadopago(payment_id: str) -> bool:
-    """Consulta el pago en la API de MercadoPago y exige ``status == approved``.
+def _decodificar_external_reference(ref: str | None) -> tuple[str, str] | None:
+    """``external_reference`` -> ``(app_id, client_id)``, o None si no matchea.
 
-    Falla cerrado: cualquier error de red, respuesta inesperada o estado distinto
-    de ``approved`` devuelve False. Preferimos dejar la licencia sin activar antes
-    que activar sin haber cobrado.
+    Espejo exacto de ``decodificarExternalReference`` en
+    ``suscripcion-api/lib/mp-contract.mjs``: los dos lados tienen que entender
+    el mismo contrato o un pago aprobado no encuentra su fila.
+
+    - ``canyp:<client_id>`` -> ("canyp", client_id)   [CANYP]
+    - ``ERP-<...>``        -> ("erp", suffix)          [legacy Ordo-ERP]
+
+    Partido por el PRIMER ':' porque el contrato prohíbe ':' en los dos
+    valores (``crear_preferencia`` lo valida).
+    """
+    if not ref or not isinstance(ref, str):
+        return None
+    valor = ref.strip()
+    if not valor:
+        return None
+    if valor.startswith("ERP-"):
+        sufijo = valor[4:].strip()
+        return ("erp", sufijo) if sufijo else None
+    separador = valor.find(":")
+    if separador <= 0:
+        return None
+    app_id = valor[:separador].strip()
+    client_id = valor[separador + 1 :].strip()
+    if not app_id or not client_id:
+        return None
+    return (app_id, client_id)
+
+
+def _guardar_preference_id(update_url: str, headers: dict, preference_id: str | None) -> bool:
+    """Guarda el preference id en SU columna y libera ``mp_payment_id``.
+
+    El ``id`` que devuelve MercadoPago al crear una preferencia es el de la
+    PREFERENCIA, no el del pago. Guardarlo en ``mp_payment_id`` era el corte del
+    camino de respaldo: ``/confirmar-pago`` busca ``?mp_payment_id=eq.<id>`` con
+    el id real del pago, recibía el de la preferencia, y no encontraba la fila.
+    Con el webhook caído, el usuario pagaba y la licencia no se activaba nunca.
+
+    Retrocompatible: si la columna ``preference_id`` todavía no existe en
+    Supabase, degrada a limpiar ``mp_payment_id`` sin romper la creación de la
+    preferencia. Nunca guarda el preference id en ``mp_payment_id``.
+    """
+    if not preference_id:
+        return False
+    try:
+        requests.patch(
+            update_url,
+            headers=headers,
+            json={"preference_id": preference_id, "mp_payment_id": None},
+            timeout=10,
+        ).raise_for_status()
+        return True
+    except Exception as e:  # noqa: BLE001 - columna nueva ausente: degradar, no romper
+        print(f"No se pudo escribir preference_id ({e}); reintento sin esa columna")
+
+    try:
+        requests.patch(
+            update_url, headers=headers, json={"mp_payment_id": None}, timeout=10
+        ).raise_for_status()
+    except Exception as e:  # noqa: BLE001 - best effort
+        print(f"No se pudo limpiar mp_payment_id tras crear la preferencia: {e}")
+    return False
+
+
+def _obtener_pago_mercadopago(payment_id: str) -> dict | None:
+    """Pago real consultado en la API de MercadoPago, o None.
+
+    None significa "no se pudo verificar", y quien llama tiene que fallar
+    cerrado. Preferimos dejar la licencia sin activar antes que activar sin
+    haber cobrado.
     """
     if not settings.MP_ACCESS_TOKEN:
-        return False
+        return None
     try:
         resp = requests.get(
             f"{MP_API_PAGOS}/{payment_id}",
@@ -750,39 +821,94 @@ def _pago_aprobado_en_mercadopago(payment_id: str) -> bool:
             timeout=10,
         )
         resp.raise_for_status()
-        return resp.json().get("status") == "approved"
+        pago = resp.json()
+        return pago if isinstance(pago, dict) else None
     except Exception:  # noqa: BLE001 - fail-closed: sin verificación no se activa
-        return False
+        return None
 
 
-def _activar_suscripcion_por_pago(suscripcion: dict) -> bool:
+def _expiracion_para_plan(plan: str | None, fecha_pago: str | None) -> str | None:
+    """ISO de expiración para el plan, anclada al momento del pago.
+
+    Espejo de ``calcularFechaExpiracion`` del webhook: misma fuente de duración
+    (``backend/pricing.py``) y mismo ancla (el pago, no "ahora"), para que
+    activen por cualquiera de los dos caminos y quede la misma fecha.
+
+    Plan desconocido o sin catálogo -> None: el llamador conserva la fecha que
+    ya tenía la fila en vez de inventar una.
+    """
+    dias = _dias_de_plan(plan)
+    if dias is None or not fecha_pago:
+        return None
+    try:
+        base = _parse_iso(fecha_pago)
+    except (ValueError, AttributeError):
+        return None
+    return (base + timedelta(days=dias)).isoformat()
+
+
+def _dias_de_plan(plan: str | None) -> int | None:
+    """Días del plan en el catálogo local, o None si no está."""
+    if not plan:
+        return None
+    for planes in PLANES_FALLBACK.values():
+        for entrada in planes:
+            if entrada["id"] == plan:
+                return int(entrada["dias"])
+    return None
+
+
+def _buscar_fila_por(clave: str, valor: str) -> dict | None:
+    """Primera fila de `suscripciones` donde `clave == valor`, o None."""
+    try:
+        url = f"{get_supabase_url()}/rest/v1/suscripciones?{clave}=eq.{valor}&select=*"
+        resp = requests.get(url, headers=get_supabase_headers(), timeout=10)
+        resp.raise_for_status()
+        filas = resp.json()
+    except Exception:  # noqa: BLE001
+        return None
+    return filas[0] if filas else None
+
+
+def _activar_suscripcion_por_pago(suscripcion: dict, payment_id: str) -> bool:
     """Pasa la fila a 'activo' de forma idempotente. True si el write ocurrió.
 
     Idempotencia: si la fila ya está activa con el mismo ``mp_payment_id``, no
     vuelve a escribir. Esto importa porque reintentar una confirmación NO puede
     extender ``fecha_expiracion`` otra vez (el webhook remoto recomputa la
     fecha; sin este freno, cada reintento regalaría días).
+
+    Escribe ``mp_payment_id`` en el mismo PATCH: es lo que permite que la
+    próxima confirmación (y el webhook) encuentren la fila por pago.
     """
     headers = get_supabase_headers()
     supabase_url = get_supabase_url()
     app_id = suscripcion.get("app_id", APP_ID_DEFAULT)
 
     estado_actual = normalizar_estado(suscripcion.get("estado"))
-    mismo_pago = suscripcion.get("mp_payment_id") is not None
+    mismo_pago = suscripcion.get("mp_payment_id") is not None and str(
+        suscripcion.get("mp_payment_id")
+    ) == str(payment_id)
     if estado_actual is EstadoSuscripcion.ACTIVO and mismo_pago:
         return False
+
+    cuerpo: dict = {"estado": EstadoSuscripcion.ACTIVO.value, "mp_payment_id": payment_id}
+
+    # La fecha se recalcula SOLO en la primera activación de este pago, y
+    # siempre desde el momento del pago, nunca desde "ahora": así el respaldo
+    # por navegador y el webhook producen la misma fecha.
+    expiracion = _expiracion_para_plan(
+        suscripcion.get("plan"), suscripcion.get("_fecha_pago_para_expiracion")
+    )
+    if expiracion:
+        cuerpo["fecha_expiracion"] = expiracion
 
     update_url = (
         f"{supabase_url}/rest/v1/suscripciones"
         f"?client_id=eq.{suscripcion['client_id']}&app_id=eq.{app_id}"
     )
     try:
-        requests.patch(
-            update_url,
-            headers=headers,
-            json={"estado": EstadoSuscripcion.ACTIVO.value},
-            timeout=10,
-        ).raise_for_status()
+        requests.patch(update_url, headers=headers, json=cuerpo, timeout=10).raise_for_status()
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Error actualizando suscripcion: {str(e)}")
     return True
@@ -790,29 +916,41 @@ def _activar_suscripcion_por_pago(suscripcion: dict) -> bool:
 
 def _buscar_suscripcion_por_pago(payment_id: str) -> dict:
     """Fila de `suscripciones` con ese `mp_payment_id`, o 404."""
-    url = f"{get_supabase_url()}/rest/v1/suscripciones?mp_payment_id=eq.{payment_id}&select=*"
-    try:
-        resp = requests.get(url, headers=get_supabase_headers(), timeout=10)
-        resp.raise_for_status()
-        filas = resp.json()
-    except Exception:  # noqa: BLE001
-        raise HTTPException(status_code=404, detail="Pago no encontrado")
-
-    if not filas:
-        raise HTTPException(
-            status_code=404, detail="Suscripcion no encontrada para este payment_id"
-        )
-    return filas[0]
+    fila = _buscar_fila_por("mp_payment_id", payment_id)
+    if fila:
+        return fila
+    raise HTTPException(
+        status_code=404, detail="Suscripcion no encontrada para este payment_id"
+    )
 
 
 @router.post("/confirmar-pago")
-def confirmar_pago(payment_id: str):
+def confirmar_pago(
+    payment_id: str,
+    client_id: str | None = None,
+    app_id: str = APP_ID_DEFAULT,
+):
     """Activa la licencia solo después de VERIFICAR el pago en MercadoPago.
 
     Es el camino de respaldo cuando el webhook remoto no llegó. No confía en el
     `payment_id` que le manden: lo consulta en la API de MercadoPago y exige
     `status == approved`. Si la consulta no puede hacerse (sin token, sin red,
     respuesta inesperada) NO activa: devuelve 502 y deja la fila como estaba.
+
+    La fila se localiza por este orden, para que funcione aunque el webhook
+    siga caído:
+
+    1. `mp_payment_id` (la fila ya conoce este pago).
+    2. `preference_id` que devuelve MercadoPago junto al pago. Es el camino que
+       hace falta cuando `/crear-preferencia` guardó el preference id: sin esto
+       el respaldo devolvía 404 siempre.
+    3. `client_id` + `app_id` de la `external_reference` del pago. Solo si el
+       cliente no pasó `client_id`.
+
+    Cuando la `external_reference` se puede decodificar se usa además como
+    comprobación: si el `client_id` que pide el llamador no es el del pago, se
+    rechaza. No es un adorno: sin eso, cualquiera que tenga un pago aprobado
+    podría pedir la confirmación y escribir en la fila de otro.
     """
     if not settings.MP_ACCESS_TOKEN:
         raise HTTPException(
@@ -823,9 +961,8 @@ def confirmar_pago(payment_id: str):
             ),
         )
 
-    suscripcion = _buscar_suscripcion_por_pago(payment_id)
-
-    if not _pago_aprobado_en_mercadopago(payment_id):
+    pago = _obtener_pago_mercadopago(payment_id)
+    if not pago or pago.get("status") != "approved":
         raise HTTPException(
             status_code=502,
             detail=(
@@ -834,13 +971,190 @@ def confirmar_pago(payment_id: str):
             ),
         )
 
-    escrito = _activar_suscripcion_por_pago(suscripcion)
+    ref = _decodificar_external_reference(pago.get("external_reference"))
+    if ref:
+        ref_app_id, ref_client_id = ref
+        if client_id and client_id != ref_client_id:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "El payment_id no corresponde a ese client_id: la licencia "
+                    "de otro cliente no se activa con este pago."
+                ),
+            )
+    else:
+        ref_app_id, ref_client_id = None, None
+
+    # --- Localización de la fila, con degradación explícita ---
+    suscripcion = _buscar_fila_por("mp_payment_id", payment_id)
+
+    if not suscripcion:
+        preference_id = pago.get("preference_id")
+        if preference_id:
+            suscripcion = _buscar_fila_por("preference_id", str(preference_id))
+
+    if not suscripcion:
+        if not ref_client_id:
+            # Sin `external_reference` legible y sin fila por pago no hay forma
+            # honesta de saber a quién pertenece este pago: no se adivina.
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "No se encontró la suscripción del pago y el pago no trae "
+                    "external_reference para identificarla. Pasá client_id."
+                ),
+            )
+        if ref_app_id and client_id is None and ref_app_id != app_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"app_id invalido para este pago: {ref_app_id}",
+            )
+        suscripcion = _buscar_suscripcion_supabase(ref_client_id, ref_app_id or app_id)
+
+    if not suscripcion:
+        raise HTTPException(
+            status_code=404,
+            detail="Suscripcion no encontrada para este payment_id",
+        )
+
+    # La fila se localizó, pero la referencia del PAGO es la autoridad. Si la fila
+    # no es de ese cliente, el pago no la activate: sin este chequeo, encontrar
+    # la fila por `preference_id` alcanzaba para activar la licencia de otro.
+    if ref:
+        if suscripcion.get("client_id") != ref_client_id:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "El pago corresponde a otro cliente que el de la suscripcion "
+                    "encontrada: no se activa."
+                ),
+            )
+        fila_app_id = suscripcion.get("app_id") or app_id
+        if ref_app_id != APP_ID_DEFAULT and fila_app_id != ref_app_id:
+            raise HTTPException(
+                status_code=403,
+                detail="El pago corresponde a otra app: no se activa esta licencia.",
+            )
+
+    # `_fecha_pago_para_expiracion` viaja en el dict de la fila solo como dato
+    # para el cálculo; no se escribe en Supabase.
+    fila_con_ancla = dict(suscripcion)
+    fila_con_ancla["_fecha_pago_para_expiracion"] = (
+        pago.get("date_approved") or pago.get("date_created")
+    )
+
+    escrito = _activar_suscripcion_por_pago(fila_con_ancla, payment_id)
     return {
         "success": True,
         "verificado": True,
         "idempotente": not escrito,
         "estado": EstadoSuscripcion.ACTIVO.value,
         "suscripcion": suscripcion,
+    }
+
+
+@router.post("/confirmar-preferencia")
+def confirmar_preferencia(
+    preference_id: str,
+    client_id: str | None = None,
+    app_id: str = APP_ID_DEFAULT,
+):
+    """Resuelve un pago a partir del id de PREFERENCIA y activa la licencia.
+
+    Por qué existe: el Checkout Pro de Tauri abre el pago en el navegador
+    EXTERNO, así que la app nunca ve el `payment_id` de la URL de retorno. Lo
+    único que la app guardó fue el `preference_id` de `/crear-preferencia`. Esta
+    ruta cierra ese círculo: le pregunta a MercadoPago qué pago corresponde a esa
+    preferencia y encadena `/confirmar-pago`, que es el que verifica y activa.
+
+    Igual que `/confirmar-pago`, no activa por confianza: el pago se consulta en
+    MercadoPago y tiene que estar `approved` Y ser de este cliente.
+
+    `client_id` es obligatorio: sin él, un `preference_id` adivinado sería
+    suficiente para tocar la licencia de cualquiera.
+    """
+    if not settings.MP_ACCESS_TOKEN:
+        raise HTTPException(
+            status_code=503,
+            detail="No se puede verificar el pago: falta MP_ACCESS_TOKEN.",
+        )
+    if not _payment_id_de_retorno(preference_id):
+        raise HTTPException(status_code=400, detail="preference_id invalido")
+    if not client_id:
+        raise HTTPException(
+            status_code=400,
+            detail="client_id es obligatorio: sin el no se puede saber a quien "
+            "pertenece esta preferencia.",
+        )
+
+    try:
+        resp = requests.get(
+            f"{MP_API_PREFERENCIAS}/{preference_id}",
+            headers={"Authorization": f"Bearer {settings.MP_ACCESS_TOKEN}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:  # noqa: BLE001 - fail-closed
+        raise HTTPException(
+            status_code=502,
+            detail="No se pudo consultar la preferencia en MercadoPago.",
+        )
+
+    payment_id = data.get("payment_id") if isinstance(data, dict) else None
+    if not payment_id:
+        # No es un error de la app: la preferencia existe pero todavía no tiene
+        # pago acreditado. La app va a reintentar.
+        raise HTTPException(
+            status_code=404,
+            detail="La preferencia todavia no tiene un pago acreditado.",
+        )
+
+    return confirmar_pago(
+        payment_id=str(payment_id), client_id=client_id, app_id=app_id
+    )
+
+
+@router.get("/estado-pago")
+def estado_pago(payment_id: str | None = None, preference_id: str | None = None):
+    """Estado de la licencia de un pago. SOLO LECTURA: no activa nada.
+
+    Es lo que consulta la pantalla de retorno del Checkout Pro para dejar de
+    mostrar un JSON crudo y poder decir "confirmando" / "activa" de verdad.
+
+    Acepta `payment_id` o `preference_id`: la app del cliente solo tiene el
+    segundo, porque el pago se abrió en el navegador externo.
+    """
+    fila = None
+    if payment_id:
+        fila = _buscar_fila_por("mp_payment_id", payment_id)
+    if not fila and not preference_id and payment_id and settings.MP_ACCESS_TOKEN:
+        # El webhook pudo no llegar: la fila todavía no conoce este pago, pero
+        # el pago sí trae el `preference_id` con el que se la encontró antes.
+        pago = _obtener_pago_mercadopago(payment_id)
+        if pago and pago.get("preference_id"):
+            fila = _buscar_fila_por("preference_id", str(pago["preference_id"]))
+    if not fila and preference_id and _payment_id_de_retorno(preference_id):
+        fila = _buscar_fila_por("preference_id", preference_id)
+
+    if not fila:
+        raise HTTPException(status_code=404, detail="Pago no encontrado")
+
+    estado_bruto = fila.get("estado")
+    estado = normalizar_estado(estado_bruto)
+    try:
+        exp = _parse_iso(fila["fecha_expiracion"])
+    except (KeyError, ValueError):
+        exp = None
+
+    activo = estado_da_acceso(estado_bruto, exp)
+    return {
+        "ok": True,
+        "activo": activo,
+        "estado": estado.value if estado else None,
+        "plan": fila.get("plan"),
+        "fecha_expiracion": fila.get("fecha_expiracion"),
+        "dias_restantes": (exp - datetime.now(timezone.utc)).days if activo and exp else 0,
     }
 
 
@@ -875,7 +1189,7 @@ def mock_confirm(payment_id: str):
     """
     _exigir_mock_habilitado()
     suscripcion = _buscar_suscripcion_por_pago(payment_id)
-    escrito = _activar_suscripcion_por_pago(suscripcion)
+    escrito = _activar_suscripcion_por_pago(suscripcion, payment_id)
     return {
         "success": True,
         "message": "Pago confirmado (mock)",
@@ -885,24 +1199,142 @@ def mock_confirm(payment_id: str):
     }
 
 
-# ==================== CALLBACKS DE MP (PLACEHOLDERS) ====================
+# ==================== CALLBACKS DE MP ====================
+
+# MercadoPago devuelve el pago en la URL de retorno. Sus ids son numéricos, pero
+# esto NO es una garantía: el valor viene de la query string. Antes de meterlo en
+# HTML o en un script, tiene que pasar por acá.
+_RE_PAYMENT_ID_OK = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _payment_id_de_retorno(payment_id: str | None) -> str | None:
+    """`payment_id` de la URL de retorno si es plausible; None si no lo es."""
+    if not payment_id:
+        return None
+    candidato = payment_id.strip()
+    return candidato if _RE_PAYMENT_ID_OK.match(candidato) else None
+
+
+def _pagina_estado(titulo: str, mensaje: str, tono: str, payment_id: str | None) -> HTMLResponse:
+    """Pantalla de estado del retorno del Checkout Pro.
+
+    Antes `/exito` devolvía un JSON crudo (y sin activar nada): el usuario volvía
+    del pago a una pantalla que no parecía de CANYP y no le decía si su licencia
+    estaba activa. Ahora la página es real y muestra "confirmando" / "activa",
+    consultando `/estado-pago` hasta que la fila llegue a `activo`.
+
+    Todo el texto es estático; el único valor que se interpola es el
+    `payment_id`, ya validado por `_payment_id_de_retorno` y pasado por
+    `json.dumps` para el script.
+    """
+    colores = {
+        "ok": "#166534",
+        "esperando": "#854d0e",
+        "error": "#991b1b",
+    }
+    color = colores.get(tono, "#1f2937")
+    polling = ""
+    if payment_id:
+        polling = (
+            "<script>"
+            "(function(){"
+            "var id=" + json.dumps(payment_id) + ";"
+            "var n=0;"
+            "var t=setInterval(function(){"
+            "n++;"
+            "fetch('/api/suscripcion/estado-pago?payment_id='+encodeURIComponent(id))"
+            ".then(function(r){return r.ok?r.json():null;})"
+            ".then(function(d){if(d&&d.activo){"
+            "document.getElementById('t').textContent='Tu licencia ya esta activa';"
+            "document.getElementById('m').textContent='Listo. Volve a abrir CANYP y ya vas a poder entrar.';"
+            "document.getElementById('c').style.color='#166534';"
+            "clearInterval(t);}})"
+            ".catch(function(){});"
+            "if(n>40){clearInterval(t);}"
+            "},3000);"
+            "})();"
+            "</script>"
+        )
+    html = (
+        "<!doctype html><html lang='es'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>CANYP - " + titulo + "</title>"
+        "<style>"
+        "body{font-family:system-ui,sans-serif;background:#0b0b0d;color:#e5e7eb;"
+        "display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}"
+        ".c{max-width:32rem;padding:2rem;text-align:center}"
+        "h1{font-size:1.25rem;margin:0 0 .75rem}"
+        "p{color:#9ca3af;line-height:1.5;margin:0}"
+        "img{margin:0 auto 1.5rem;display:block;height:4rem}"
+        "</style></head><body><div class='c'>"
+        "<img src='/CANYP_Almafuerte_logo.svg' alt='CANYP'>"
+        "<h1 id='t'>" + titulo + "</h1>"
+        "<p id='m'>" + mensaje + "</p>"
+        "</div>" + polling + "</body></html>"
+    )
+    # El color se aplica sobre el <h1> desde el script al confirmar.
+    if polling:
+        html = html.replace("<h1 id='t'>", "<h1 id='c' style='color:" + color + "'>")
+    return HTMLResponse(content=html, status_code=200)
 
 
 @router.get("/exito")
-def pago_exito():
+def pago_exito(payment_id: str | None = None, status: str | None = None):
     """Callback de exito de MercadoPago (back_url).
 
-    Ojo con el mensaje: volver de MercadoPago NO significa que la licencia esté
-    activa. Antes decía "tu suscripcion ha sido activada" y no activaba nada,
-    que es parte de por qué se cobraba sin activar. La activación ocurre cuando
-    el pago se verifica (webhook o /confirmar-pago).
+    Volver de MercadoPago NO significa que la licencia esté activa. Antes esta
+    ruta devolvía un JSON que decía "la licencia se activa al confirmarse el
+    cobro" y no hacía nada: el usuario veía un JSON crudo y no tenía forma de
+    saber si había pagado bien.
+
+    Ahora, si el pago está `approved` en MercadoPago, confirma acá mismo
+    (mismo camino verificado de `/confirmar-pago`) y muestra el resultado. Si el
+    pago todavía no figura aprobado — MercadoPago redirige antes de que el
+    crédito se refleje — la página queda en "confirmando" y se actualiza sola
+    consultando `/estado-pago`.
+
+    El frontend (LicenseGate) tiene su propio camino: son procesos distintos
+    (el pago se abre en el navegador externo), por eso esta pantalla es la que
+    le dice al usuario qué pasó.
     """
-    return {
-        "message": (
-            "Pago recibido. La licencia se activa al confirmarse el cobro; "
-            "puede tardar unos instantes."
+    pid = _payment_id_de_retorno(payment_id)
+
+    if not pid:
+        return _pagina_estado(
+            "Confirmando tu pago",
+            "Volvemos a verificar el pago con MercadoPago. Si la licencia se activa, "
+            "vas a poder entrar a CANYP en unos instantes.",
+            "esperando",
+            None,
         )
-    }
+
+    try:
+        confirmar_pago(payment_id=pid)
+    except HTTPException as e:
+        # 404/403/502 significan "todavía no" o "no corresponde": no es un
+        # error de la app para el usuario, es el estado del pago.
+        if e.status_code in (403, 404, 502):
+            return _pagina_estado(
+                "Confirmando tu pago",
+                "Estamos esperando la confirmacion del pago. Esto puede tardar unos "
+                "instantes: volve a abrir CANYP en un momento.",
+                "esperando",
+                pid,
+            )
+        return _pagina_estado(
+            "No pudimos confirmar el pago",
+            "Volvemos a intentar en un momento. Si ya figuras con el pago hecho, "
+            "escribinos y lo activamos.",
+            "error",
+            pid,
+        )
+
+    return _pagina_estado(
+        "Tu licencia ya esta activa",
+        "Listo. Volve a abrir CANYP y ya vas a poder entrar.",
+        "ok",
+        pid,
+    )
 
 
 @router.get("/fallo")

@@ -8,16 +8,29 @@ import {
   APP_ID,
   CLIENT_ID_KEY,
   activarTrial,
+  confirmarPago,
+  confirmarPreferencia,
+  consultarEstadoPago,
+  consultarEstadoPagoPreferencia,
   crearPreferencia,
+  esperarConfirmacionPreferencia,
   getClientId,
   obtenerPlanes,
   verificarSuscripcion,
+  type EstadoPagoResponse,
   type PlanesResponse,
 } from "../suscripcion";
 
 function okJson(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function errorJson(status: number, detail: string): Response {
+  return new Response(JSON.stringify({ detail }), {
+    status,
     headers: { "Content-Type": "application/json" },
   });
 }
@@ -140,5 +153,133 @@ describe("verificarSuscripcion / activarTrial", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/suscripcion/trial");
     expect(JSON.parse(init.body as string)).toEqual({ client_id: "canyp_1", app_id: "canyp" });
+  });
+});
+
+describe("confirmarPago / consultarEstadoPago", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("confirmarPago manda payment_id, app_id y client_id", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(okJson({ success: true, verificado: true, idempotente: false }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await confirmarPago("9001", "canyp_1");
+    expect(result.verificado).toBe(true);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/api/suscripcion/confirmar-pago?");
+    expect(url).toContain("payment_id=9001");
+    expect(url).toContain(`app_id=${APP_ID}`);
+    expect(url).toContain("client_id=canyp_1");
+    expect(init.method).toBe("POST");
+  });
+
+  it("consultarEstadoPago escapa el payment_id y no manda client_id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okJson({ ok: true, activo: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await consultarEstadoPago("a b&c=d");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/suscripcion/estado-pago?payment_id=a%20b%26c%3Dd");
+    expect(init?.method ?? "GET").toBe("GET");
+  });
+});
+
+describe("confirmarPreferencia", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("es el camino de Tauri: manda preference_id y client_id", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(okJson({ success: true, verificado: true, idempotente: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await confirmarPreferencia("3001", "canyp_1");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/api/suscripcion/confirmar-preferencia?");
+    expect(url).toContain("preference_id=3001");
+    expect(url).toContain("client_id=canyp_1");
+    expect(init.method).toBe("POST");
+  });
+
+  it("consultarEstadoPagoPreferencia usa el parámetro preference_id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okJson({ ok: true, activo: false }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await consultarEstadoPagoPreferencia("3001");
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toBe("/api/suscripcion/estado-pago?preference_id=3001");
+  });
+});
+
+describe("esperarConfirmacionPreferencia", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const activa: EstadoPagoResponse = {
+    ok: true,
+    activo: true,
+    estado: "activo",
+    plan: "canyp_1_mes",
+    fecha_expiracion: "2026-12-31T00:00:00Z",
+    dias_restantes: 30,
+  };
+
+  it("reintenta mientras el pago no esté acreditado y corta al confirmarse", async () => {
+    // Primero la preferencia todavía no tiene pago (404), después 502 al
+    // verificar, y recién ahí activa. Ese es el caso real al volver del
+    // navegador: la app no puede rendirse en el primer no.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(errorJson(404, "todavia no tiene un pago acreditado"))
+      .mockResolvedValueOnce(errorJson(502, "No se pudo verificar"))
+      .mockResolvedValueOnce(okJson({ success: true, verificado: true, idempotente: false }))
+      .mockResolvedValueOnce(okJson(activa));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await esperarConfirmacionPreferencia("3001", "canyp_1", {
+      intentos: 5,
+      delayMs: 0,
+    });
+
+    expect(result.activo).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("no reintenta un rechazo: propaga el error de una", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(errorJson(403, "El pago corresponde a otro cliente"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      esperarConfirmacionPreferencia("3001", "canyp_1", { intentos: 5, delayMs: 0 }),
+    ).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falla con un mensaje accionable si se agotan los intentos", async () => {
+    // `mockImplementation`, no `mockResolvedValue`: el body de un Response se
+    // puede leer una sola vez, y con el mismo objeto el segundo intento recibe
+    // una respuesta vacía en vez del 404.
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(() => errorJson(404, "todavia no tiene un pago acreditado"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      esperarConfirmacionPreferencia("3001", "canyp_1", { intentos: 2, delayMs: 0 }),
+    ).rejects.toThrow(/todavia no tiene un pago acreditado/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
