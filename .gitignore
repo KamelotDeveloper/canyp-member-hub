@@ -54,3 +54,8 @@ planillas/
 # Secretos y datos locales
 canyp-settings.json
 backups/
+
+# Registro de intentos de operar con la instalación bloqueada
+# (backend/activation.py; en un build empaquetado vive bajo %APPDATA%\CANYP)
+activacion-intentos.log
+activacion-intentos.log.1

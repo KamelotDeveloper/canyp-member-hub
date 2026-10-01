@@ -14,15 +14,41 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # copy. Drop them before Analysis.
 _EXCLUDED_DIRS = {"venv", "dist", "build", "build_dist", "build_spec", "build_work", "__pycache__"}
 
+# collect_data_files() ships EVERY non-.py file under the package dir, dotfiles
+# included, so `backend/.env` (SUPABASE_SERVICE_KEY with role=service_role,
+# MP_ACCESS_TOKEN) was landing in the distributable at
+# _internal/backend/.env. Filtering directories is not enough — the secret sits
+# next to the sources. Drop secret files by name; PyInstaller's TOC does not
+# ship the raw source path, so the exclusion holds for onefile and onedir.
+_SECRET_FILE_NAMES = {".env"}
+
+
+def _is_secret_file(src: str) -> bool:
+    name = src.replace("\\", "/").rsplit("/", 1)[-1]
+    return name in _SECRET_FILE_NAMES or name.startswith(".env.")
+
 
 def _is_build_artifact(src: str) -> bool:
     parts = src.replace("\\", "/").split("/")
     return any(part in _EXCLUDED_DIRS for part in parts)
 
 
-datas = [d for d in datas if not _is_build_artifact(d[0])]
-binaries = [b for b in binaries if not _is_build_artifact(b[0])]
+def _keep(entry):
+    return not (_is_build_artifact(entry[0]) or _is_secret_file(entry[0]))
+
+
+datas = [d for d in datas if _keep(d)]
+binaries = [b for b in binaries if _keep(b)]
 hiddenimports = [h for h in hiddenimports if not _is_build_artifact(h.replace(".", "/"))]
+
+# Guard: a packaged sidecar must carry zero operator credentials. Fail the
+# build loudly rather than shipping a binary with a service_role key inside.
+_leaked = [d[0] for d in datas if _is_secret_file(d[0])]
+if _leaked:
+    raise SystemExit(
+        "canyp-backend.spec: se intentaron empaquetar archivos de secretos en el "
+        "sidecar: " + ", ".join(_leaked)
+    )
 
 
 a = Analysis(

@@ -1,0 +1,51 @@
+#!/bin/sh
+# commit-msg: reject a commit message that starts with a UTF-8 BOM.
+#
+# WHY
+# On Windows, PowerShell 5.1's `Out-File -Encoding utf8` and
+# `Set-Content -Encoding utf8` write a BOM (EF BB BF) as the FIRST BYTE of the
+# file. Feed that file to `git commit -F mensaje.txt` and the BOM becomes part of
+# the subject: the log shows an invisible character before "fix(...)", tooling
+# that matches on subjects breaks, and nothing in the diff hints at it.
+#
+# Three commits in this branch were born that way. The rewrite is done; this
+# hook is what keeps it from coming back, because the BOM does not come from git
+# but from whatever wrote the message file — and that will happen again the
+# first time a commit message is authored from a PowerShell 5.1 shell.
+#
+# It REJECTS rather than silently fixing: the strip is trivial, but the tool
+# that produced the file will keep producing BOMs, and the next file it writes
+# may be a .py or .ts that a parser actually chokes on. Better to stop here,
+# with an actionable message, than to normalise one symptom per commit.
+#
+# POSIX sh + coreutils only: git for Windows ships these.
+#
+# Enable (once per clone):
+#   git config core.hooksPath .githooks
+
+BOM=$(head -c 3 "$1" | od -An -tx1 | tr -d ' \n')
+
+if [ "$BOM" = "efbbbf" ]; then
+    echo "" >&2
+    echo "commit abortado: el mensaje empieza con un BOM UTF-8 (EF BB BF)." >&2
+    echo "" >&2
+    echo "En Windows casi siempre es PowerShell 5.1: 'Out-File -Encoding utf8'" >&2
+    echo "y 'Set-Content -Encoding utf8' escriben BOM. Escribi el mensaje en" >&2
+    echo "UTF-8 SIN BOM y volve a commitear:" >&2
+    echo "" >&2
+    echo "  \$msg | Out-File -Encoding utf8NoBOM mensaje.txt   # PowerShell 5.1" >&2
+    echo "  \$msg | Set-Content -Encoding utf8NoBOM mensaje.txt" >&2
+    echo "" >&2
+    echo "  [IO.File]::WriteAllText('mensaje.txt', \$msg," >&2
+    echo "    (New-Object Text.UTF8Encoding \$false))            # cualquier PS" >&2
+    echo "" >&2
+    echo "o pasa el mensaje directo, sin archivo:" >&2
+    echo "  git commit -m 'fix(algo): descripcion'" >&2
+    echo "" >&2
+    echo "Borrar el BOM de un mensaje ya escrito (no toca archivos):" >&2
+    echo "  git commit --amend" >&2
+    echo "" >&2
+    exit 1
+fi
+
+exit 0

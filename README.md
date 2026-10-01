@@ -89,3 +89,21 @@ pnpm test       # vitest
 - `pnpm` en PowerShell/start de procesos se invoca como `pnpm.cmd`
 - Preferir `curl.exe` sobre `Invoke-WebRequest` (falla en modo no interactivo)
 - `python-dateutil` es dependencia obligatoria (`backend/services/renovacion.py`)
+- **PowerShell 5.1 escribe BOM** con `Out-File -Encoding utf8` y
+  `Set-Content -Encoding utf8`. Si ese archivo es el mensaje de un commit
+  (`git commit -F`), el BOM entra en el subject. Para escribir texto sin BOM:
+  `-Encoding utf8NoBOM`, o
+  `[IO.File]::WriteAllText($ruta, $texto, (New-Object Text.UTF8Encoding $false))`.
+
+## Hooks de git
+
+Los hooks del repo viven en `.githooks/` y hay que activarlos **una vez por
+clon** (no se versionan en la config local de git):
+
+```
+git config core.hooksPath .githooks
+```
+
+`commit-msg` aborta el commit si el mensaje empieza con un BOM UTF-8, con el
+mensaje exacto que lo produce y cómo escribirlo sin BOM. Tres commits de
+`fix/cuota-social-siempre-visible` nacieron con BOM en el subject por esto.

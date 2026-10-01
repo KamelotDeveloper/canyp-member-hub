@@ -42,6 +42,7 @@ import { cn } from "@/lib/utils";
 import { EstadoBadge } from "@/components/canyp/EstadoBadge";
 import { PageHeader } from "@/components/canyp/AppShell";
 import { ExportButton } from "@/components/export";
+import { arancelesDeArea, predioDeArancel } from "@/lib/canyp/arancel-helpers";
 import { UnidadesPanel } from "@/components/canyp/UnidadesPanel";
 import { SocioCombobox } from "@/components/canyp/SocioCombobox";
 import { ImportModal, type ImportColumnSpec } from "@/components/import";
@@ -148,9 +149,7 @@ function MembresiasPage() {
   const areaActiva = search.area ?? "Balseros";
   const filtro = search.filtro ?? "todas";
 
-  const arancelesArea = aranceles.filter(
-    (a: Arancel) => a.area === areaActiva && a.predio === "Almafuerte",
-  );
+  const arancelesArea = arancelesDeArea(aranceles, areaActiva);
 
   const lista = membresias
     .filter((m: Membresia) => m.area === areaActiva)
@@ -434,7 +433,11 @@ function MembresiasPage() {
                   {
                     socioId: nueva.socioId,
                     area: areaActiva,
-                    predio: "Almafuerte",
+                    // The place comes from the arancel the operator picked, so the
+                    // row can never contradict the catalog row that will price it.
+                    // Without an arancel there is nothing to derive it from, so
+                    // this keeps the value this screen always sent.
+                    predio: predioDeArancel(aranceles, nueva.arancelId) ?? "Almafuerte",
                     estado: "activa",
                     vencimiento: nueva.vencimiento,
                     detalle: nueva.detalle.trim(),
@@ -618,7 +621,16 @@ function EditarMembresiaDialog({
     const data: Partial<Membresia> = {};
     if (vencimiento !== membresia.vencimiento) data.vencimiento = vencimiento;
     if (detalle !== (membresia.detalle ?? "")) data.detalle = detalle;
-    if (arancelId !== (membresia.arancelId ?? "")) data.arancelId = arancelId;
+    if (arancelId !== (membresia.arancelId ?? "")) {
+      data.arancelId = arancelId;
+      // Re-pointing the row at another catalog row has to carry the PLACE with
+      // it: the charge resolves with `area` + `predio`, so an arancel that lives
+      // in another predio would leave the row unpriceable. Only when a real
+      // arancel is picked — "Sin arancel" has no place to derive and leaves the
+      // membership's own `predio` alone.
+      const predio = predioDeArancel(arancelesArea, arancelId);
+      if (predio) data.predio = predio;
+    }
     if (estado !== membresia.estado) data.estado = estado;
     if (Object.keys(data).length === 0) {
       onClose();

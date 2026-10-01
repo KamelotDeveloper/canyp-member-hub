@@ -33,6 +33,7 @@ import {
   type LugarCobrable,
   type LugarCobro,
   type OpcionesItemsPorArancel,
+  type LineaCobro,
 } from "../unidad-helpers";
 import type {
   Arancel,
@@ -349,11 +350,25 @@ describe("itemsPorArancel (ReQ-001 / ReQ-012)", () => {
     expect(itemsPorArancel(CATALOGO, LUGARES, new Set(["p_recargo"]), CUATRO)).toHaveLength(0);
   });
 
-  it("una línea sin ancla no se emite", () => {
+  it("una cuota sin ancla propia cae al ancla de área y se emite igual", () => {
+    // El socio cobrado puede no tener fila de cuota: el ancla es sólo una pista
+    // y el servidor la re-resuelve/crea. La línea debe componerse y sumar, no
+    // desaparecer (era el bug: tildar la cuota no sumaba).
+    const [cuota] = itemsPorArancel(CATALOGO, LUGARES, new Set(["p_cuota"]), {
+      ...CUATRO,
+      anclas: { area: "m-area" },
+    });
+    expect(cuota!.arancelId).toBe("p_cuota");
+    expect(cuota!.membresiaId).toBe("m-area");
+    expect(cuota!.factor).toBe(4);
+    expect(cuota!.monto).toBe(48000);
+  });
+
+  it("sin ninguna ancla no se emite la línea", () => {
     expect(
       itemsPorArancel(CATALOGO, LUGARES, new Set(["p_cuota"]), {
         ...CUATRO,
-        anclas: { area: "m-area" },
+        anclas: {},
       }),
     ).toHaveLength(0);
   });
@@ -930,5 +945,54 @@ describe("formatearAvisosCobro (ReQ-011)", () => {
   it("ignora avisos en blanco y recorta el texto", () => {
     expect(formatearAvisosCobro(["  motivo  ", "   "])).toBe("motivo");
     expect(formatearAvisosCobro(["  ", ""])).toBeNull();
+  });
+});
+
+describe("un arancel en 0 no se filtra en silencio (decision del dueno)", () => {
+  // El dueno dejo el SERVICIO de Cabaneros en 0 hasta que defina el precio
+  // real: 15000 era demasiado riesgoso porque se podia cobrar antes de
+  // editarlo. El riesgo de un importe en 0 no es que cueste 0, es que la
+  // linea DESAPAREZCA del cobro y nadie sepa por que.
+  const EN_CERO: Arancel = {
+    id: "a_serv_cabaneros",
+    nombre: "Servicio",
+    area: "Cabañeros",
+    predio: "Almafuerte",
+    monto: 0,
+    vigenteDesde: "2026-09-29",
+    historico: [{ monto: 15000, vigenteDesde: "2026-09-28" }],
+    concepto: "servicio",
+  };
+
+  it("el servicio en 0 se sigue resolviendo por lugar", () => {
+    // `categoria: null` porque un SERVICIO no la usa (usaCategoria), pero el
+    // tipo LugarCobro la exige.
+    const fila = arancelPorConcepto([EN_CERO], "servicio", {
+      area: "Cabañeros",
+      predio: "Almafuerte",
+      categoria: null,
+    });
+    expect(fila).toBeDefined();
+    expect(fila?.id).toBe("a_serv_cabaneros");
+    expect(fila?.monto).toBe(0);
+  });
+
+  it("viene con el importe viejo en historico, para que el precio no se pierda", () => {
+    expect(EN_CERO.historico[0]?.monto).toBe(15000);
+  });
+
+  it("el operador puede ajustar el importe: la linea no nasce readonly", () => {
+    // El ajuste viaja como montoAplicado y pisa el 0 del catalogo para ESE
+    // cobro, sin escribir de vuelta al catalogo.
+    const linea: LineaCobro = {
+      concepto: "servicio",
+      arancelId: EN_CERO.id,
+      arancelNombre: EN_CERO.nombre,
+      membresiaId: "m1",
+      monto: 0,
+      factor: 1,
+      montoAplicado: 9500,
+    };
+    expect(lineaAPagoItem(linea).montoAplicado).toBe(9500);
   });
 });

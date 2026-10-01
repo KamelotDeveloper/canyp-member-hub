@@ -4,14 +4,17 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ApiError } from "@/lib/canyp/api";
+import { CLIENT_BUILD } from "@/lib/canyp/build-flags";
 import { useLicencia, useSettings } from "@/lib/canyp/queries";
 import {
   activarTrial,
   crearPreferencia,
+  esperarConfirmacionPreferencia,
   getClientId,
   obtenerPlanes,
   type PlanInfo,
 } from "@/lib/canyp/suscripcion";
+import { guardarPagoPendiente, leerPagoPendiente, limpiarPagoPendiente } from "./pago-pendiente";
 
 /**
  * Gate de licencia (Fase 1): bloquea la app hasta que la instalación tenga una
@@ -25,6 +28,16 @@ import {
  *   - Sin licencia → pantalla de planes (comprar o trial).
  *   - Servidor no responde → pantalla amigable con reintentar (el sidecar
  *     local puede tardar en arrancar).
+ *
+ * En un BUILD DE CLIENTE el passthrough de "sin configurar" ya no aplica: sin
+ * settings no hay base remota provisionada, y sin base remota la instalación
+ * no puede operar (lo decide backend/activation.py, no este componente). La
+ * diferencia es deliberada: en dev el asistente de primer uso tiene que poder
+ * correr, y en un build distribuido ese mismo estado es justamente el bypass
+ * —un `settings.json` con `configured:false` abría la app completa sin licencia.
+ * El ClientBuildGuard de __root.tsx cubre ese estado con el mensaje del
+ * servidor; acá sólo evitamos que, aun con la pantalla de planes, se cuelgue el
+ * children por debajo.
  */
 export function LicenseGate({ children }: { children: ReactNode }) {
   const { data: settings, error: settingsError, isLoading: settingsLoading } = useSettings();
@@ -43,6 +56,18 @@ export function LicenseGate({ children }: { children: ReactNode }) {
       : licencia.data?.ok || licencia.data?.activo
         ? "ok"
         : "blocked";
+
+  useResolverPagoPendiente(clientId);
+
+  // Sólo el build de cliente pierde el atajo de "sin configurar". El trial
+  // tampoco existe ahí (lo rechaza el backend), así que la pantalla de planes
+  // de abajo es la de desarrollo: en un cliente sin activar se muestra
+  // primero el "Esperando activación" del ClientBuildGuard.
+  if (CLIENT_BUILD) {
+    return (
+      <>{state === "ok" ? children : <LicenseUI onLicensed={() => void licencia.refetch()} />}</>
+    );
+  }
 
   if (!configured || settingsLoading) return <>{children}</>;
 
@@ -87,6 +112,79 @@ export function LicenseGate({ children }: { children: ReactNode }) {
 
 type LicenciaState = "checking" | "ok" | "blocked" | "unavailable";
 
+/**
+ * Retoma un pago que quedó a medio camino.
+ *
+ * El usuario paga en el navegador externo y vuelve a la app a mano. Cuando
+ * vuelve, esta hook intenta cerrar el pago con el `preference_id` que quedó
+ * guardado y, si se activa, revalida la licencia para dejar entrar.
+ *
+ * Se dispara en dos momentos a propósito:
+ * - al montar, para el caso de que la app se haya reiniciado o el usuario
+ *   vuelve por el ícono del Dock;
+ * - al volver a la ventana (`focus`), que es el caso real: el usuario deja la app
+ *   abierta, paga afuera y vuelve.
+ *
+ * Un 404/502 que agote los reintentos NO es motivo para toast de error: el
+ * webhook puede activar igual más tarde, y el usuario ya está en la pantalla de
+ * planes con su botón de reintentar. Un rechazo real (400/403) sí se avisa.
+ */
+function useResolverPagoPendiente(clientId: string): void {
+  const resolver = useRef(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const intentar = () => {
+      if (resolver.current) return;
+      const pendiente = leerPagoPendiente();
+      if (!pendiente) return;
+
+      resolver.current = true;
+      void esperarConfirmacionPreferencia(pendiente.preference_id, clientId)
+        .then((estado) => {
+          if (estado.activo) {
+            limpiarPagoPendiente();
+            toast.success("¡Pago confirmado! Tu licencia ya está activa.");
+            // La query de licencia está cacheada en "blocked": sin esto, seguiría
+            // mostrando la pantalla de planes con la licencia ya comprada.
+            window.location.reload();
+          }
+        })
+        .catch((err: unknown) => {
+          if (esRechazo(err)) {
+            limpiarPagoPendiente();
+            toast.error(
+              "No pudimos confirmar ese pago. Si ya te cobró, escribinos y lo activamos.",
+            );
+          }
+          // Si es "todavía no" (404) o "no se pudo verificar" (502/503), se deja
+          // el pago pendiente para reintentar en el próximo focus o arranque: el
+          // webhook puede activarlo sin que la app haga nada.
+        })
+        .finally(() => {
+          resolver.current = false;
+        });
+    };
+
+    intentar();
+    window.addEventListener("focus", intentar);
+    return () => window.removeEventListener("focus", intentar);
+  }, [clientId]);
+}
+
+/**
+ * Un rechazo del backend no mejora reintentando.
+ *
+ * Se mira el status y no el texto: 400 (petición inválida) y 403 (el pago es de
+ * otro cliente) son definitivos, y avisarle al usuario tiene sentido porque no
+ * se va a resolver solo. Los 404/502/503 son "todavía no" y los deja para el
+ * webhook.
+ */
+function esRechazo(e: unknown): boolean {
+  return e instanceof ApiError && (e.status === 400 || e.status === 403);
+}
+
 function LicenseUI({ onLicensed }: { onLicensed: () => void }) {
   const [planes, setPlanes] = useState<PlanInfo[]>([]);
   const [planesLoading, setPlanesLoading] = useState(true);
@@ -118,8 +216,20 @@ function LicenseUI({ onLicensed }: { onLicensed: () => void }) {
         toast.error(res.message ?? "No se pudo crear el pago");
         return;
       }
+      // Se guarda ANTES de abrir el navegador: si el usuario paga y vuelve, el
+      // `preference_id` es lo único que permite retomar. Guardarlo después
+      // perdería la carrera con el cierre de la app.
+      if (res.preference_id) {
+        guardarPagoPendiente(res.preference_id, plan.id);
+      } else {
+        toast.error(
+          "No pudimos identificar este pago. Si completás la compra, avisanos para activarla.",
+        );
+      }
       await abrirPago(url);
-      toast.success(`Pago iniciado para ${plan.nombre}. Completá el pago en el navegador.`);
+      toast.success(
+        `Pago iniciado para ${plan.nombre}. Completá el pago en el navegador y volvé a CANYP.`,
+      );
     } catch (err) {
       toast.error(err instanceof Error && err.message ? err.message : "Error creando el pago");
     }

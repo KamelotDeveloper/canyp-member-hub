@@ -33,6 +33,26 @@ export interface AppSettings {
   configured: boolean;
 }
 
+/**
+ * Veredicto de la frontera de confianza (GET /api/activacion).
+ *
+ * QUÉ ES Y QUÉ NO ES: es un ESPEJO del veredicto del backend, no un permiso.
+ * Que la UI reciba `operacionPermitida: true` no abre la app — las rutas de
+ * dominio lo vuelven a preguntar al servidor. La UI refleja para no mostrar
+ * una pantalla que el servidor va a rechazar.
+ *
+ * `motivo` es estable y comparable: "listo" | "sin_base_remota" |
+ * "base_remota_invalida" | "fuera_de_build_cliente".
+ */
+export interface EstadoActivacion {
+  operacionPermitida: boolean;
+  esBuildCliente: boolean;
+  motivo: "listo" | "sin_base_remota" | "base_remota_invalida" | "fuera_de_build_cliente";
+  mensaje: string;
+  dataMode: DataMode;
+  configured: boolean;
+}
+
 /** Usuario del sistema (autenticación). Nunca expone password_hash. */
 export interface Usuario {
   id: string;

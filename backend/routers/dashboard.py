@@ -18,10 +18,28 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 # describe it. The bucket is always present so the response shape is stable.
 SIN_AREA = "Sin área"
 
-# A membership is an alert when its own date already passed, or when it carries
-# an administrative stop. The 30-day "por vencer" warning no longer exists
-# (EST-01/EST-04): there is no proximity warning, only a real debt.
-ALERTA_ESTADOS = (EstadoMembresia.SUSPENDIDA, EstadoMembresia.BAJA)
+# A membership is an alert when its own date already passed, or when its own
+# `estado` says it is not being paid for. The 30-day "por vencer" warning no
+# longer exists (EST-01/EST-04): there is no proximity warning, only a real debt.
+#
+# `VENCIDA` belongs here for the same reason it belongs in the badge
+# (`services/estado_socio.Vigencia.vencida`): it is the operator's mark for
+# "just expired", so a row carrying it OWES the same way a row whose date is
+# past owes. It is a statement about the EXPIRY, not an administrative stop,
+# which is why it is read on both concepts and routed by `concepto` (cuota -> 🔴,
+# área -> ⚠️) instead of collapsing to a single bucket here.
+#
+# Leaving it out made this list disagree with the badge it exists to work from:
+# the padrón served "Socio activo — revisar" for a row flagged `vencida` with a
+# future `vencimiento`, and this endpoint — read by the "Atención inmediata"
+# panel, by the "N a revisar" counter of every area card and by the
+# Notificaciones screen — dropped it, so the operator was told to review a socio
+# they had no way to find. Both readers now ask the same question.
+ALERTA_ESTADOS = (
+    EstadoMembresia.SUSPENDIDA,
+    EstadoMembresia.BAJA,
+    EstadoMembresia.VENCIDA,
+)
 # 🔴 before ⚠️: the debt that needs charging comes before the one to review.
 PRIORIDAD = {
     EstadoSocioVisual.INACTIVO_REVISAR.value: 0,

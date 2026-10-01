@@ -36,13 +36,14 @@ def _remote_database_url_from_settings() -> str | None:
     """Read the persisted data mode; return a Postgres URL when "remoto".
 
     Returns None for local/unconfigured so the caller keeps SQLite defaults.
+    Shares the resolver with the trust boundary (backend.activation) so the
+    sidecar and the activation guard can never disagree about where they think
+    they are pointing.
     """
+    from backend.activation import resolver_base_remota
     from backend.settings_store import load_settings
 
-    settings = load_settings()
-    if settings.dataMode == "remoto" and settings.databaseUrl:
-        return settings.databaseUrl
-    return None
+    return resolver_base_remota(load_settings()) or None
 
 
 def _configure_database_url() -> None:
@@ -60,6 +61,14 @@ def _configure_database_url() -> None:
     resolve to local; if it somehow does (edited settings.json), refuse to
     start so the installer fails closed with a clear message instead of
     silently serving a local database.
+
+    Starting on SQLite is NOT the same as operating on SQLite. The sidecar has
+    to come up in an unprovisioned install so the UI can show the activation
+    screen and the operator can enter the remote base; what it must not do is
+    SERVE the app from there. That is enforced one layer up, in
+    ``activation.exigir_operacion``, which returns 503 for every domain route
+    until a valid remote base is provisioned. Hence the warning below: the
+    process is up, but the app behind it is locked.
     """
     CLIENT_BUILD = os.environ.get("CANYP_CLIENT_BUILD") == "1"
 
@@ -81,8 +90,38 @@ def _configure_database_url() -> None:
         )
         raise SystemExit(1)
 
+    if CLIENT_BUILD:
+        print(
+            "CANYP: esperando activación — no hay base remota provisionada. "
+            "El servidor local levanta sólo para mostrar el asistente; la app "
+            "no operará hasta que el administrador configure el modo remoto.",
+            file=sys.stderr,
+        )
+
     db_file = os.path.join(_data_dir(), "canyp.db")
     os.environ["DATABASE_URL"] = f"sqlite:///{db_file}"
+
+
+def _verify_operator_credentials() -> None:
+    """Corta el arranque si el estado de credenciales no es seguro.
+
+    Build de cliente: no debe traer credenciales de operador (si aparecen, es
+    una regresión de empaquetado y se corta igual). Build del operador: si
+    falta alguna, se corta con un mensaje que nombra la variable y el motivo.
+    Nunca se imprime el valor de un secreto.
+    """
+    from backend.config import settings
+    from backend.operator_credentials import (
+        FaltanCredencialesOperador,
+        verificar_credenciales_operador,
+    )
+
+    es_build_cliente = os.environ.get("CANYP_CLIENT_BUILD") == "1"
+    try:
+        verificar_credenciales_operador(settings, es_build_cliente=es_build_cliente)
+    except FaltanCredencialesOperador as e:
+        print(e.construir_mensaje(), file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 def main() -> None:
@@ -95,6 +134,10 @@ def main() -> None:
         sys.stdout = open(os.devnull, "w", encoding="utf-8")
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+    # Checked BEFORE anything else: an unsafe credential state must not let the
+    # process come up far enough to serve a single request.
+    _verify_operator_credentials()
 
     # Critical: override DATABASE_URL BEFORE importing backend.main — database.py
     # reads the env at import time, so the sidecar must know its target database

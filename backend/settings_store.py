@@ -49,14 +49,30 @@ class AppSettings:
     configured: bool = False
 
 
-def default_settings_path() -> str:
-    """Resolve where settings.json lives for the current runtime."""
+def default_settings_dir() -> str:
+    """Directory that holds settings.json for the current runtime.
+
+    Packaged: ``%APPDATA%\\CANYP`` (per-user writable; Program Files is not).
+    Dev/tests: the current working directory.
+
+    ``load_settings`` passes an explicit path (tests monkeypatch the path), so
+    this is only about the *default*. Exposed because other pieces of the
+    activation machinery (the attempt log) must land in the same per-user
+    directory as the settings they are about.
+    """
     if getattr(sys, "frozen", False):
         base = os.environ.get("APPDATA") or os.path.expanduser("~")
         data_dir = os.path.join(base, PACKAGED_SUBDIR)
         os.makedirs(data_dir, exist_ok=True)
-        return os.path.join(data_dir, SETTINGS_FILENAME)
-    return os.path.join(os.getcwd(), "canyp-settings.json")
+        return data_dir
+    return os.getcwd()
+
+
+def default_settings_path() -> str:
+    """Resolve where settings.json lives for the current runtime."""
+    if getattr(sys, "frozen", False):
+        return os.path.join(default_settings_dir(), SETTINGS_FILENAME)
+    return os.path.join(default_settings_dir(), "canyp-settings.json")
 
 
 def load_settings(path: str | None = None) -> AppSettings:

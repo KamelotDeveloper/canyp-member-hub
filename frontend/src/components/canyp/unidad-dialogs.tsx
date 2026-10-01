@@ -1090,8 +1090,9 @@ export function CobrarUnidadDialog({
   const titular = grupo.members.find((m) => m.rol === "Titular") ?? grupo.members[0];
 
   /**
-   * Membresía de cuota social del titular: ancla de esa línea, y la única forma
-   * de ofrecerla con honestidad — sin ella el servidor rechaza el cobro (422).
+   * Membresía de cuota social del titular: ancla de esa línea al componer el
+   * cobro. El arancel se ofrece siempre; sin fila, el servidor resuelve la
+   * imputación (o rechaza el cobro), pero acá sólo es la pista de anclaje.
    */
   const cuotaTitular = useMemo(
     () =>
@@ -1136,15 +1137,12 @@ export function CobrarUnidadDialog({
   }, [grupo.members, grupo.categoria]);
 
   // Filas que este cobro puede tikear: el área del lugar, TODOS sus apartes de
-  // servicio y los carriers por concepto (ReQ-001). La cuota social sólo se
-  // ofrece si el titular la tiene (sin ella el servidor rechaza, 422) Y queda
-  // alguien impago: con toda la unidad al día no hay nada que cobrar.
+  // servicio y los carriers por concepto (ReQ-001). La cuota social se ofrece
+  // SIEMPRE que el arancel exista: el servidor es la autoridad del monto y de si
+  // emite la línea (sin nadie impago no cobra), así que el front no la esconde.
   const disponibles = useMemo(
-    () =>
-      arancelesDisponibles(aranceles, lugar ? [lugar] : []).filter((a) =>
-        conceptoDeArancel(a) === "cuota social" ? Boolean(cuotaTitular) && cuotaImpaga > 0 : true,
-      ),
-    [aranceles, lugar, cuotaTitular, cuotaImpaga],
+    () => arancelesDisponibles(aranceles, lugar ? [lugar] : []),
+    [aranceles, lugar],
   );
 
   // Aviso ReQ-003: un lugar sin fila de servicio no calla, lo dice.
@@ -1227,7 +1225,7 @@ export function CobrarUnidadDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Cobrar unidad</DialogTitle>
           <DialogDescription>
@@ -1275,7 +1273,7 @@ export function CobrarUnidadDialog({
                         type="number"
                         min={0}
                         step={100}
-                        className="w-[110px]"
+                        className="w-32 shrink-0"
                         aria-label={`Importe de ${a.nombre}`}
                         value={ajustes[a.id] ?? ""}
                         onChange={(e) => ajustar(a.id, e.target.value)}

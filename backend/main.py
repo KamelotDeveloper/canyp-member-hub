@@ -7,9 +7,12 @@ import threading
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from backend.activation import exigir_operacion
 from backend.config import settings
 from backend.database import Base, engine
+from backend.middleware import BackupGuardMiddleware
 from backend.routers import (
+    activacion,
     aranceles,
     auth,
     backup,
@@ -88,17 +91,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Write gate: a mutating request needs a restorable dump behind it. Registered
+# after CORS so the 503 it returns stays readable cross-origin. The lifespan is
+# untouched — a failing startup backup only blocks writes, never the boot.
+app.add_middleware(BackupGuardMiddleware, engine=engine)
+
 # Routers
 # Auth is open (login/logout/status/first-user bootstrap). Settings is included
 # WITHOUT a router-level guard — its own router enforces conditional auth (D9):
 # open while unconfigured, guarded once configured. Everything else is guarded (D8).
 app.include_router(auth.router)
 
+# Superficie de activación: OPEN a propósito, pre-login. Sólo REFLEJA el
+# veredicto de backend/activation.py; no decide si la app abre.
+app.include_router(activacion.router)
+
 # Suscripciones/licencias (Fase 1): OPEN a propósito — el pago y la verificación
 # de licencia ocurren ANTES del login (misma convicción pre-login que auth).
 app.include_router(suscripcion.router)
 
-_guarded = [Depends(get_current_user)]
+# FRONTERA DE CONFIANZA. `exigir_operacion` va PRIMERO en la lista de
+# dependencias: en un build de cliente sin base remota provisionada, TODA ruta de
+# dominio responde 503 y queda registrado el intento, sin importar si el token
+# de sesión es válido. Fuera de un build de cliente es un no-op estructural
+# (verificar_activacion devuelve permitido antes de mirar nada), así que el flujo
+# de desarrollo no cambia. El orden importa: la activación se evalúa antes que
+# la autenticación, para que el 503 de "esperando activación" no se confunda con
+# un 401 de "sesión inválida" en la UI.
+_guarded = [Depends(exigir_operacion), Depends(get_current_user)]
 app.include_router(backup.router, dependencies=_guarded)
 app.include_router(socios.router, dependencies=_guarded)
 app.include_router(membresias.router, dependencies=_guarded)

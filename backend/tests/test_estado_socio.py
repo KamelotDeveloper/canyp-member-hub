@@ -32,6 +32,7 @@ from backend.services.estado_socio import (
     calcular_estado_socio,
     estados_socio,
     inputs_socio,
+    vigencia_mas_vencida,
 )
 from backend.services.renovacion import renovar_membresias
 
@@ -508,3 +509,227 @@ class TestDashboardConCuatroBuckets:
         alertas = test_client.get("/api/dashboard/alertas").json()
         assert [a["id"] for a in alertas] == ["m1", "m4"]
         assert [a["estadoSocio"] for a in alertas] == [INACTIVO, REVISAR]
+
+
+class TestEstadoVencidaPersistido:
+    """`Membresia.estado = 'vencida'` reuses the two existing buckets.
+
+    Reported as: "en la pestaña Socio activo, si cambio la ficha a uno y pongo
+    vencida, queda en activo".
+
+    The mark is not a state of its own: it is a shortcut for "just expired", so
+    `concepto` picks the bucket exactly as a past `vencimiento` does — a `vencida`
+    área row reads ⚠️ `Socio activo — revisar`, a `vencida` cuota row reads 🔴
+    `Inactivo — revisar` (owner's decision). `Vigencia.vencida` folds the mark
+    into the single "is it expired" predicate, so the precedence, the four
+    buckets and every read path are the ones that already existed.
+
+    Confirmed on the remote database: the only `vencida` row there is an `area`
+    membership with `vencimiento = 2026-10-10`, i.e. the ⚠️ case below.
+    """
+
+    def test_area_vencida_con_fecha_futura_es_revisar(self, test_db):
+        """The real row: an `area` membership flagged `vencida`, date untouched."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.ACTIVO_REVISAR
+
+    def test_cuota_vencida_con_fecha_futura_es_inactivo(self, test_db):
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        _area(test_db, "m2", "s1", dias=120)
+        assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.INACTIVO_REVISAR
+
+    def test_el_padron_sirve_revisar_para_una_membresia_vencida(self, test_client, test_db):
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        body = test_client.get("/api/socios").json()
+        assert body[0]["estado"] == REVISAR
+        assert body[0]["nominacion"] == REVISAR
+
+    def test_el_dashboard_no_cuenta_como_activo(self, test_client, test_db):
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        assert test_client.get("/api/dashboard/stats").json()["estados"] == {
+            ACTIVO: 0,
+            REVISAR: 1,
+            INACTIVO: 0,
+            SOLO: 0,
+        }
+
+    def test_la_fecha_vencida_si_mueve_el_estado(self, test_db):
+        """Control: the `vencimiento` path works, which isolates the mark to `estado`."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=-1)
+        assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.ACTIVO_REVISAR
+
+    def test_todo_al_dia_sigue_activo(self, test_db):
+        """Control: the untouched pair keeps the green state."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120)
+        assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.ACTIVO
+
+    def test_la_cuota_vencida_manda_sobre_el_area_vencida(self, test_db):
+        """Precedence unchanged: a 🔴 cuota is never downgraded to the ⚠️ warning."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.INACTIVO_REVISAR
+
+    def test_la_marca_no_se_esconde_detras_de_una_fecha_mas_nueva(self, test_db):
+        """Aggregation, not last-row-wins: one flagged row of a concept flags it."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=-5)
+        _area(test_db, "m3", "s1", dias=300, estado=EstadoMembresia.VENCIDA)
+        assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.ACTIVO_REVISAR
+
+    def test_una_marca_vencida_no_arrastra_a_la_otra_cuota(self, test_db):
+        """The split is per concept: an área mark never reaches the 🔴 branch."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        inputs = inputs_socio(test_db, ["s1"])["s1"]
+        assert inputs.cuota.estado_vencida is False
+        assert inputs.area.estado_vencida is True
+
+    def test_la_marca_se_borra_al_cobrar(self, test_client, test_db):
+        """EST-02: paying restores the state on the next read, no manual step.
+
+        A charge writes `estado = 'activa'` (`renovacion.dia10`), which is what
+        keeps the mark a recalculation and not a second stored badge.
+        """
+        _socio(test_db, "s1")
+        cuota = _cuota(test_db, "m1", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        assert test_client.get("/api/socios").json()[0]["estado"] == INACTIVO
+
+        renovar_membresias(test_db, [cuota.id], date.today())
+
+        assert test_client.get("/api/socios").json()[0]["estado"] == SOLO
+
+    def test_la_unidad_entera_lectura_el_marca_de_area(self, test_client, test_db):
+        """Scope = unidad: the ⚠️ reaches the titular AND the integrante."""
+        _parcela(test_db, "p1")
+        _socio(test_db, "s1")
+        _socio(test_db, "s2")
+        _cuota(test_db, "m1", "s1")
+        _cuota(test_db, "m2", "s2")
+        _area(test_db, "m3", "s1", dias=120, parcela_id="p1", rol=RolMembresia.TITULAR)
+        _area(
+            test_db,
+            "m4",
+            "s2",
+            dias=120,
+            parcela_id="p1",
+            rol=RolMembresia.INTEGRANTE,
+            estado=EstadoMembresia.VENCIDA,
+        )
+        miembros = test_client.get("/api/membresias/parcelas").json()[0]["membresias"]
+        assert {m["socioId"]: m["estadoSocio"] for m in miembros} == {
+            "s1": REVISAR,
+            "s2": REVISAR,
+        }
+
+    def test_la_marca_del_area_no_se_pierde_al_unir_con_la_unidad(self, test_db):
+        """`vigencia_mas_vencida` unions the mark, it does not pick a date and drop it.
+
+        The flagged unit row carries a LATER date than the member's own area, so a
+        date-only comparison would return the unflagged one and serve 🟢.
+        """
+        propio = Vigencia(date(2026, 10, 5))
+        unidad = Vigencia(date(2026, 12, 20), estado_vencida=True)
+        unida = vigencia_mas_vencida(propio, unidad)
+        assert unida.vencimiento == date(2026, 10, 5)
+        assert unida.vencida(HOY) is True
+
+    def test_una_sola_consulta_agrupada_con_la_marca(self, test_db):
+        """D5: reading the mark costs no extra round trip."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        selects = _selects(test_db)
+        assert estados_socio(test_db, ["s1"])["s1"] == EstadoSocioVisual.INACTIVO_REVISAR
+        assert len([s for s in selects if s.lstrip().upper().startswith("SELECT")]) == 1
+
+
+class TestAlertaDeMembresiaVencida:
+    """`/api/dashboard/alertas` has to agree with the badge it exists to work from.
+
+    The reported bug, second occurrence of the same class: a datum the operator
+    writes and nobody reads. `Membresia.estado = 'vencida'` was honoured by the
+    derivacion (`TestEstadoVencidaPersistido` above) but NOT by the alerts query,
+    whose filter was `vencimiento < hoy or estado in (suspendida, baja)`. So a
+    membership flagged `vencida` with a future date was served "Socio activo —
+    revisar" by the padron and was ABSENT from the "Atención inmediata" panel, from
+    the "N a revisar" counter of every area card and from the Notificaciones
+    screen — the operator was told to review a socio with no way to find them.
+
+    Confirmed on the remote database: the single `vencida` row there is an `area`
+    membership with `vencimiento = 2026-10-10`, and the alerts payload contained 0
+    of the 213 memberships flagged that way.
+    """
+
+    def test_el_area_vencida_con_fecha_futura_aparece_en_alertas(self, test_client, test_db):
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+
+        alertas = test_client.get("/api/dashboard/alertas").json()
+
+        assert [a["id"] for a in alertas] == ["m2"]
+        assert alertas[0]["estadoSocio"] == REVISAR
+        assert alertas[0]["estado"] == "vencida"
+
+    def test_la_cuota_vencida_con_fecha_futura_aparece_como_inactiva(self, test_client, test_db):
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        _area(test_db, "m2", "s1", dias=120)
+
+        alertas = test_client.get("/api/dashboard/alertas").json()
+
+        assert [a["id"] for a in alertas] == ["m1"]
+        assert alertas[0]["estadoSocio"] == INACTIVO
+
+    def test_una_membresia_al_dia_no_aparece_igual_que_la_marcada(self, test_client, test_db):
+        """Control: the mark is what puts the row in the list, not its future date."""
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120)
+        _area(test_db, "m3", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+
+        alertas = test_client.get("/api/dashboard/alertas").json()
+
+        assert [a["id"] for a in alertas] == ["m3"]
+
+    def test_la_alerta_y_la_insignia_no_se_pueden_desacordar(self, test_client, test_db):
+        """The invariant, stated once: every alert is a membership the badge reviews.
+
+        Whatever `alertas` serves, the padron must NOT be serving "Socio activo"
+        for its socio — an alert the badge calls settled is an operator sent to
+        charge somebody who owes nothing, and an alert the badge never mentioned is
+        the bug this class exists to pin.
+        """
+        _socio(test_db, "s1")
+        _cuota(test_db, "m1", "s1", dias=120)
+        _area(test_db, "m2", "s1", dias=120, estado=EstadoMembresia.VENCIDA)
+        _socio(test_db, "s2")
+        _cuota(test_db, "m3", "s2", dias=120)
+        _area(test_db, "m4", "s2", dias=-3)
+        _socio(test_db, "s3")
+        _cuota(test_db, "m5", "s3", dias=120)
+        _area(test_db, "m6", "s3", dias=120)
+
+        alertas = test_client.get("/api/dashboard/alertas").json()
+        padron = {s["id"]: s["estado"] for s in test_client.get("/api/socios").json()}
+
+        ids = {a["id"] for a in alertas}
+        assert ids == {"m2", "m4"}
+        for a in alertas:
+            assert padron[a["socioId"]] == a["estadoSocio"]
+            assert padron[a["socioId"]] != ACTIVO
+
+

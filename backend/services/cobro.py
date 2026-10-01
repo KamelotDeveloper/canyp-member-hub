@@ -33,7 +33,10 @@ The six rules this service exists to enforce:
    has NO cuota row at all (a legacy gap or a deleted row) gets the row CREATED
    here, in the same transaction as the payment: the charge and the renewal must
    agree even on a database that was never backfilled, or the member would be
-   billed without anything renewing and be billed again next time.
+   billed without anything renewing and be billed again next time. The same
+   repair backs the cuota line's ANCHOR (:func:`_anchor_cuota`): a charged socio
+   with no cuota row gets theirs created so the line prices itself, instead of
+   the 422 that used to make the tenant's missing row a hard failure.
 4. **Windsurf is never double-charged** (CS-05). A Windsurf membership IS its
    cuota social, so it is classified as CUOTA_SOCIAL for charging purposes: it
    can never anchor an area line, and it renews when cuota social is ticked.
@@ -281,7 +284,20 @@ def _anchor_cuota(db: Session, socio_id: str, submitted: list[Membresia]) -> Mem
     A person pays for their own cuota social, not for a neighbour's: the factor
     expresses the unit size, the row the amount is frozen against is the
     titular's. A submitted cuota membership of the same socio is the fallback
-    for a database that has not been backfilled yet.
+    for a database that has not been backfilled yet (a legacy Windsurf row IS its
+    cuota social, CS-05).
+
+    A socio with NO cuota row at all is REPAIRED here, not refused: the domain
+    rule is that every socio owns exactly one cuota row, so a missing one is a
+    data gap to close, never an error that blocks the charge. The row is created
+    with :func:`backend.services.cuota_social.crear_cuota_social` — idempotent and
+    flushed, in the SAME transaction as the payment — and used as the anchor, so
+    the charge prices its cuota line and the new row renews with the rest. This
+    resolver already mutates for exactly that reason (:func:`_cuotas_a_renovar`
+    provisions the impago members' rows); the anchor is the same repair reached
+    from the line that needs it, before the renewal set is even computed.
+    Returning ``None`` here (the historical 422) collected no money and renewed
+    nothing, which is the bug this closes.
     """
     cuota = cuota_de(db, socio_id)
     if cuota is not None:
@@ -289,7 +305,8 @@ def _anchor_cuota(db: Session, socio_id: str, submitted: list[Membresia]) -> Mem
     for m in submitted:
         if concepto_socio_de(m) is ConceptoMembresia.CUOTA_SOCIAL:
             return m
-    return None
+    cuota, _ = crear_cuota_social(db, socio_id)
+    return cuota
 
 
 def _anchor_nea(db: Session, submitted: list[Membresia], item, socio_id: str) -> Membresia | None:

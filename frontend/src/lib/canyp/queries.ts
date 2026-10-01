@@ -5,7 +5,7 @@
  * Each mutation hook wraps a POST/PUT/DELETE and invalidates relevant caches on success.
  */
 
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import * as api from "./api";
 import { clearFotosCache } from "./fotos";
 import { verificarSuscripcion } from "./suscripcion";
@@ -148,6 +148,28 @@ function retryOnNetwork(_failureCount: number, error: Error): boolean {
   return error instanceof TypeError;
 }
 
+/**
+ * Veredicto de activación del servidor (GET /api/activacion).
+ *
+ * Es el ÚNICO origen de la decisión "abre o no" en la UI. Los guards
+ * (ClientBuildGuard, LicenseGate) lo consultan; ninguno de los dos calcula el
+ * veredicto por su cuenta. Aun así sigue siendo un espejo: si el frontend
+ * mintiera, el backend igual negaría la petición.
+ *
+ * `refetchOnWindowFocus` para que una instalación que el administrador acaba
+ * de activar se destrabe sola al volver a la ventana, sin reiniciar a mano.
+ */
+export function useActivacion() {
+  return useQuery({
+    queryKey: ["activacion"],
+    queryFn: api.getActivacion,
+    staleTime: 10_000,
+    retry: retryOnNetwork,
+    retryDelay: NETWORK_RETRY_DELAY_MS,
+    refetchOnWindowFocus: true,
+  });
+}
+
 /** Current data-mode settings (badge + wizard + Ajustes). */
 export function useSettings() {
   return useQuery({
@@ -239,9 +261,11 @@ export function useCreateSocio() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: Omit<Socio, "id" | "fechaAlta">) => api.createSocio(data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["socios"] });
-    },
+    // The server also provisions the new socio's cuota social row in the same
+    // transaction (`routers/socios.py` -> `crear_cuota_social`), so this write
+    // touches a membership too, and the new socio immediately lands in the
+    // "Solo cuota social" bucket the dashboard counts.
+    onSuccess: () => invalidateMembershipWrites(qc),
   });
 }
 
@@ -250,6 +274,8 @@ export function useUpdateSocio() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<Socio> }) => api.updateSocio(id, data),
+    // Socio columns only: the server derives the 4 states from MEMBERSHIP data,
+    // so an edit here cannot move a bucket and the dashboard cards stay valid.
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["socios"] });
     },
@@ -261,10 +287,11 @@ export function useDeleteSocio() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.deleteSocio(id),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["socios"] });
-      qc.invalidateQueries({ queryKey: ["membresias"] });
-    },
+    // The server deletes the socio's memberships with them (promoting a
+    // successor Titular first), which changes both the membersía list and the
+    // bucket every unit member is counted into. A socio with pagos is refused
+    // with a 409, so the receipts list cannot have changed.
+    onSuccess: () => invalidateMembershipWrites(qc),
   });
 }
 
@@ -303,14 +330,51 @@ export function useQuitarFoto() {
 // MUTATIONS — Membresias
 // ---------------------------------------------------------------------------
 
+/**
+ * Invalidates every cache a membership write can move.
+ *
+ * The 4 socio states are NOT stored: the server derives them from the stored
+ * `vencimiento`/`estado` of the cuota social and área memberships on every read
+ * (EST-01/EST-02). So any write that changes `estado`, changes `vencimiento`,
+ * or removes a membership row can move a socio into a different bucket — the
+ * padrón (`Socio.estado`) and the dashboard cards (`estados`) are projections of
+ * that derivation, so they have to be refetched together with the membership.
+ *
+ * Invalidating only `["membresias"]` leaves the operator reading a state the
+ * server has already moved: the lista de membresías shows the new `estado` next
+ * to a stale badge, and the dashboard card keeps counting the old bucket until
+ * its own 15s poll happens to land.
+ */
+function invalidateMembershipWrites(qc: QueryClient) {
+  qc.invalidateQueries({ queryKey: ["membresias"] });
+  qc.invalidateQueries({ queryKey: ["socios"] });
+  qc.invalidateQueries({ queryKey: ["dashboard"] });
+}
+
+/**
+ * Invalidates the caches that COUNT socios, for a write that changes how many
+ * socios there are or which bucket each one falls in — without editing any
+ * membership row itself.
+ *
+ * `dashboard/stats` derives its four cards by walking EVERY socio
+ * (`routers/dashboard.py:63`), and `dashboard/alertas` + the "N a revisar"
+ * counter of each area card are projections of the same derivation. So a write
+ * that adds or removes a socio moves those numbers even when no membership
+ * changed. `Socio activo` / `Solo cuota social` are counts, not filters, and a
+ * stale count is exactly the bug the owner reported: the card said one thing and
+ * the list another.
+ */
+function invalidatePadronCounts(qc: QueryClient) {
+  qc.invalidateQueries({ queryKey: ["socios"] });
+  qc.invalidateQueries({ queryKey: ["dashboard"] });
+}
+
 /** Create a new membresia */
 export function useCreateMembresia() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: Omit<Membresia, "id">) => api.createMembresia(data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["membresias"] });
-    },
+    onSuccess: () => invalidateMembershipWrites(qc),
   });
 }
 
@@ -320,9 +384,9 @@ export function useUpdateMembresia() {
   return useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<Membresia> }) =>
       api.updateMembresia(id, data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["membresias"] });
-    },
+    // This is the mutation behind the `estado` selector of the socio ficha and
+    // of the membresías table, so it is the one that can flip a socio's bucket.
+    onSuccess: () => invalidateMembershipWrites(qc),
   });
 }
 
@@ -331,9 +395,7 @@ export function useDeleteMembresia() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.deleteMembresia(id),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["membresias"] });
-    },
+    onSuccess: () => invalidateMembershipWrites(qc),
   });
 }
 
@@ -371,7 +433,9 @@ export function useDeleteParcela() {
     mutationFn: (id: string) => api.deleteParcela(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["parcelas"] });
-      qc.invalidateQueries({ queryKey: ["membresias"] });
+      // Removing a unit removes its área memberships, so every member of the
+      // unit can land in a different socio state.
+      invalidateMembershipWrites(qc);
     },
   });
 }
@@ -387,8 +451,8 @@ export function useImportParcelas() {
     mutationFn: (payload: ImportPayload) => api.importParcelas(payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["parcelas"] });
-      qc.invalidateQueries({ queryKey: ["membresias"] });
-      qc.invalidateQueries({ queryKey: ["socios"] });
+      // The import writes socios AND memberships, so it moves socio states too.
+      invalidateMembershipWrites(qc);
     },
   });
 }
@@ -399,9 +463,7 @@ export function useSetBatchEstado() {
   return useMutation({
     mutationFn: ({ parcelaId, estado }: { parcelaId: string; estado: EstadoMembresia }) =>
       api.setBatchEstado(parcelaId, estado),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["membresias"] });
-    },
+    onSuccess: () => invalidateMembershipWrites(qc),
   });
 }
 
@@ -418,12 +480,7 @@ export function useSetBatchVencimiento() {
       vencimiento: string;
       concepto?: ConceptoMembresia;
     }) => api.setBatchVencimiento(parcelaId, vencimiento, concepto),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["membresias"] });
-      // El vencimiento mueve el estado del socio: refrescar el padrón y el dashboard.
-      qc.invalidateQueries({ queryKey: ["socios"] });
-      qc.invalidateQueries({ queryKey: ["dashboard"] });
-    },
+    onSuccess: () => invalidateMembershipWrites(qc),
   });
 }
 
@@ -433,11 +490,7 @@ export function useUpdateMembresiaVencimiento() {
   return useMutation({
     mutationFn: ({ id, vencimiento }: { id: string; vencimiento: string }) =>
       api.updateMembresiaVencimiento(id, vencimiento),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["membresias"] });
-      qc.invalidateQueries({ queryKey: ["socios"] });
-      qc.invalidateQueries({ queryKey: ["dashboard"] });
-    },
+    onSuccess: () => invalidateMembershipWrites(qc),
   });
 }
 
@@ -537,7 +590,14 @@ export function useCreatePago() {
     mutationFn: (data: api.CreatePagoInput) => api.createPago(data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["pagos"] });
-      qc.invalidateQueries({ queryKey: ["membresias"] });
+      // A charge RENOVES: `services/renovacion.renovar_membresias` rewrites
+      // `vencimiento` to max(vencimiento, dia10(hoy)) and forces
+      // `estado = 'activa'` on every membership it settles. Those are exactly
+      // the two fields `services/estado_socio` derives the 4 socio states from,
+      // so charging somebody moves them out of 🔴/⚠️ — the padrón badge and the
+      // dashboard cards are stale until their own 15s poll lands, and the
+      // operator just watched money go in while the club still looked in debt.
+      invalidateMembershipWrites(qc);
       // La renovación puede modificar aranceles aplicables; refrescar en paralelo.
       qc.invalidateQueries({ queryKey: ["aranceles"] });
     },
@@ -568,11 +628,12 @@ export function useExecuteImport() {
       rows: RowData[];
     }): Promise<ExecuteResult> => api.executeImport(resource, rows),
     onSuccess: () => {
-      // Importing membresias links rows to existing socios by DNI, so both the
-      // padron (a membership makes a socio "activo") and the memberships list
-      // change after an execute — refresh both caches.
-      qc.invalidateQueries({ queryKey: ["socios"] });
-      qc.invalidateQueries({ queryKey: ["membresias"] });
+      // Importing socios links rows to existing socios by DNI and imports
+      // memberships, so the padron (a membership makes a socio "activo") and the
+      // memberships list change after an execute — and the dashboard cards count
+      // both, so they change with them. Refreshing socios+membresias and leaving
+      // the cards alone is what made an import look like it had done nothing.
+      invalidateMembershipWrites(qc);
     },
   });
 }

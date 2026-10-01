@@ -1,12 +1,22 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { AlertTriangle, ArrowRight, BellRing, CreditCard, Users } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  BellRing,
+  CreditCard,
+  Home,
+  Sailboat,
+  Users,
+  Warehouse,
+  Wind,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EstadoBadge } from "@/components/canyp/EstadoBadge";
 import { PageHeader } from "@/components/canyp/AppShell";
 import { formatFecha } from "@/lib/canyp/utils";
 import { useSocios, usePagos, useDashboardStats, useDashboardAlertas } from "@/lib/canyp/queries";
-import type { EstadoSocio, Socio } from "@/lib/canyp/types";
+import type { Area, EstadoSocio, Socio } from "@/lib/canyp/types";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -34,6 +44,23 @@ const ESTADOS: EstadoSocio[] = [
   "Socio activo",
   "Solo cuota social",
 ];
+
+/** Las 4 áreas de membresía, con su ícono y el predio que les corresponde. */
+const AREAS: Area[] = ["Balseros", "Cabañeros", "Guardería", "Windsurf"];
+
+const areaIcon: Record<Area, typeof Sailboat> = {
+  Balseros: Sailboat,
+  Cabañeros: Home,
+  Guardería: Warehouse,
+  Windsurf: Wind,
+};
+
+const areaPredio: Record<Area, string> = {
+  Balseros: "Embalse",
+  Cabañeros: "Almafuerte",
+  Guardería: "Almafuerte",
+  Windsurf: "Almafuerte",
+};
 
 function Dashboard() {
   const { data: socios = [] } = useSocios();
@@ -84,12 +111,53 @@ function Dashboard() {
         </Link>
 
         {ESTADOS.map((e) => (
-          <Card key={e} className="h-full p-5">
-            <EstadoBadge estado={e} />
-            <p className="mt-3 text-3xl font-bold tabular-nums">{stats?.estados[e] ?? 0}</p>
-            <p className="text-xs text-muted-foreground">socios</p>
-          </Card>
+          <Link key={e} to="/socios" search={{ estado: e }}>
+            <Card className="h-full p-5 transition-shadow hover:shadow-md">
+              <EstadoBadge estado={e} />
+              <p className="mt-3 text-3xl font-bold tabular-nums">{stats?.estados[e] ?? 0}</p>
+              <p className="text-xs text-muted-foreground">socios</p>
+              <p className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
+                <span>Ir al padrón</span>
+                <ArrowRight className="size-3" />
+              </p>
+            </Card>
+          </Link>
         ))}
+      </section>
+
+      <section className="mt-6">
+        <h2 className="mb-3 text-sm font-semibold">Membresías por área</h2>
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {AREAS.map((area) => {
+            const Icon = areaIcon[area];
+            const total = stats?.countsByArea[area] ?? 0;
+            const aRevisar = alertas.filter((a) => a.area === area).length;
+            return (
+              <Link key={area} to="/membresias" search={{ area }}>
+                <Card className="h-full p-5 transition-shadow hover:shadow-md">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                        {area}
+                      </p>
+                      <p className="mt-2 text-3xl font-bold tabular-nums">{total}</p>
+                      <p className="text-xs text-muted-foreground">membresías</p>
+                    </div>
+                    <span className="rounded-md bg-accent p-2 text-accent-foreground">
+                      <Icon className="size-5" />
+                    </span>
+                  </div>
+                  <p className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
+                    <span>{areaPredio[area]}</span>
+                    {aRevisar > 0 && (
+                      <span className="font-semibold text-danger">{aRevisar} a revisar</span>
+                    )}
+                  </p>
+                </Card>
+              </Link>
+            );
+          })}
+        </div>
       </section>
 
       <section className="mt-6 grid gap-4 lg:grid-cols-3">
